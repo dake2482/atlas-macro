@@ -9,10 +9,10 @@ success_metrics:
 current_milestone:
   id: AI-RESEARCH-004
   title: 发布官方通胀变化率与短期动能
-  status: IN_PROGRESS
+  status: REVIEW
 health: GREEN
-next_action: Implement six-series BLS inflation derivations and the independent same-batch publication gate.
-updated_at: '2026-07-12T23:58:00+08:00'
+next_action: Run the AI-RESEARCH closeout gate, then mark the validated local-only delivery DONE.
+updated_at: '2026-07-13T00:06:00+08:00'
 validation_commands:
   - .venv/bin/ruff check .
   - .venv/bin/pytest -q
