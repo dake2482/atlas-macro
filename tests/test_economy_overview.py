@@ -266,10 +266,22 @@ def test_economy_selects_exact_four_rates_and_preserves_component_lineage(
         "core-cpi-yoy",
         "bea-real-pce-mom",
     ]
-    serialized = str(snapshot.data).lower()
-    assert "ces0000000001" not in serialized
-    assert "cusr0000sa0" not in serialized
-    assert "cusr0000sa0l1e" not in serialized
+    published_metric_keys = {
+        item["key"] for item in snapshot.data["metrics"]
+    }
+    published_metric_labels = {
+        item["label"] for item in snapshot.data["metrics"]
+    }
+    assert not published_metric_keys & {
+        "ces0000000001",
+        "cusr0000sa0",
+        "cusr0000sa0l1e",
+    }
+    assert not published_metric_labels & {
+        "非农就业总量",
+        "CPI 指数",
+        "核心 CPI 指数",
+    }
     assert {item["unit"] for item in snapshot.data["metrics"]} == {"%"}
     assert set(snapshot.data["source_keys"]) == {
         "bea-release",

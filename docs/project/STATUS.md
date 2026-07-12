@@ -4,9 +4,9 @@
 
 - Purpose: Build a clean-room macro-research and AI supply-chain intelligence platform with traceable public sources, explicit data-quality labels, and original presentation.
 - Health: `GREEN`
-- Milestone: `AI-RESEARCH-006` — 修正经济总览的官方变化率组合 (`IN_PROGRESS`)
-- Next action: Build a page-specific economy coordinator from the latest complete GDP, employment, inflation and consumer snapshots.
-- Updated: `2026-07-13T01:33:17+08:00`
+- Milestone: `AI-RESEARCH-006` — 修正经济总览的官方变化率组合 (`DONE`)
+- Next action: Audit the next highest-impact public dashboard whose metric semantics or source batches still diverge from the clean-room contract.
+- Updated: `2026-07-13T02:23:17+08:00`
 - Git boundary: branch `main`; run `portfolio closeout AI-RESEARCH` for live delivery state.
 - Execution metadata: Codex 0/0 active/total; ZCode 0/0 active/total
 
@@ -14,7 +14,7 @@
 
 | Requirement | State | Priority | Executor | Task | Branch / worktree | Next action |
 |---|---|---|---|---|---|---|
-| AI-RESEARCH-006 | IN_PROGRESS | P1 | codex | atlas-economy-overview-20260713 | main / local | Build a page-specific economy coordinator from the latest complete GDP, employment, inflation and consumer snapshots. |
+| - | - | - | - | - | - | No active requirement |
 
 ## Blockers
 
@@ -22,4 +22,4 @@
 
 ## Latest verification evidence
 
-- Portfolio closeout passed on commit 74200a6 with Ruff, all 306 tests, Django checks, strict portfolio validation and the explicitly local-only Git delivery boundary verified.
+- Mina serves cb1872b on HTTP 3080. All six Compose services are running with zero restarts and no OOM; production checks only retain the expected HSTS/SSL-redirect warnings for the deliberately non-TLS origin, and host port 3003 remains an unrelated untouched service.
