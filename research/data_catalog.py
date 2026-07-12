@@ -105,8 +105,13 @@ DATA_REQUIREMENTS = [
         "metric_name": "SOFR、EFFR、IORB 与政策走廊",
         "status": LIVE,
         "source_name": "New York Fed Markets API and Federal Reserve PRATES DDP",
-        "source_url": "https://www.federalreserve.gov/datadownload/Choose.aspx?rel=PRATES",
-        "reason": "SOFR/EFFR 取纽约联储，IORB 直接解析 Federal Reserve PRATES；SOFR−IORB 与 99P−IORB 均为透明计算。",
+        "source_url": "https://markets.newyorkfed.org/static/docs/markets-api.html",
+        "reason": (
+            "SOFR/EFFR、目标区间、1P/25P/75P/99P 与成交量取纽约联储，"
+            "IORB 直接解析 Federal Reserve PRATES；页面只取三个数据集的"
+            "最新非未来共同有效日，所有差值与走廊位置均保留输入日期和批次。"
+            " IORB 第二官方来源为 Federal Reserve PRATES Data Download Program。"
+        ),
         "priority": 1,
     },
     {

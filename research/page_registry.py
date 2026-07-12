@@ -128,14 +128,53 @@ PAGE_CONFIGS = {
     "fed-funds": {
         "title": "联邦基金利率",
         "eyebrow": "Policy Corridor",
-        "description": "EFFR、SOFR、IORB 与目标区间共同刻画政策走廊。",
-        "metrics": [
-            metric("EFFR", "5.33%", "持平", source="NY Fed"),
-            metric("SOFR", "5.32%", "-1bp", source="NY Fed"),
-            metric("IORB", "5.40%", "持平", source="Federal Reserve"),
-            metric("SOFR−IORB", "-8bp", "充裕", source="派生计算"),
+        "description": (
+            "EFFR、SOFR、IORB、目标区间、成交分位与成交量严格按最新共同"
+            "有效日展示，避免把未来政策利率与尚未发布的市场利率混算。"
+        ),
+        "period_options": [
+            {"value": "1y", "label": "1 年", "months": 12},
+            {"value": "3y", "label": "3 年", "months": 36},
         ],
-        "analysis": "资金价格仍位于政策走廊内，暂未出现银行间流动性硬约束。",
+        "default_period": "1y",
+        "tab_options": [
+            {"value": "overview", "label": "总览", "chart_keys": []},
+            {
+                "value": "corridor",
+                "label": "政策走廊",
+                "chart_keys": ["policy-corridor"],
+            },
+            {
+                "value": "effr",
+                "label": "EFFR 分布",
+                "chart_keys": ["effr-distribution"],
+            },
+            {
+                "value": "sofr",
+                "label": "SOFR 分布",
+                "chart_keys": ["sofr-distribution"],
+            },
+        ],
+        "default_tab": "overview",
+        "metrics": [
+            metric("EFFR"),
+            metric("SOFR"),
+            metric("IORB"),
+            metric("目标区间下限"),
+            metric("目标区间上限"),
+            metric("SOFR−EFFR"),
+            metric("SOFR−IORB"),
+            metric("EFFR−IORB"),
+            metric("EFFR 成交量"),
+            metric("SOFR 成交量"),
+            metric("EFFR 1P−99P 宽度"),
+            metric("SOFR 1P−99P 宽度"),
+            metric("EFFR 走廊位置"),
+        ],
+        "analysis": (
+            "页面只陈述官方走廊和交易分布；任何压力判断必须引用同一有效日"
+            "数据，缺少必需数据集时保留上一完整快照并明确 stale。"
+        ),
     },
     "yield-curve": {
         "title": "收益率曲线",

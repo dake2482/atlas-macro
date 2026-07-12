@@ -3,6 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from zoneinfo import ZoneInfo
 
 import httpx
 import pytest
@@ -508,7 +509,11 @@ def test_public_dashboard_publisher_requires_approved_source_licence():
         historical_storage_allowed=True,
         redistribution_allowed=True,
     )
-    for key, values in {"sofr": (3.58, 3.53), "effr": (3.62, 3.62)}.items():
+    for key, values in {
+        "sofr": (3.58, 3.53),
+        "effr": (3.62, 3.62),
+        "iorb": (3.65, 3.65),
+    }.items():
         series = SeriesDefinition.objects.create(
             key=key,
             name=key.upper(),
@@ -528,12 +533,13 @@ def test_public_dashboard_publisher_requires_approved_source_licence():
             )
 
     dashboards = publish_official_dashboards()
-    fed_funds = next(item for item in dashboards if item.key == "fed-funds")
+    rates = next(item for item in dashboards if item.key == "rates")
 
-    assert fed_funds.data["demo"] is False
-    assert {item["label"] for item in fed_funds.data["metrics"]} >= {"SOFR", "EFFR"}
+    assert rates.data["demo"] is False
+    assert {item["label"] for item in rates.data["metrics"]} >= {"SOFR", "EFFR"}
     assert all(
-        "Approved Official Fixture" in item["source"] for item in fed_funds.data["metrics"][:2]
+        "Approved Official Fixture" in item["source"]
+        for item in rates.data["metrics"][:2]
     )
 
 
@@ -608,14 +614,20 @@ def _licensed_source(
 
 @pytest.mark.django_db
 def test_unchanged_official_value_does_not_publish_duplicate_dashboard_snapshots():
-    value_date = timezone.localdate().isoformat()
+    value_date = timezone.now().astimezone(
+        ZoneInfo("America/New_York")
+    ).date().isoformat()
     first_fetched_at = timezone.now() - timedelta(hours=1)
     first_run = record_provider_result(
         ProviderResult(
             provider="ny-fed-markets",
             dataset="dedup-fixture:first",
             fetched_at=first_fetched_at,
-            records=[{"series_id": "SOFR", "date": value_date, "value": "3.53"}],
+            records=[
+                {"series_id": "SOFR", "date": value_date, "value": "3.53"},
+                {"series_id": "EFFR", "date": value_date, "value": "3.62"},
+                {"series_id": "IORB", "date": value_date, "value": "3.65"},
+            ],
         ),
         persist=store_series_observations,
     )
@@ -627,7 +639,11 @@ def test_unchanged_official_value_does_not_publish_duplicate_dashboard_snapshots
             provider="ny-fed-markets",
             dataset="dedup-fixture:second",
             fetched_at=timezone.now(),
-            records=[{"series_id": "SOFR", "date": value_date, "value": "3.53"}],
+            records=[
+                {"series_id": "SOFR", "date": value_date, "value": "3.53"},
+                {"series_id": "EFFR", "date": value_date, "value": "3.62"},
+                {"series_id": "IORB", "date": value_date, "value": "3.65"},
+            ],
         ),
         persist=store_series_observations,
     )

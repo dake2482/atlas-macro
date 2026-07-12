@@ -90,7 +90,7 @@ def test_prates_status_rejects_numeric_missing_sentinel():
 
 
 @pytest.mark.django_db
-def test_prates_ingestion_publishes_iorb_and_real_sofr_tail_spread():
+def test_prates_ingestion_requires_coordinated_fed_funds_but_publishes_same_day_tail():
     result = FederalReservePRATESProvider(client=_client(_archive(_xml()))).iorb()
     iorb_run = record_provider_result(result, persist=_store_prates_observations)
     sofr_run = record_provider_result(
@@ -115,10 +115,7 @@ def test_prates_ingestion_publishes_iorb_and_real_sofr_tail_spread():
     assert sofr_run.status == "success"
     artifact = RawArtifact.objects.get(run=iorb_run)
     assert artifact.sha256 == result.metadata["archive_sha256"]
-    fed_funds = next(item for item in dashboards if item.key == "fed-funds")
-    metrics = {item["key"]: item for item in fed_funds.data["metrics"]}
-    assert metrics["iorb"]["display_value"] == "3.65%"
-    assert metrics["sofr-iorb"]["display_value"] == "-12bp"
+    assert not any(item.key == "fed-funds" for item in dashboards)
     subsurface = next(item for item in dashboards if item.key == "subsurface")
     tail = next(
         item for item in subsurface.data["metrics"] if item["key"] == "sofr-p99-minus-iorb"

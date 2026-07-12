@@ -15,6 +15,7 @@ from collections.abc import Iterable
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from django.db import transaction
 from django.utils import timezone
@@ -104,7 +105,6 @@ CORE_PUBLICATION_KEYS = frozenset(
         "liquidity",
         "transmission-chain",
         "operations",
-        "fed-funds",
         "rates",
         "yield-curve",
         "real-rates",
@@ -117,7 +117,7 @@ CORE_PUBLICATION_KEYS = frozenset(
 )
 H41_PUBLICATION_KEYS = frozenset({"liquidity", "fed-balance-sheet", "reserves"})
 PRATES_PUBLICATION_KEYS = frozenset(
-    {"transmission-chain", "fed-funds", "subsurface"}
+    {"transmission-chain", "subsurface"}
 )
 H10_PUBLICATION_KEYS = frozenset({"assets-fx"})
 CREDIT_PUBLICATION_KEYS = frozenset({"credit", "credit-spreads", "credit-stress"})
@@ -138,6 +138,28 @@ EMPLOYMENT_PUBLICATION_GROUPS = {
 INFLATION_PUBLICATION_GROUPS = {
     "inflation": frozenset({"bls"}),
 }
+FED_FUNDS_DATASETS = {
+    "sofr": ("ny-fed-markets", "reference-rate:sofr"),
+    "effr": ("ny-fed-markets", "reference-rate:effr"),
+    "iorb": ("federal-reserve", "prates:iorb"),
+}
+FED_FUNDS_REQUIRED_METRIC_KEYS = frozenset(
+    {
+        "effr",
+        "sofr",
+        "iorb",
+        "target-lower",
+        "target-upper",
+        "sofr-effr",
+        "sofr-iorb",
+        "effr-iorb",
+        "effr-volume",
+        "sofr-volume",
+        "effr-p1-p99-width",
+        "sofr-p1-p99-width",
+        "effr-corridor-position",
+    }
+)
 EMPLOYMENT_REQUIRED_METRIC_KEYS = frozenset(
     {
         "nonfarm-payroll-change",
@@ -476,8 +498,32 @@ def _metric(
     decimals: int = 2,
     suffix: str = "",
     scale: Decimal = Decimal("1"),
+    aligned_with: Iterable[str] = (),
 ) -> dict[str, Any] | None:
-    observations = _latest_observations_by_value_date(series_key, limit=2)
+    alignment_keys = tuple(dict.fromkeys(aligned_with))
+    if alignment_keys:
+        observations_by_key = {
+            key: {
+                item.value_date.date(): item
+                for item in _latest_observations_by_value_date(key, limit=2000)
+            }
+            for key in (series_key, *alignment_keys)
+        }
+        common_dates = set.intersection(
+            *(set(items) for items in observations_by_key.values())
+        )
+        today_et = timezone.now().astimezone(
+            ZoneInfo("America/New_York")
+        ).date()
+        periods = sorted(
+            (period for period in common_dates if period <= today_et),
+            reverse=True,
+        )
+        observations = [
+            observations_by_key[series_key][period] for period in periods[:2]
+        ]
+    else:
+        observations = _latest_observations_by_value_date(series_key, limit=2)
     if not observations:
         return None
     latest = observations[0]
@@ -513,7 +559,17 @@ def _metric(
         "fetched_at": latest.fetched_at.isoformat(),
         "fresh_until": fresh_until.isoformat(),
         "batch_id": str(latest.batch_id),
-        "metadata": latest.metadata,
+        "metadata": {
+            **latest.metadata,
+            **(
+                {
+                    "common_effective_date": latest.value_date.date().isoformat(),
+                    "aligned_with": [key.lower() for key in alignment_keys],
+                }
+                if alignment_keys
+                else {}
+            ),
+        },
     }
 
 
@@ -525,10 +581,25 @@ def _derived_metric(
     *,
     basis_points: bool = False,
 ) -> dict[str, Any] | None:
-    left = _real_observations(left_key).first()
-    right = _real_observations(right_key).first()
-    if not left or not right:
+    left_by_date = {
+        item.value_date.date(): item
+        for item in _latest_observations_by_value_date(left_key, limit=2000)
+    }
+    right_by_date = {
+        item.value_date.date(): item
+        for item in _latest_observations_by_value_date(right_key, limit=2000)
+    }
+    common_dates = {
+        period
+        for period in set(left_by_date) & set(right_by_date)
+        if period
+        <= timezone.now().astimezone(ZoneInfo("America/New_York")).date()
+    }
+    if not common_dates:
         return None
+    common_date = max(common_dates)
+    left = left_by_date[common_date]
+    right = right_by_date[common_date]
     value = Decimal(str(yield_spread(left.value, right.value, basis_points=basis_points)))
     suffix = "bp" if basis_points else "%"
     left_deadline = _fresh_until(left)
@@ -628,7 +699,9 @@ def _curve_rows(prefix: str, tenors: Iterable[str]) -> list[dict[str, Any]]:
     return rows
 
 
-def _history_rows(series: dict[str, str], *, limit: int = 120) -> list[dict[str, Any]]:
+def _history_rows(
+    series: dict[str, str], *, limit: int = 120, require_all: bool = False
+) -> list[dict[str, Any]]:
     """Align public observations by date while preserving semantic series labels."""
 
     by_date: dict[str, dict[str, Any]] = {}
@@ -661,7 +734,19 @@ def _history_rows(series: dict[str, str], *, limit: int = 120) -> list[dict[str,
                 "license_scope": observation.source.license_scope,
                 "fallback_source": fallback_key,
             }
-    return [by_date[day] for day in sorted(by_date)]
+    rows = [by_date[day] for day in sorted(by_date)]
+    if require_all:
+        required_labels = set(series.values())
+        today_et = timezone.now().astimezone(
+            ZoneInfo("America/New_York")
+        ).date()
+        rows = [
+            row
+            for row in rows
+            if required_labels <= set(row)
+            and date.fromisoformat(row["date"]) <= today_et
+        ]
+    return rows
 
 
 def _history_chart(
@@ -1462,7 +1547,7 @@ def _inflation_series_data(
     return metrics, rows
 
 
-def _select_inflation_chart_rows(
+def _select_lineage_chart_rows(
     rows: Iterable[dict[str, Any]], fields: Iterable[str]
 ) -> list[dict[str, Any]]:
     selected: list[dict[str, Any]] = []
@@ -1487,7 +1572,7 @@ def _select_inflation_chart_rows(
     return selected
 
 
-def _inflation_chart(
+def _lineage_chart(
     *,
     key: str,
     title: str,
@@ -1495,11 +1580,14 @@ def _inflation_chart(
     rows: Iterable[dict[str, Any]],
     fields: Iterable[str],
     tab: str,
+    frequency: str = "monthly",
+    include_internal: bool = True,
+    compact_point_lineage: bool = False,
 ) -> dict[str, Any] | None:
-    chart_rows = _select_inflation_chart_rows(rows, fields)
+    chart_rows = _select_lineage_chart_rows(rows, fields)
     if not chart_rows:
         return None
-    latest_lineages = []
+    latest_lineage_by_field = {}
     for field in fields:
         lineage = next(
             (
@@ -1510,7 +1598,8 @@ def _inflation_chart(
             None,
         )
         if lineage is not None:
-            latest_lineages.append(lineage)
+            latest_lineage_by_field[field] = lineage
+    latest_lineages = list(latest_lineage_by_field.values())
     if not latest_lineages:
         return None
     statuses = {item["quality_status"] for item in latest_lineages}
@@ -1520,21 +1609,67 @@ def _inflation_chart(
         quality_status = Observation.Quality.STALE
     elif Observation.Quality.FALLBACK in statuses:
         quality_status = Observation.Quality.FALLBACK
+    elif statuses == {Observation.Quality.FRESH}:
+        quality_status = Observation.Quality.FRESH
     else:
         quality_status = Observation.Quality.ESTIMATED
+
+    def lineage_batch_ids(lineage: dict[str, Any]) -> set[str]:
+        raw_values = [
+            *lineage.get("input_batch_ids", []),
+            lineage.get("batch_id"),
+        ]
+        return {
+            item.strip()
+            for raw_value in raw_values
+            for item in str(raw_value or "").split(",")
+            if item.strip()
+        }
+
+    rendered_rows = chart_rows
+    if compact_point_lineage:
+        rendered_rows = []
+        for row in chart_rows:
+            compact_row = {
+                key: value
+                for key, value in row.items()
+                if key not in {"_lineage", "_source_keys"}
+            }
+            revision_indicators = {
+                field: lineage["revision_indicator"]
+                for field, lineage in (row.get("_lineage") or {}).items()
+                if lineage.get("revision_indicator")
+            }
+            footnote_ids = {
+                field: lineage["footnote_id"]
+                for field, lineage in (row.get("_lineage") or {}).items()
+                if lineage.get("footnote_id")
+            }
+            if revision_indicators:
+                compact_row["_revision_indicators"] = revision_indicators
+            if footnote_ids:
+                compact_row["_footnote_ids"] = footnote_ids
+            rendered_rows.append(compact_row)
+
     return {
         "key": key,
         "title": title,
         "description": description,
         "kind": "line",
-        "data": chart_rows,
+        "data": rendered_rows,
+        "lineage_mode": (
+            "series-batch" if compact_point_lineage else "per-point"
+        ),
+        "series_lineage": (
+            latest_lineage_by_field if compact_point_lineage else {}
+        ),
         "source_keys": sorted(
             {
                 source_key
                 for item in latest_lineages
                 for source_key in item.get("source_keys", [])
             }
-            | {"internal"}
+            | ({"internal"} if include_internal else set())
         ),
         "as_of": min(item["as_of"] for item in latest_lineages),
         "fetched_at": max(item["fetched_at"] for item in latest_lineages),
@@ -1544,10 +1679,10 @@ def _inflation_chart(
             {
                 batch_id
                 for item in latest_lineages
-                for batch_id in item.get("input_batch_ids", [])
+                for batch_id in lineage_batch_ids(item)
             }
         ),
-        "frequency": "monthly",
+        "frequency": frequency,
         "time_axis": "date",
         "tab": tab,
     }
@@ -1578,7 +1713,7 @@ def _inflation_page_data(
         batch_id=batch_id,
     )
     charts = _existing(
-        _inflation_chart(
+        _lineage_chart(
             key="headline-cpi-rates",
             title="总体 CPI 通胀率与短周期动能",
             description=(
@@ -1589,7 +1724,7 @@ def _inflation_page_data(
             fields=["CPI 环比", "CPI 同比", "CPI 3M 年化", "CPI 6M 年化"],
             tab="headline",
         ),
-        _inflation_chart(
+        _lineage_chart(
             key="core-cpi-rates",
             title="核心 CPI 通胀率与短周期动能",
             description=(
@@ -1604,7 +1739,7 @@ def _inflation_page_data(
             ],
             tab="core",
         ),
-        _inflation_chart(
+        _lineage_chart(
             key="final-demand-ppi-rates",
             title="最终需求 PPI 通胀率与短周期动能",
             description=(
@@ -1681,6 +1816,869 @@ def _inflation_page_is_buildable(*, batch_id: uuid.UUID | str | None) -> bool:
         if not rows or not required_fields <= set(rows[-1]):
             return False
     return True
+
+
+def _fed_funds_observation_map(
+    series_key: str,
+    *,
+    batch_id: uuid.UUID | str | None,
+    limit: int = 1000,
+) -> dict[date, Observation]:
+    if batch_id is None:
+        return {}
+    return {
+        item.value_date.date(): item
+        for item in _real_observations(series_key).filter(batch_id=batch_id)[:limit]
+    }
+
+
+def _metadata_decimal(observation: Observation, field: str) -> Decimal | None:
+    raw_value = (observation.metadata or {}).get(field)
+    if raw_value is None or raw_value == "":
+        return None
+    try:
+        value = Decimal(str(raw_value))
+    except (ArithmeticError, TypeError, ValueError):
+        return None
+    return value if value.is_finite() else None
+
+
+def _fed_funds_input_lineage(
+    observations: Iterable[Observation],
+) -> list[dict[str, Any]]:
+    return [
+        {
+            "series_key": item.series.key,
+            "source_key": item.source.key,
+            "source_name": item.source.name,
+            "license_scope": item.source.license_scope,
+            "value_date": item.value_date.isoformat(),
+            "as_of": item.as_of.isoformat(),
+            "fetched_at": item.fetched_at.isoformat(),
+            "batch_id": str(item.batch_id),
+            "quality_status": item.quality_status,
+            "fallback_source": (
+                item.fallback_source.key if item.fallback_source_id else None
+            ),
+            "revision_indicator": (item.metadata or {}).get(
+                "revisionIndicator"
+            ),
+            "footnote_id": (item.metadata or {}).get("footnoteId"),
+            "prates_status": (item.metadata or {}).get("prates_status"),
+        }
+        for item in observations
+    ]
+
+
+def _fed_funds_quality(
+    current: Observation,
+    inputs: Iterable[Observation],
+    *,
+    derived: bool,
+) -> tuple[str, datetime]:
+    input_list = list(inputs)
+    statuses = {item.quality_status for item in input_list}
+    fresh_until = _fresh_until(current)
+    if Observation.Quality.ERROR in statuses:
+        return Observation.Quality.ERROR, fresh_until
+    if Observation.Quality.STALE in statuses or timezone.now() > fresh_until:
+        return Observation.Quality.STALE, fresh_until
+    if Observation.Quality.FALLBACK in statuses:
+        return Observation.Quality.FALLBACK, fresh_until
+    if derived or Observation.Quality.ESTIMATED in statuses:
+        return Observation.Quality.ESTIMATED, fresh_until
+    return Observation.Quality.FRESH, fresh_until
+
+
+def _fed_funds_payload(
+    *,
+    key: str,
+    label: str,
+    value: Decimal,
+    current: Observation,
+    inputs: Iterable[Observation],
+    unit: str,
+    decimals: int,
+    derived: bool,
+    formula: str | None = None,
+    source_field: str | None = None,
+) -> dict[str, Any]:
+    input_list = list(inputs)
+    quality_status, fresh_until = _fed_funds_quality(
+        current, input_list, derived=derived
+    )
+    input_source_keys = sorted(_observation_source_keys(*input_list))
+    input_batch_ids = sorted({str(item.batch_id) for item in input_list})
+    if unit == "bp":
+        display_value = f"{value:+,.{decimals}f}bp"
+    elif unit == " USD bn":
+        display_value = f"{value:,.{decimals}f} USD bn"
+    else:
+        display_value = f"{value:,.{decimals}f}{unit}"
+    source = (
+        "Atlas Macro 计算：" + str(formula)
+        if derived
+        else current.source.name
+        + (f" · {source_field}" if source_field else "")
+    )
+    return {
+        "key": key,
+        "label": label,
+        "value": float(value),
+        "display_value": display_value,
+        "change": None,
+        "change_unit": "",
+        "unit": unit,
+        "quality_status": quality_status,
+        "source": source,
+        "source_key": "internal" if derived else current.source.key,
+        "source_keys": sorted(
+            {*input_source_keys, *({"internal"} if derived else set())}
+        ),
+        "as_of": current.as_of.isoformat(),
+        "value_date": current.value_date.isoformat(),
+        "fetched_at": max(item.fetched_at for item in input_list).isoformat(),
+        "fresh_until": fresh_until.isoformat(),
+        "batch_id": ",".join(input_batch_ids),
+        "metadata": {
+            "formula": formula,
+            "source_field": source_field,
+            "common_effective_date": current.value_date.date().isoformat(),
+            "input_series": sorted({item.series.key for item in input_list}),
+            "source_keys": input_source_keys,
+            "input_batch_ids": input_batch_ids,
+            "input_value_dates": sorted(
+                {item.value_date.isoformat() for item in input_list}
+            ),
+            "input_lineage": _fed_funds_input_lineage(input_list),
+            "revision_indicator": (current.metadata or {}).get(
+                "revisionIndicator"
+            ),
+            "footnote_id": (current.metadata or {}).get("footnoteId"),
+            "prates_status": (current.metadata or {}).get("prates_status"),
+            "calculation_owner": "Atlas Macro" if derived else None,
+        },
+    }
+
+
+def _fed_funds_period_payloads(
+    *,
+    period: date,
+    sofr: Observation,
+    effr: Observation,
+    iorb: Observation,
+) -> dict[str, dict[str, Any]]:
+    metadata_values = {
+        "target-lower": _metadata_decimal(effr, "targetRateFrom"),
+        "target-upper": _metadata_decimal(effr, "targetRateTo"),
+        "effr-volume": _metadata_decimal(effr, "volumeInBillions"),
+        "sofr-volume": _metadata_decimal(sofr, "volumeInBillions"),
+        "effr-p1": _metadata_decimal(effr, "percentPercentile1"),
+        "effr-p25": _metadata_decimal(effr, "percentPercentile25"),
+        "effr-p75": _metadata_decimal(effr, "percentPercentile75"),
+        "effr-p99": _metadata_decimal(effr, "percentPercentile99"),
+        "sofr-p1": _metadata_decimal(sofr, "percentPercentile1"),
+        "sofr-p25": _metadata_decimal(sofr, "percentPercentile25"),
+        "sofr-p75": _metadata_decimal(sofr, "percentPercentile75"),
+        "sofr-p99": _metadata_decimal(sofr, "percentPercentile99"),
+    }
+    if any(value is None for value in metadata_values.values()):
+        return {}
+    values = {
+        key: value
+        for key, value in metadata_values.items()
+        if value is not None
+    }
+    target_width = values["target-upper"] - values["target-lower"]
+    if (
+        target_width <= 0
+        or values["effr-volume"] <= 0
+        or values["sofr-volume"] <= 0
+        or not (
+            values["effr-p1"]
+            <= values["effr-p25"]
+            <= effr.value
+            <= values["effr-p75"]
+            <= values["effr-p99"]
+        )
+        or not (
+            values["sofr-p1"]
+            <= values["sofr-p25"]
+            <= sofr.value
+            <= values["sofr-p75"]
+            <= values["sofr-p99"]
+        )
+    ):
+        return {}
+    payloads = {
+        "effr": _fed_funds_payload(
+            key="effr",
+            label="EFFR",
+            value=effr.value,
+            current=effr,
+            inputs=(effr,),
+            unit="%",
+            decimals=2,
+            derived=False,
+        ),
+        "sofr": _fed_funds_payload(
+            key="sofr",
+            label="SOFR",
+            value=sofr.value,
+            current=sofr,
+            inputs=(sofr,),
+            unit="%",
+            decimals=2,
+            derived=False,
+        ),
+        "iorb": _fed_funds_payload(
+            key="iorb",
+            label="IORB",
+            value=iorb.value,
+            current=iorb,
+            inputs=(iorb,),
+            unit="%",
+            decimals=2,
+            derived=False,
+        ),
+    }
+    direct_metadata_specs = (
+        ("target-lower", "目标区间下限", effr, "targetRateFrom", "%", 2),
+        ("target-upper", "目标区间上限", effr, "targetRateTo", "%", 2),
+        ("effr-volume", "EFFR 成交量", effr, "volumeInBillions", " USD bn", 0),
+        ("sofr-volume", "SOFR 成交量", sofr, "volumeInBillions", " USD bn", 0),
+        ("effr-p1", "EFFR 1P", effr, "percentPercentile1", "%", 2),
+        ("effr-p25", "EFFR 25P", effr, "percentPercentile25", "%", 2),
+        ("effr-p75", "EFFR 75P", effr, "percentPercentile75", "%", 2),
+        ("effr-p99", "EFFR 99P", effr, "percentPercentile99", "%", 2),
+        ("sofr-p1", "SOFR 1P", sofr, "percentPercentile1", "%", 2),
+        ("sofr-p25", "SOFR 25P", sofr, "percentPercentile25", "%", 2),
+        ("sofr-p75", "SOFR 75P", sofr, "percentPercentile75", "%", 2),
+        ("sofr-p99", "SOFR 99P", sofr, "percentPercentile99", "%", 2),
+    )
+    for key, label, observation, source_field, unit, decimals in direct_metadata_specs:
+        payloads[key] = _fed_funds_payload(
+            key=key,
+            label=label,
+            value=values[key],
+            current=observation,
+            inputs=(observation,),
+            unit=unit,
+            decimals=decimals,
+            derived=False,
+            source_field=source_field,
+        )
+    derived_specs = (
+        (
+            "sofr-effr",
+            "SOFR−EFFR",
+            (sofr.value - effr.value) * Decimal("100"),
+            (sofr, effr),
+            "100 * (SOFR - EFFR)",
+            "bp",
+            0,
+        ),
+        (
+            "sofr-iorb",
+            "SOFR−IORB",
+            (sofr.value - iorb.value) * Decimal("100"),
+            (sofr, iorb),
+            "100 * (SOFR - IORB)",
+            "bp",
+            0,
+        ),
+        (
+            "effr-iorb",
+            "EFFR−IORB",
+            (effr.value - iorb.value) * Decimal("100"),
+            (effr, iorb),
+            "100 * (EFFR - IORB)",
+            "bp",
+            0,
+        ),
+        (
+            "effr-p1-p99-width",
+            "EFFR 1P−99P 宽度",
+            (values["effr-p99"] - values["effr-p1"]) * Decimal("100"),
+            (effr,),
+            "100 * (EFFR_99P - EFFR_1P)",
+            "bp",
+            0,
+        ),
+        (
+            "sofr-p1-p99-width",
+            "SOFR 1P−99P 宽度",
+            (values["sofr-p99"] - values["sofr-p1"]) * Decimal("100"),
+            (sofr,),
+            "100 * (SOFR_99P - SOFR_1P)",
+            "bp",
+            0,
+        ),
+        (
+            "effr-corridor-position",
+            "EFFR 走廊位置",
+            (
+                (effr.value - values["target-lower"])
+                / target_width
+                * Decimal("100")
+            ),
+            (effr,),
+            "100 * (EFFR - target_lower) / (target_upper - target_lower)",
+            "%",
+            1,
+        ),
+    )
+    for key, label, value, inputs, formula, unit, decimals in derived_specs:
+        payloads[key] = _fed_funds_payload(
+            key=key,
+            label=label,
+            value=value,
+            current=inputs[0],
+            inputs=inputs,
+            unit=unit,
+            decimals=decimals,
+            derived=True,
+            formula=formula,
+        )
+    if any(
+        payload["metadata"]["common_effective_date"] != period.isoformat()
+        for payload in payloads.values()
+    ):
+        return {}
+    return payloads
+
+
+def _fed_funds_lineage(payload: dict[str, Any]) -> dict[str, Any]:
+    metadata = payload["metadata"]
+    input_lineage = metadata["input_lineage"]
+    return {
+        "series_key": payload["key"],
+        "source_key": payload["source_key"],
+        "source_name": payload["source"],
+        "source_keys": payload["source_keys"],
+        "value_date": payload["value_date"],
+        "as_of": payload["as_of"],
+        "fetched_at": payload["fetched_at"],
+        "fresh_until": payload["fresh_until"],
+        "batch_id": payload["batch_id"],
+        "quality_status": payload["quality_status"],
+        "license_scope": (
+            "Original calculation from attributed official inputs"
+            if payload["source_key"] == "internal"
+            else input_lineage[0]["license_scope"]
+        ),
+        "fallback_source": None,
+        "source_field": metadata.get("source_field"),
+        "revision_indicator": metadata.get("revision_indicator"),
+        "footnote_id": metadata.get("footnote_id"),
+        "prates_status": metadata.get("prates_status"),
+    }
+
+
+def _fed_funds_chart_row(
+    *,
+    period: date,
+    payloads: dict[str, dict[str, Any]],
+    fields: dict[str, str],
+) -> dict[str, Any]:
+    row: dict[str, Any] = {
+        "date": period.isoformat(),
+        "_source_keys": [],
+        "_lineage": {},
+    }
+    for payload_key, label in fields.items():
+        payload = payloads[payload_key]
+        row[label] = payload["value"]
+        row["_lineage"][label] = _fed_funds_lineage(payload)
+        row["_source_keys"] = sorted(
+            {*row["_source_keys"], *payload["source_keys"]}
+        )
+    return row
+
+
+def _fed_funds_page_data(
+    *,
+    dataset_batches: dict[str, uuid.UUID | str] | None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    batches = dataset_batches or {}
+    observations = {
+        key: _fed_funds_observation_map(
+            key,
+            batch_id=batches.get(key),
+            limit=2000 if key == "iorb" else 800,
+        )
+        for key in FED_FUNDS_DATASETS
+    }
+    if any(not values for values in observations.values()):
+        return [], [], []
+    today_et = timezone.now().astimezone(
+        ZoneInfo("America/New_York")
+    ).date()
+    market_dates = {
+        period
+        for period in set(observations["sofr"]) & set(observations["effr"])
+        if period <= today_et
+    }
+    if not market_dates:
+        return [], [], []
+    latest_market_date = max(market_dates)
+    latest_iorb = observations["iorb"].get(latest_market_date)
+    if latest_iorb is None or not _fed_funds_period_payloads(
+        period=latest_market_date,
+        sofr=observations["sofr"][latest_market_date],
+        effr=observations["effr"][latest_market_date],
+        iorb=latest_iorb,
+    ):
+        return [], [], []
+    periods = sorted(
+        period for period in market_dates if period in observations["iorb"]
+    )
+    period_payloads: dict[date, dict[str, dict[str, Any]]] = {}
+    corridor_rows = []
+    effr_rows = []
+    sofr_rows = []
+    for period in periods:
+        payloads = _fed_funds_period_payloads(
+            period=period,
+            sofr=observations["sofr"][period],
+            effr=observations["effr"][period],
+            iorb=observations["iorb"][period],
+        )
+        if not payloads:
+            continue
+        period_payloads[period] = payloads
+        corridor_rows.append(
+            _fed_funds_chart_row(
+                period=period,
+                payloads=payloads,
+                fields={
+                    "target-lower": "目标下限",
+                    "target-upper": "目标上限",
+                    "iorb": "IORB",
+                    "effr": "EFFR",
+                    "sofr": "SOFR",
+                },
+            )
+        )
+        effr_rows.append(
+            _fed_funds_chart_row(
+                period=period,
+                payloads=payloads,
+                fields={
+                    "effr-p1": "EFFR 1P",
+                    "effr-p25": "EFFR 25P",
+                    "effr": "EFFR",
+                    "effr-p75": "EFFR 75P",
+                    "effr-p99": "EFFR 99P",
+                },
+            )
+        )
+        sofr_rows.append(
+            _fed_funds_chart_row(
+                period=period,
+                payloads=payloads,
+                fields={
+                    "sofr-p1": "SOFR 1P",
+                    "sofr-p25": "SOFR 25P",
+                    "sofr": "SOFR",
+                    "sofr-p75": "SOFR 75P",
+                    "sofr-p99": "SOFR 99P",
+                },
+            )
+        )
+    if not period_payloads:
+        return [], [], []
+    latest_period = max(period_payloads)
+    if latest_period != latest_market_date:
+        return [], [], []
+    latest = period_payloads[latest_period]
+    previous = period_payloads.get(
+        max((period for period in period_payloads if period < latest_period), default=None)
+    )
+    metric_order = (
+        "effr",
+        "sofr",
+        "iorb",
+        "target-lower",
+        "target-upper",
+        "sofr-effr",
+        "sofr-iorb",
+        "effr-iorb",
+        "effr-volume",
+        "sofr-volume",
+        "effr-p1-p99-width",
+        "sofr-p1-p99-width",
+        "effr-corridor-position",
+    )
+    metrics = [dict(latest[key]) for key in metric_order]
+    rate_keys = {"effr", "sofr", "iorb", "target-lower", "target-upper"}
+    volume_keys = {"effr-volume", "sofr-volume"}
+    for metric in metrics:
+        key = metric["key"]
+        if previous and key in previous:
+            factor = Decimal("100") if key in rate_keys else Decimal("1")
+            change = (
+                Decimal(str(metric["value"]))
+                - Decimal(str(previous[key]["value"]))
+            ) * factor
+            metric["change"] = round(float(change), 2)
+            metric["change_unit"] = (
+                " USD bn" if key in volume_keys else "bp" if key != "effr-corridor-position" else "pp"
+            )
+    charts = _existing(
+        _lineage_chart(
+            key="policy-corridor",
+            title="政策走廊与隔夜市场利率",
+            description=(
+                "EFFR、SOFR 与 IORB 严格对齐到共同有效日；目标区间来自 NY Fed。单位：%。"
+            ),
+            rows=corridor_rows,
+            fields=["目标下限", "目标上限", "IORB", "EFFR", "SOFR"],
+            tab="corridor",
+            frequency="daily",
+            include_internal=False,
+            compact_point_lineage=True,
+        ),
+        _lineage_chart(
+            key="effr-distribution",
+            title="EFFR 成交分布",
+            description="NY Fed 官方 1P/25P/75P/99P 与发布利率，单位：%。",
+            rows=effr_rows,
+            fields=["EFFR 1P", "EFFR 25P", "EFFR", "EFFR 75P", "EFFR 99P"],
+            tab="effr",
+            frequency="daily",
+            include_internal=False,
+            compact_point_lineage=True,
+        ),
+        _lineage_chart(
+            key="sofr-distribution",
+            title="SOFR 成交分布",
+            description="NY Fed 官方 1P/25P/75P/99P 与发布利率，单位：%。",
+            rows=sofr_rows,
+            fields=["SOFR 1P", "SOFR 25P", "SOFR", "SOFR 75P", "SOFR 99P"],
+            tab="sofr",
+            frequency="daily",
+            include_internal=False,
+            compact_point_lineage=True,
+        ),
+    )
+    latest_distribution = [
+        latest[key]
+        for key in (
+            "effr-p1",
+            "effr-p25",
+            "effr",
+            "effr-p75",
+            "effr-p99",
+            "effr-volume",
+            "sofr-p1",
+            "sofr-p25",
+            "sofr",
+            "sofr-p75",
+            "sofr-p99",
+            "sofr-volume",
+        )
+    ]
+    sections = [
+        {
+            "title": f"{latest_period.isoformat()} 官方分布与成交量",
+            "description": (
+                "分位与成交量直接取 NY Fed reference-rate 响应；"
+                "成交量单位为十亿美元。"
+            ),
+            "rows": latest_distribution,
+            "full_width": True,
+        },
+        {
+            "title": "共同有效日与发布规则",
+            "body": (
+                "当前值只取 SOFR、EFFR 与 IORB 日期交集中的最新美国东部有效日。"
+                "PRATES 已公布的周末或未来 IORB 不会与尚未发布的 NY Fed 利率混算；"
+                "任一必需数据集失败时继续保留上一版完整快照并标记 stale。"
+            ),
+            "full_width": True,
+        },
+    ]
+    return metrics, charts, sections
+
+
+def _fed_funds_page_contract_is_buildable(
+    metrics: list[dict[str, Any]], charts: list[dict[str, Any]]
+) -> bool:
+    metric_keys = {str(item.get("key") or "") for item in metrics}
+    expected_chart_keys = {
+        "policy-corridor",
+        "effr-distribution",
+        "sofr-distribution",
+    }
+    if (
+        not FED_FUNDS_REQUIRED_METRIC_KEYS <= metric_keys
+        or {str(item.get("key") or "") for item in charts}
+        != expected_chart_keys
+    ):
+        return False
+    value_dates = {item.get("value_date") for item in metrics}
+    if len(value_dates) != 1:
+        return False
+    for item in metrics:
+        if item.get("quality_status") in {
+            Observation.Quality.ERROR,
+            Observation.Quality.STALE,
+        }:
+            return False
+        input_dates = set((item.get("metadata") or {}).get("input_value_dates", []))
+        if len(input_dates) != 1 or input_dates != value_dates:
+            return False
+    for chart in charts:
+        rows = chart.get("data") or []
+        chart_dates = [
+            date.fromisoformat(str(row.get("date")))
+            for row in rows
+            if isinstance(row, dict) and row.get("date")
+        ]
+        if len(chart_dates) != len(rows) or not chart_dates:
+            return False
+        latest_chart_date = max(chart_dates)
+        if min(chart_dates) > _month_offset(latest_chart_date, 36):
+            return False
+    return True
+
+
+def _fed_funds_page_is_buildable(
+    *, dataset_batches: dict[str, uuid.UUID | str] | None
+) -> bool:
+    metrics, charts, _ = _fed_funds_page_data(dataset_batches=dataset_batches)
+    return _fed_funds_page_contract_is_buildable(metrics, charts)
+
+
+def _fed_funds_run_identity(run: IngestionRun) -> str | None:
+    for key, (source_key, dataset) in FED_FUNDS_DATASETS.items():
+        if run.source.key == source_key and run.dataset == dataset:
+            return key
+    return None
+
+
+def _latest_fed_funds_attempt(identity: str) -> IngestionRun | None:
+    source_key, dataset = FED_FUNDS_DATASETS[identity]
+    return (
+        IngestionRun.objects.filter(source__key=source_key, dataset=dataset)
+        .order_by("-started_at", "-id")
+        .first()
+    )
+
+
+def _fed_funds_run_state(
+    identity: str, run: IngestionRun | None
+) -> dict[str, Any]:
+    source_key, dataset = FED_FUNDS_DATASETS[identity]
+    return {
+        "component": identity,
+        "source": source_key,
+        "dataset": dataset,
+        "status": run.status if run else "missing",
+        "row_count": run.row_count if run else 0,
+        "error": (run.error if run else "required dataset run missing")[:240],
+        "batch_id": str(run.batch_id) if run else None,
+        "refresh_cycle_id": (
+            str((run.metadata or {}).get("refresh_cycle_id") or "")
+            if run
+            else ""
+        ),
+    }
+
+
+def _select_fed_funds_runs(
+    trigger_runs: Iterable[IngestionRun],
+) -> tuple[dict[str, IngestionRun] | None, list[dict[str, Any]], bool]:
+    relevant: dict[str, list[IngestionRun]] = {
+        key: [] for key in FED_FUNDS_DATASETS
+    }
+    for run in trigger_runs:
+        identity = _fed_funds_run_identity(run)
+        if identity:
+            relevant[identity].append(run)
+    triggered = any(relevant.values())
+    if not triggered:
+        return None, [], False
+
+    for identity, runs in relevant.items():
+        if not runs:
+            continue
+        latest_attempt = _latest_fed_funds_attempt(identity)
+        if latest_attempt is None or any(
+            run.pk != latest_attempt.pk for run in runs
+        ):
+            return None, [], False
+
+    ny_fed_triggered = bool(relevant["sofr"] or relevant["effr"])
+    prates_triggered = bool(relevant["iorb"])
+    selected: dict[str, IngestionRun | None] = {}
+    for identity in FED_FUNDS_DATASETS:
+        if (identity in {"sofr", "effr"} and ny_fed_triggered) or (
+            identity == "iorb" and prates_triggered
+        ):
+            selected[identity] = (
+                relevant[identity][0]
+                if len(relevant[identity]) == 1
+                else None
+            )
+        else:
+            selected[identity] = _latest_fed_funds_attempt(identity)
+
+    states = [
+        _fed_funds_run_state(identity, selected[identity])
+        for identity in FED_FUNDS_DATASETS
+    ]
+    if any(
+        run is None
+        or run.status != IngestionRun.Status.SUCCESS
+        or run.row_count <= 0
+        for run in selected.values()
+    ):
+        return None, states, True
+    sofr_cycle = str(
+        (selected["sofr"].metadata or {}).get("refresh_cycle_id") or ""
+    )
+    effr_cycle = str(
+        (selected["effr"].metadata or {}).get("refresh_cycle_id") or ""
+    )
+    if not sofr_cycle or sofr_cycle != effr_cycle:
+        return None, states, True
+    complete = {
+        key: run for key, run in selected.items() if run is not None
+    }
+    return complete, states, True
+
+
+def _mark_fed_funds_stale(
+    states: list[dict[str, Any]], *, reason: str
+) -> None:
+    checked_at = timezone.now().isoformat()
+    with transaction.atomic():
+        latest = (
+            DashboardSnapshot.objects.select_for_update()
+            .filter(key="fed-funds", is_published=True)
+            .exclude(source__key="demo-market")
+            .order_by("-created_at")
+            .first()
+        )
+        if latest is None:
+            return
+        data = dict(latest.data or {})
+        data["refresh_failure"] = {
+            "checked_at": checked_at,
+            "reason": reason,
+            "sources": states,
+        }
+        latest.data = data
+        latest.quality_status = Observation.Quality.STALE
+        latest.save(update_fields=["data", "quality_status", "updated_at"])
+
+
+def _latest_fed_funds_snapshot() -> DashboardSnapshot | None:
+    return (
+        DashboardSnapshot.objects.filter(key="fed-funds", is_published=True)
+        .exclude(source__key="demo-market")
+        .order_by("-created_at")
+        .first()
+    )
+
+
+def _fed_funds_snapshot_effective_date(
+    snapshot: DashboardSnapshot,
+) -> date:
+    metric_dates = {
+        str((item.get("metadata") or {}).get("common_effective_date") or "")
+        for item in (snapshot.data or {}).get("metrics", [])
+        if (item.get("metadata") or {}).get("common_effective_date")
+    }
+    if len(metric_dates) == 1:
+        try:
+            return date.fromisoformat(metric_dates.pop())
+        except ValueError:
+            pass
+    return snapshot.as_of.date()
+
+
+@transaction.atomic
+def _coordinate_fed_funds_dashboard(
+    trigger_runs: Iterable[IngestionRun],
+) -> tuple[list[DashboardSnapshot], set[str]]:
+    list(
+        Source.objects.select_for_update()
+        .filter(
+            key__in={source_key for source_key, _ in FED_FUNDS_DATASETS.values()}
+        )
+        .order_by("key")
+        .values_list("pk", flat=True)
+    )
+    selected, states, triggered = _select_fed_funds_runs(trigger_runs)
+    if not triggered:
+        return [], set()
+    if selected is None:
+        _mark_fed_funds_stale(
+            states,
+            reason=(
+                "最近一次 SOFR、EFFR 或 PRATES 必需数据集未成功完成，或"
+                "NY Fed 两条参考利率不属于同一刷新周期；继续保留上一版完整快照。"
+            ),
+        )
+        return [], {"fed-funds"}
+    dataset_batches = {
+        key: run.batch_id for key, run in selected.items()
+    }
+    prepared_page_data = _fed_funds_page_data(
+        dataset_batches=dataset_batches
+    )
+    metrics, charts, _ = prepared_page_data
+    if not _fed_funds_page_contract_is_buildable(metrics, charts):
+        _mark_fed_funds_stale(
+            states,
+            reason=(
+                "三个必需数据集没有可发布的非未来共同有效日，或政策走廊、"
+                "分位、成交量、许可及批次完整性检查未通过；继续保留上一版。"
+            ),
+        )
+        return [], {"fed-funds"}
+    candidate_date = date.fromisoformat(
+        str(metrics[0]["metadata"]["common_effective_date"])
+    )
+    latest_snapshot = _latest_fed_funds_snapshot()
+    if (
+        latest_snapshot is not None
+        and candidate_date
+        < _fed_funds_snapshot_effective_date(latest_snapshot)
+    ):
+        _mark_fed_funds_stale(
+            states,
+            reason=(
+                "本批次最新共同有效日早于当前已发布快照，拒绝回退并继续"
+                "保留上一版完整数据。"
+            ),
+        )
+        return [], {"fed-funds"}
+    dashboards = publish_official_dashboards(
+        keys={"fed-funds"},
+        dataset_batches=dataset_batches,
+        prepared_fed_funds_data=prepared_page_data,
+    )
+    latest_snapshot = _latest_fed_funds_snapshot()
+    expected_batches = {str(item) for item in dataset_batches.values()}
+    if (
+        latest_snapshot is None
+        or set((latest_snapshot.data or {}).get("component_batches", []))
+        != expected_batches
+        or (latest_snapshot.data or {}).get("refresh_failure")
+    ):
+        _mark_fed_funds_stale(
+            states,
+            reason=(
+                "Fed Funds 发布后置条件未满足，继续保留上一版完整快照并"
+                "等待下一次双源刷新。"
+            ),
+        )
+        return [], {"fed-funds"}
+    return dashboards, set()
 
 
 def _gdp_vintage_chart_and_section() -> tuple[
@@ -1915,7 +2913,9 @@ def _sofr_market_metrics() -> list[dict[str, Any]]:
                 },
             }
         )
-        iorb = _real_observations("IORB").first()
+        iorb = _real_observations("IORB").filter(
+            value_date__date=latest.value_date.date()
+        ).first()
         if iorb is not None:
             iorb_tail = (Decimal(str(percentile_99)) - iorb.value) * Decimal("100")
             iorb_fresh_until = min(fresh_until, _fresh_until(iorb))
@@ -1939,14 +2939,21 @@ def _sofr_market_metrics() -> list[dict[str, Any]]:
                     ),
                     "source_key": "internal",
                     "source_keys": source_keys,
-                    "as_of": min(latest.as_of, iorb.as_of).isoformat(),
-                    "value_date": min(latest.value_date, iorb.value_date).isoformat(),
+                    "as_of": latest.as_of.isoformat(),
+                    "value_date": latest.value_date.isoformat(),
                     "fetched_at": max(latest.fetched_at, iorb.fetched_at).isoformat(),
                     "fresh_until": iorb_fresh_until.isoformat(),
                     "batch_id": f"{latest.batch_id},{iorb.batch_id}",
                     "metadata": {
                         "formula": "SOFR percentPercentile99 - IORB",
                         "source_keys": sorted(input_source_keys),
+                        "input_series": ["iorb", "sofr"],
+                        "input_batch_ids": sorted(
+                            {str(latest.batch_id), str(iorb.batch_id)}
+                        ),
+                        "input_value_dates": [
+                            latest.value_date.isoformat()
+                        ],
                     },
                 }
             )
@@ -2369,6 +3376,86 @@ def _publish_dashboard(
         ).encode()
     ).hexdigest()
     snapshot_data["fingerprint"] = fingerprint
+
+    def metric_metadata(item: dict[str, Any]) -> dict[str, Any]:
+        component_metadata = item.get("metadata") or {}
+        return {
+            "component_batch_id": item.get("batch_id"),
+            "formula": component_metadata.get("formula"),
+            "source_field": component_metadata.get("source_field"),
+            "common_effective_date": component_metadata.get(
+                "common_effective_date"
+            ),
+            "input_series": component_metadata.get("input_series", []),
+            "source_keys": item.get("source_keys", []),
+            "input_batch_ids": component_metadata.get(
+                "input_batch_ids", []
+            ),
+            "input_value_dates": component_metadata.get(
+                "input_value_dates", []
+            ),
+            "input_lineage": component_metadata.get("input_lineage", []),
+            "seasonal_basis": component_metadata.get("seasonal_basis"),
+            "preliminary": bool(component_metadata.get("preliminary")),
+            "revision_indicator": component_metadata.get(
+                "revision_indicator"
+            ),
+            "footnote_id": component_metadata.get("footnote_id"),
+            "prates_status": component_metadata.get("prates_status"),
+            "calculation_owner": component_metadata.get(
+                "calculation_owner"
+            ),
+            "public_snapshot": True,
+        }
+
+    def parsed_datetime(raw_value: Any, fallback: datetime) -> datetime:
+        if not raw_value:
+            return fallback
+        parsed = datetime.fromisoformat(str(raw_value))
+        return parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed
+
+    def store_metric(item: dict[str, Any], metric_batch_id: uuid.UUID) -> None:
+        item_value = item.get("value")
+        if item_value is None:
+            return
+        component_source = (
+            Source.objects.filter(key=item.get("source_key", "")).first()
+            or source
+        )
+        component_fallback_source = Source.objects.filter(
+            key=item.get("fallback_source", "")
+        ).first()
+        value_date = parsed_datetime(
+            item.get("value_date") or item.get("as_of"), as_of
+        )
+        item_as_of = parsed_datetime(item.get("as_of"), value_date)
+        fetched_at = parsed_datetime(item.get("fetched_at"), timezone.now())
+        MetricSnapshot.objects.update_or_create(
+            key=f"{key}-{item.get('key', item['label']).lower()}",
+            batch_id=metric_batch_id,
+            defaults={
+                "label": item["label"],
+                "value": Decimal(str(item_value)),
+                "display_value": item.get("display_value", ""),
+                "change": (
+                    Decimal(str(item["change"]))
+                    if item.get("change") is not None
+                    else None
+                ),
+                "unit": item.get("unit", ""),
+                "value_date": value_date,
+                "as_of": item_as_of,
+                "fetched_at": fetched_at,
+                "source": component_source,
+                "fallback_source": component_fallback_source,
+                "quality_status": item.get(
+                    "quality_status", Observation.Quality.FRESH
+                ),
+                "license_scope": component_source.license_scope[:120],
+                "metadata": metric_metadata(item),
+            },
+        )
+
     latest = (
         DashboardSnapshot.objects.filter(key=key, is_published=True)
         .exclude(source__key="demo-market")
@@ -2376,75 +3463,18 @@ def _publish_dashboard(
         .first()
     )
     if latest and latest.data.get("fingerprint") == fingerprint:
-        latest_data = dict(latest.data or {})
-        refresh_failure = latest_data.pop("refresh_failure", None)
-        if refresh_failure or latest.quality_status != quality:
-            latest.data = latest_data
-            latest.quality_status = quality
-            latest.save(update_fields=["data", "quality_status", "updated_at"])
+        snapshot_data["publication_batch_id"] = str(latest.batch_id)
+        latest.data = snapshot_data
+        latest.as_of = as_of
+        latest.quality_status = quality
+        latest.save(
+            update_fields=["data", "as_of", "quality_status", "updated_at"]
+        )
+        for item in metrics:
+            store_metric(item, latest.batch_id)
         return None
     for item in metrics:
-        item_value = item.get("value")
-        if item_value is None:
-            continue
-        component_source = Source.objects.filter(key=item.get("source_key", "")).first() or source
-        component_fallback_source = Source.objects.filter(
-            key=item.get("fallback_source", "")
-        ).first()
-        value_date = datetime.fromisoformat(item["as_of"]) if item.get("as_of") else as_of
-        if value_date.tzinfo is None:
-            value_date = value_date.replace(tzinfo=UTC)
-        fetched_at = (
-            datetime.fromisoformat(item["fetched_at"])
-            if item.get("fetched_at")
-            else timezone.now()
-        )
-        if fetched_at.tzinfo is None:
-            fetched_at = fetched_at.replace(tzinfo=UTC)
-        MetricSnapshot.objects.update_or_create(
-            key=f"{key}-{item.get('key', item['label']).lower()}",
-            batch_id=batch_id,
-            defaults={
-                "label": item["label"],
-                "value": Decimal(str(item_value)),
-                "display_value": item.get("display_value", ""),
-                "change": (
-                    Decimal(str(item["change"])) if item.get("change") is not None else None
-                ),
-                "unit": item.get("unit", ""),
-                "value_date": value_date,
-                "as_of": value_date,
-                "fetched_at": fetched_at,
-                "source": component_source,
-                "fallback_source": component_fallback_source,
-                "quality_status": item.get("quality_status", Observation.Quality.FRESH),
-                "license_scope": component_source.license_scope[:120],
-                "metadata": {
-                    "component_batch_id": item.get("batch_id"),
-                    "formula": (item.get("metadata") or {}).get("formula"),
-                    "input_series": (item.get("metadata") or {}).get(
-                        "input_series", []
-                    ),
-                    "source_keys": item.get("source_keys", []),
-                    "input_batch_ids": (item.get("metadata") or {}).get(
-                        "input_batch_ids", []
-                    ),
-                    "input_value_dates": (item.get("metadata") or {}).get(
-                        "input_value_dates", []
-                    ),
-                    "input_lineage": (item.get("metadata") or {}).get(
-                        "input_lineage", []
-                    ),
-                    "seasonal_basis": (item.get("metadata") or {}).get(
-                        "seasonal_basis"
-                    ),
-                    "preliminary": bool(
-                        (item.get("metadata") or {}).get("preliminary")
-                    ),
-                    "public_snapshot": True,
-                },
-            },
-        )
+        store_metric(item, batch_id)
     return DashboardSnapshot.objects.create(
         key=key,
         title=title,
@@ -2475,12 +3505,20 @@ def publish_official_dashboards(
     *,
     keys: Iterable[str] | None = None,
     source_batches: dict[str, uuid.UUID | str] | None = None,
+    dataset_batches: dict[str, uuid.UUID | str] | None = None,
+    prepared_fed_funds_data: tuple[
+        list[dict[str, Any]],
+        list[dict[str, Any]],
+        list[dict[str, Any]],
+    ]
+    | None = None,
 ) -> list[DashboardSnapshot]:
     """Atomically publish only the dashboards affected by a completed source batch."""
 
     batch_id = uuid.uuid4()
     selected_keys = set(keys) if keys is not None else None
     normalized_source_batches = dict(source_batches or {})
+    normalized_dataset_batches = dict(dataset_batches or {})
     if source_batches is None and (
         selected_keys is None or "inflation" in selected_keys
     ):
@@ -2502,6 +3540,9 @@ def publish_official_dashboards(
     inflation_metrics: list[dict[str, Any]] = []
     inflation_charts: list[dict[str, Any]] = []
     inflation_sections: list[dict[str, Any]] = []
+    fed_funds_metrics: list[dict[str, Any]] = []
+    fed_funds_charts: list[dict[str, Any]] = []
+    fed_funds_sections: list[dict[str, Any]] = []
     gdp_vintage_chart: dict[str, Any] | None = None
     gdp_vintage_section: dict[str, Any] | None = None
     if selected_keys is None or "gdp" in selected_keys:
@@ -2642,6 +3683,21 @@ def publish_official_dashboards(
         ) = _inflation_page_data(
             batch_id=normalized_source_batches.get("bls")
         )
+    if selected_keys is None or "fed-funds" in selected_keys:
+        if prepared_fed_funds_data is not None:
+            (
+                fed_funds_metrics,
+                fed_funds_charts,
+                fed_funds_sections,
+            ) = prepared_fed_funds_data
+        elif dataset_batches:
+            (
+                fed_funds_metrics,
+                fed_funds_charts,
+                fed_funds_sections,
+            ) = _fed_funds_page_data(
+                dataset_batches=normalized_dataset_batches
+            )
     dashboards: list[DashboardSnapshot] = []
     definitions = [
         {
@@ -2676,8 +3732,12 @@ def publish_official_dashboards(
                     "ONRRP", "ON RRP", decimals=3, scale=Decimal("0.001"), suffix=" USD bn"
                 ),
                 _metric("TGA", "TGA", scale=Decimal("0.001"), suffix=" USD bn"),
-                _metric("SOFR", "SOFR", suffix="%"),
-                _metric("IORB", "IORB", suffix="%"),
+                _metric(
+                    "SOFR", "SOFR", suffix="%", aligned_with=("EFFR", "IORB")
+                ),
+                _metric(
+                    "IORB", "IORB", suffix="%", aligned_with=("SOFR", "EFFR")
+                ),
                 _derived_metric("sofr-effr", "SOFR−EFFR", "SOFR", "EFFR", basis_points=True),
                 _derived_metric("sofr-iorb", "SOFR−IORB", "SOFR", "IORB", basis_points=True),
             ),
@@ -2693,8 +3753,12 @@ def publish_official_dashboards(
                 _metric(
                     "ONRRP", "ON RRP", decimals=3, scale=Decimal("0.001"), suffix=" USD bn"
                 ),
-                _metric("SOFR", "SOFR", suffix="%"),
-                _metric("IORB", "IORB", suffix="%"),
+                _metric(
+                    "SOFR", "SOFR", suffix="%", aligned_with=("EFFR", "IORB")
+                ),
+                _metric(
+                    "IORB", "IORB", suffix="%", aligned_with=("SOFR", "EFFR")
+                ),
                 _derived_metric("sofr-effr", "SOFR−EFFR", "SOFR", "EFFR", basis_points=True),
                 _derived_metric("sofr-iorb", "SOFR−IORB", "SOFR", "IORB", basis_points=True),
                 _metric(
@@ -2704,7 +3768,10 @@ def publish_official_dashboards(
                     suffix=" USD mn",
                 ),
             ),
-            "chart_data": _history_rows({"SOFR": "SOFR", "EFFR": "EFFR", "IORB": "IORB"}),
+            "chart_data": _history_rows(
+                {"SOFR": "SOFR", "EFFR": "EFFR", "IORB": "IORB"},
+                require_all=True,
+            ),
         },
         {
             "key": "fed-balance-sheet",
@@ -2743,24 +3810,30 @@ def publish_official_dashboards(
         {
             "key": "fed-funds",
             "title": "联邦基金利率",
-            "summary": "SOFR 与 EFFR 直接来自纽约联储，IORB 直接来自 Federal Reserve PRATES；每个卡片单独标记有效日期。",
-            "metrics": _existing(
-                _metric("EFFR", "EFFR", suffix="%"),
-                _metric("SOFR", "SOFR", suffix="%"),
-                _metric("IORB", "IORB", suffix="%"),
-                _derived_metric("sofr-effr", "SOFR−EFFR", "SOFR", "EFFR", basis_points=True),
-                _derived_metric("sofr-iorb", "SOFR−IORB", "SOFR", "IORB", basis_points=True),
+            "summary": (
+                "SOFR、EFFR、IORB 与政策目标区间严格对齐到最新非未来共同"
+                "有效日；目标上下限、分位和成交量直接来自 NY Fed，IORB 直接"
+                "来自 Federal Reserve PRATES，所有差值保留三数据集批次血缘。"
             ),
-            "chart_data": _history_rows({"SOFR": "SOFR", "EFFR": "EFFR", "IORB": "IORB"}),
+            "metrics": fed_funds_metrics,
+            "charts": fed_funds_charts,
+            "sections": fed_funds_sections,
+            "required_metric_keys": FED_FUNDS_REQUIRED_METRIC_KEYS,
         },
         {
             "key": "rates",
             "title": "利率",
             "summary": "政策利率取纽约联储，国债收益率取美国财政部官方日曲线。",
             "metrics": _existing(
-                _metric("EFFR", "EFFR", suffix="%"),
-                _metric("SOFR", "SOFR", suffix="%"),
-                _metric("IORB", "IORB", suffix="%"),
+                _metric(
+                    "EFFR", "EFFR", suffix="%", aligned_with=("SOFR", "IORB")
+                ),
+                _metric(
+                    "SOFR", "SOFR", suffix="%", aligned_with=("EFFR", "IORB")
+                ),
+                _metric(
+                    "IORB", "IORB", suffix="%", aligned_with=("SOFR", "EFFR")
+                ),
                 _metric("UST-2Y", "2Y", suffix="%"),
                 _metric("UST-10Y", "10Y", suffix="%"),
                 _derived_metric("2s10s", "2s10s", "UST-10Y", "UST-2Y", basis_points=True),
@@ -2947,7 +4020,7 @@ def publish_official_dashboards(
             "summary": "SOFR 尾分位、成交量与常备回购取纽约联储底层数据，IORB 取 Federal Reserve PRATES；早午两场按日合并，小额技术测试不解读为压力。",
             "metrics": _existing(
                 *sofr_market_metrics,
-                _metric("IORB", "IORB", suffix="%"),
+                _metric("IORB", "IORB", suffix="%", aligned_with=("SOFR",)),
                 _derived_metric("sofr-iorb", "SOFR−IORB", "SOFR", "IORB", basis_points=True),
                 _metric("SRP", "常备回购", decimals=0, suffix=" USD mn"),
                 _metric("SRP-RATE", "常备回购利率", suffix="%"),
@@ -3097,13 +4170,14 @@ def refresh_official_data(*, current_year: int | None = None) -> dict[str, Any]:
     """Fetch direct official sources, normalize observations, then publish pages."""
 
     year = current_year or timezone.now().year
+    refresh_cycle_id = str(uuid.uuid4())
     runs: list[IngestionRun] = []
     providers = [
         (
             NYFedMarketsProvider(),
             (
-                ("sofr", {"limit": 120}),
-                ("effr", {"limit": 120}),
+                ("sofr", {"limit": 800}),
+                ("effr", {"limit": 800}),
                 ("reverse_repo_results", {"limit": 120}),
                 ("standing_repo_results", {"limit": 240}),
                 ("soma_summary", {"limit": 260}),
@@ -3173,6 +4247,10 @@ def refresh_official_data(*, current_year: int | None = None) -> dict[str, Any]:
             for call in calls:
                 method_name, kwargs, *persist_override = call
                 result = getattr(provider, method_name)(**kwargs)
+                result.metadata = {
+                    **result.metadata,
+                    "refresh_cycle_id": refresh_cycle_id,
+                }
                 persist = persist_override[0] if persist_override else store_series_observations
                 runs.append(record_provider_result(result, persist=persist))
     finally:
@@ -3236,6 +4314,11 @@ def refresh_official_data(*, current_year: int | None = None) -> dict[str, Any]:
             )
         )
     stale_dashboard_keys = stale_employment_keys | stale_inflation_keys
+    fed_funds_dashboards, stale_fed_funds_keys = (
+        _coordinate_fed_funds_dashboard(runs)
+    )
+    dashboards.extend(fed_funds_dashboards)
+    stale_dashboard_keys |= stale_fed_funds_keys
     return {
         "runs": [
             {
@@ -3287,6 +4370,10 @@ def refresh_prates_data() -> dict[str, Any]:
     provider = FederalReservePRATESProvider()
     try:
         result = provider.iorb()
+        result.metadata = {
+            **result.metadata,
+            "refresh_cycle_id": str(uuid.uuid4()),
+        }
         run = record_provider_result(result, persist=_store_prates_observations)
     finally:
         provider.close()
@@ -3295,6 +4382,10 @@ def refresh_prates_data() -> dict[str, Any]:
         if _has_publishable_run([run])
         else []
     )
+    fed_funds_dashboards, stale_fed_funds_keys = (
+        _coordinate_fed_funds_dashboard([run])
+    )
+    dashboards.extend(fed_funds_dashboards)
     return {
         "runs": [
             {
@@ -3307,6 +4398,7 @@ def refresh_prates_data() -> dict[str, Any]:
             }
         ],
         "dashboard_keys": [dashboard.key for dashboard in dashboards],
+        "stale_dashboard_keys": sorted(stale_fed_funds_keys),
     }
 
 

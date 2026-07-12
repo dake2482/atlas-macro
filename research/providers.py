@@ -311,21 +311,40 @@ class NYFedMarketsProvider(HTTPProvider):
 
     def reference_rate(self, rate_type: str, *, limit: int = 120) -> ProviderResult:
         rate_type = rate_type.upper()
+        limit = max(1, min(int(limit), 800))
         dataset = f"reference-rate:{rate_type.lower()}"
         group = self.RATE_GROUPS.get(rate_type)
         if group is None:
             return ProviderResult.failure(self.key, dataset, f"unsupported rate: {rate_type}")
+        endpoint = f"/api/rates/{group}/{rate_type.lower()}/last/{limit}.json"
         payload, failure = self._get_json(
             dataset,
-            f"/api/rates/{group}/{rate_type.lower()}/last/{int(limit)}.json",
+            endpoint,
         )
         if failure:
             return failure
+        if not isinstance(payload, Mapping):
+            return ProviderResult.failure(
+                self.key, dataset, "invalid reference-rate payload"
+            )
+        raw_rates = payload.get("refRates")
+        if not isinstance(raw_rates, list):
+            return ProviderResult.failure(
+                self.key, dataset, "invalid reference-rate refRates payload"
+            )
         records = []
-        for item in payload.get("refRates", []):
+        for item in raw_rates:
+            if not isinstance(item, Mapping):
+                return ProviderResult.failure(
+                    self.key, dataset, "invalid reference-rate record"
+                )
             value = _decimal_or_none(item.get("percentRate"))
             if value is None or not item.get("effectiveDate"):
-                continue
+                return ProviderResult.failure(
+                    self.key,
+                    dataset,
+                    "reference-rate record missing effectiveDate or percentRate",
+                )
             metadata = {
                 key: item.get(key)
                 for key in (
@@ -337,6 +356,7 @@ class NYFedMarketsProvider(HTTPProvider):
                     "targetRateTo",
                     "volumeInBillions",
                     "revisionIndicator",
+                    "footnoteId",
                 )
                 if item.get(key) is not None
             }
@@ -348,7 +368,16 @@ class NYFedMarketsProvider(HTTPProvider):
                     "metadata": metadata,
                 }
             )
-        return ProviderResult(provider=self.key, dataset=dataset, records=records)
+        return ProviderResult(
+            provider=self.key,
+            dataset=dataset,
+            records=records,
+            metadata={
+                "attribution": self.attribution,
+                "terms_url": self.terms_url,
+                "endpoint": endpoint,
+            },
+        )
 
     def sofr(self, *, limit: int = 120) -> ProviderResult:
         return self.reference_rate("SOFR", limit=limit)
