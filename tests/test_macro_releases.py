@@ -642,6 +642,7 @@ def test_release_workbooks_persist_lineage_and_publish_gdp_and_consumer_pages(cl
         "gdp-vintage-trail",
     ]
     assert [row["实际 GDP"] for row in gdp_charts[1]["data"]] == [1.6, 2.1]
+    assert gdp_charts[1]["panel_class"] == "lg:col-span-2"
     assert gdp_charts[1]["data"][0]["_lineage"]["实际 GDP"][
         "estimate_round"
     ] == "Second"

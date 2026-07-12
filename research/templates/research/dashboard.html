@@ -26,7 +26,7 @@
   {% if charts|length > 1 %}
     <div class="mt-4 grid gap-4 lg:grid-cols-2" aria-label="补充趋势图">
       {% for chart in charts|slice:"1:" %}
-        {% include "research/includes/chart_panel.html" with chart_id=chart.dom_id chart_title=chart.title chart_description=chart.description chart_data=chart.data chart_kind=chart.kind chart_class="chart-tall" sources=chart.sources as_of=chart.as_of fetched_at=chart.fetched_at quality_status=chart.quality_status %}
+        {% include "research/includes/chart_panel.html" with chart_id=chart.dom_id chart_title=chart.title chart_description=chart.description chart_data=chart.data chart_kind=chart.kind chart_class="chart-tall" panel_class=chart.panel_class sources=chart.sources as_of=chart.as_of fetched_at=chart.fetched_at quality_status=chart.quality_status %}
       {% endfor %}
     </div>
   {% endif %}

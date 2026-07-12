@@ -712,6 +712,7 @@ def _gdp_vintage_chart_and_section() -> tuple[
         "title": f"{quarter_label} 实际 GDP 估算修订",
         "description": "按 BEA 官方发布日期展示每轮季调年化环比估算，单位：%。",
         "kind": "line",
+        "panel_class": "lg:col-span-2",
         "data": chart_rows,
         "source_keys": [latest_run.source.key],
         "as_of": latest_item.as_of.isoformat(),
