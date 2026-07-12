@@ -940,6 +940,7 @@ class BLSProvider(HTTPProvider):
                 "; ".join(payload.get("message") or ["BLS request failed"]),
             )
         records = []
+        returned_series: set[str] = set()
         for series in payload.get("Results", {}).get("series", []):
             series_id = series.get("seriesID")
             for item in series.get("data", []):
@@ -962,7 +963,19 @@ class BLSProvider(HTTPProvider):
                         },
                     }
                 )
-        return ProviderResult(provider=self.key, dataset=dataset, records=records)
+                returned_series.add(series_id)
+        missing_series = sorted(set(series_ids) - returned_series)
+        return ProviderResult(
+            provider=self.key,
+            dataset=dataset,
+            records=records,
+            metadata={
+                "requested_series": list(series_ids),
+                "returned_series": sorted(returned_series),
+                "missing_series": missing_series,
+                "quality_status": "partial" if missing_series else "complete",
+            },
+        )
 
 
 class CFTCProvider(HTTPProvider):

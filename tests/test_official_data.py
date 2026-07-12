@@ -16,7 +16,11 @@ from research.models import (
     Source,
     SourceLicense,
 )
-from research.official_data import _fresh_until, publish_official_dashboards
+from research.official_data import (
+    _fresh_until,
+    _has_publishable_run,
+    publish_official_dashboards,
+)
 from research.providers import (
     BLSProvider,
     CFTCProvider,
@@ -579,6 +583,29 @@ def test_provider_result_with_zero_rows_is_partial_not_success():
     assert run.status == IngestionRun.Status.PARTIAL
     assert run.row_count == 0
     assert run.metadata["quality_reason"] == "provider returned no persistable rows"
+
+
+@pytest.mark.django_db
+def test_dashboard_publication_guard_requires_the_entire_refresh_group():
+    successful = record_provider_result(
+        ProviderResult(
+            provider="internal",
+            dataset="complete-refresh-component",
+            records=[{"value": 1}],
+        )
+    )
+    failed = record_provider_result(
+        ProviderResult.failure(
+            "internal",
+            "failed-refresh-component",
+            "upstream unavailable",
+        )
+    )
+
+    assert successful.status == IngestionRun.Status.SUCCESS
+    assert failed.status == IngestionRun.Status.FAILED
+    assert _has_publishable_run([successful]) is True
+    assert _has_publishable_run([successful, failed]) is False
 
 
 @pytest.mark.django_db

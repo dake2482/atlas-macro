@@ -70,11 +70,12 @@ FRESHNESS_DAYS = {
 
 
 def _has_publishable_run(runs: Iterable[IngestionRun]) -> bool:
-    """Only publish after at least one complete, non-empty ingestion run."""
+    """Publish only when the whole refresh group is complete and non-empty."""
 
-    return any(
+    completed = list(runs)
+    return bool(completed) and all(
         run.status == IngestionRun.Status.SUCCESS and run.row_count > 0
-        for run in runs
+        for run in completed
     )
 
 
