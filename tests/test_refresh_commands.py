@@ -12,6 +12,15 @@ from django.core.management.base import CommandError
     ("command_name", "target", "summary", "message"),
     [
         (
+            "refresh_official_data",
+            "research.management.commands.refresh_official_data.refresh_official_data",
+            {
+                "runs": [{"status": "partial", "row_count": 0}],
+                "dashboard_keys": [],
+            },
+            "official source refreshes were incomplete",
+        ),
+        (
             "refresh_h41_data",
             "research.management.commands.refresh_h41_data.refresh_h41_data",
             {

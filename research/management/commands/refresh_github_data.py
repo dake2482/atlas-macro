@@ -20,7 +20,7 @@ class Command(BaseCommand):
                 }
             )
         )
-        if summary.get("failed"):
-            raise CommandError("One or more GitHub repositories failed")
+        if summary.get("failed") or summary.get("partial"):
+            raise CommandError("One or more GitHub repositories failed or were incomplete")
         else:
             self.stdout.write(self.style.SUCCESS("GitHub radar refresh completed"))

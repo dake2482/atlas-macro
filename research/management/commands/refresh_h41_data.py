@@ -22,7 +22,7 @@ class Command(BaseCommand):
                 }
             )
         )
-        if run["status"] == "failed":
-            raise CommandError(run["error"] or "H.4.1 refresh failed")
+        if run["status"] != "success":
+            raise CommandError(run["error"] or "H.4.1 refresh incomplete; dashboards retained")
         else:
             self.stdout.write(self.style.SUCCESS("H.4.1 refresh completed"))
