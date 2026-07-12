@@ -39,6 +39,8 @@ evidence:
 - Mina serves release f334af0 through the existing HTTP 3080 origin; all six Compose services run with zero
   restarts and no OOM. Production deploy checks only retain the two expected HSTS/SSL-redirect warnings for
   the deliberately non-TLS origin.
+- Portfolio closeout passed on commit 74200a6 with Ruff, all 306 tests, Django checks, strict portfolio
+  validation and the explicitly local-only Git delivery boundary verified.
 started_at: '2026-07-13T00:10:00+08:00'
 ---
 

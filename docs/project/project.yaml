@@ -7,12 +7,12 @@ success_metrics:
   - Demo or fallback records are never presented as verified official data.
   - Django checks, lint, and deterministic tests remain green.
 current_milestone:
-  id: AI-RESEARCH-005
-  title: 修正 Fed Funds 政策走廊的同日对齐
-  status: DONE
+  id: AI-RESEARCH-006
+  title: 修正经济总览的官方变化率组合
+  status: IN_PROGRESS
 health: GREEN
-next_action: Start AI-RESEARCH-006 to replace raw economy overview levels with gated official rate metrics.
-updated_at: '2026-07-13T01:28:35+08:00'
+next_action: Build a page-specific economy coordinator from the latest complete GDP, employment, inflation and consumer snapshots.
+updated_at: '2026-07-13T01:33:17+08:00'
 validation_commands:
   - .venv/bin/ruff check .
   - .venv/bin/pytest -q

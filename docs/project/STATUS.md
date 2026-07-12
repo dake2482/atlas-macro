@@ -4,9 +4,9 @@
 
 - Purpose: Build a clean-room macro-research and AI supply-chain intelligence platform with traceable public sources, explicit data-quality labels, and original presentation.
 - Health: `GREEN`
-- Milestone: `AI-RESEARCH-005` — 修正 Fed Funds 政策走廊的同日对齐 (`DONE`)
-- Next action: Start AI-RESEARCH-006 to replace raw economy overview levels with gated official rate metrics.
-- Updated: `2026-07-13T01:28:35+08:00`
+- Milestone: `AI-RESEARCH-006` — 修正经济总览的官方变化率组合 (`IN_PROGRESS`)
+- Next action: Build a page-specific economy coordinator from the latest complete GDP, employment, inflation and consumer snapshots.
+- Updated: `2026-07-13T01:33:17+08:00`
 - Git boundary: branch `main`; run `portfolio closeout AI-RESEARCH` for live delivery state.
 - Execution metadata: Codex 0/0 active/total; ZCode 0/0 active/total
 
@@ -14,7 +14,7 @@
 
 | Requirement | State | Priority | Executor | Task | Branch / worktree | Next action |
 |---|---|---|---|---|---|---|
-| - | - | - | - | - | - | No active requirement |
+| AI-RESEARCH-006 | IN_PROGRESS | P1 | codex | atlas-economy-overview-20260713 | main / local | Build a page-specific economy coordinator from the latest complete GDP, employment, inflation and consumer snapshots. |
 
 ## Blockers
 
@@ -22,4 +22,4 @@
 
 ## Latest verification evidence
 
-- Mina serves release f334af0 through the existing HTTP 3080 origin; all six Compose services run with zero restarts and no OOM. Production deploy checks only retain the two expected HSTS/SSL-redirect warnings for the deliberately non-TLS origin.
+- Portfolio closeout passed on commit 74200a6 with Ruff, all 306 tests, Django checks, strict portfolio validation and the explicitly local-only Git delivery boundary verified.
