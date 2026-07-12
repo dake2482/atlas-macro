@@ -155,13 +155,19 @@ SOURCE_CATALOG: dict[str, dict[str, Any]] = {
         "homepage": "https://publicreporting.cftc.gov/",
         "kind": "official",
         "license_status": Source.LicenseStatus.OPEN,
-        "license_scope": "Attributed official COT public reporting data",
+        "license_scope": "Attributed CFTC-authored public-domain COT reporting data",
         "redistribution_allowed": True,
         "public_display_allowed": True,
         "derived_display_allowed": True,
         "historical_storage_allowed": True,
         "ai_use_allowed": True,
+        "terms_url": "https://www.cftc.gov/WebPolicy/index.htm",
         "attribution": "U.S. Commodity Futures Trading Commission",
+        "required_notice": (
+            "Source: U.S. Commodity Futures Trading Commission, Commitments of Traders. "
+            "CFTC government information is public domain with acknowledgement requested; "
+            "CFTC does not endorse Atlas Macro or guarantee this republication."
+        ),
     },
     "federal-reserve": {
         "name": "Federal Reserve Board",
@@ -258,6 +264,27 @@ SOURCE_CATALOG: dict[str, dict[str, Any]] = {
         "terms_url": "https://home.treasury.gov/footer/privacy-act/privacy-policy",
         "attribution": "U.S. Department of the Treasury",
     },
+    "berkshire-hathaway": {
+        "name": "Berkshire Hathaway Shareholder Letters",
+        "homepage": "https://www.berkshirehathaway.com/letters/letters.html",
+        "kind": "first-party-content-index",
+        "license_status": Source.LicenseStatus.REVIEW,
+        "license_scope": (
+            "First-party year, title and outbound-link metadata only; no letter text, "
+            "PDF, excerpt or image is copied or hosted"
+        ),
+        "redistribution_allowed": False,
+        "public_display_allowed": True,
+        "derived_display_allowed": False,
+        "historical_storage_allowed": True,
+        "ai_use_allowed": False,
+        "terms_url": "https://www.berkshirehathaway.com/letters/letters.html",
+        "attribution": "Berkshire Hathaway Inc.",
+        "required_notice": (
+            "Atlas Macro stores link metadata only. Shareholder letters remain on and are "
+            "controlled by Berkshire Hathaway; no document text or PDF is republished here."
+        ),
+    },
     "github": {
         "name": "GitHub REST API",
         "homepage": "https://docs.github.com/en/rest",
@@ -342,8 +369,7 @@ def ensure_source(key: str, **overrides: Any) -> Source:
     source, created = Source.objects.get_or_create(key=key, defaults=source_defaults)
     current_decision = None if created else source.licenses.filter(is_current=True).first()
     if current_decision and (
-        current_decision.status
-        in {Source.LicenseStatus.LICENSED, Source.LicenseStatus.RESTRICTED}
+        current_decision.status in {Source.LicenseStatus.LICENSED, Source.LicenseStatus.RESTRICTED}
         or current_decision.reviewed_at is not None
         or (
             bool(current_decision.reviewed_by)
@@ -368,10 +394,13 @@ def ensure_source(key: str, **overrides: Any) -> Source:
             if field in source_defaults:
                 setattr(source, field, source_defaults[field])
         source.save()
-    if source.license_status == Source.LicenseStatus.LICENSED and source.licenses.filter(
-        status=Source.LicenseStatus.LICENSED,
-        is_current=True,
-    ).exists():
+    if (
+        source.license_status == Source.LicenseStatus.LICENSED
+        and source.licenses.filter(
+            status=Source.LicenseStatus.LICENSED,
+            is_current=True,
+        ).exists()
+    ):
         return source
     licence_defaults = {
         "status": defaults.get("license_status", Source.LicenseStatus.REVIEW),
@@ -418,8 +447,14 @@ def public_display_license_q(prefix: str = "source__licenses") -> Q:
             }
         )
         & Q(**{f"{prefix}__public_display_allowed": True})
-        & (Q(**{f"{prefix}__valid_from__isnull": True}) | Q(**{f"{prefix}__valid_from__lte": today}))
-        & (Q(**{f"{prefix}__valid_until__isnull": True}) | Q(**{f"{prefix}__valid_until__gte": today}))
+        & (
+            Q(**{f"{prefix}__valid_from__isnull": True})
+            | Q(**{f"{prefix}__valid_from__lte": today})
+        )
+        & (
+            Q(**{f"{prefix}__valid_until__isnull": True})
+            | Q(**{f"{prefix}__valid_until__gte": today})
+        )
     )
 
 
@@ -573,6 +608,15 @@ def _aware_midnight(value: str | date | datetime) -> datetime:
 SERIES_CATALOG = {
     "SOFR": ("Secured Overnight Financing Rate", "%", "daily"),
     "EFFR": ("Effective Federal Funds Rate", "%", "daily"),
+    "IORB": ("Interest Rate on Reserve Balances", "%", "daily"),
+    "H10-BROAD-DOLLAR": (
+        "Federal Reserve H.10 Nominal Broad Dollar Index",
+        "index",
+        "daily",
+    ),
+    "H10-EURUSD": ("Federal Reserve H.10 U.S. Dollars per Euro", "USD/EUR", "daily"),
+    "H10-USDCNY": ("Federal Reserve H.10 Chinese Yuan per U.S. Dollar", "CNY/USD", "daily"),
+    "H10-USDJPY": ("Federal Reserve H.10 Japanese Yen per U.S. Dollar", "JPY/USD", "daily"),
     "TGA": ("Treasury General Account Closing Balance", "USD millions", "daily"),
     "CES0000000001": ("Total Nonfarm Payroll Employment", "thousands", "monthly"),
     "LNS14000000": ("Unemployment Rate", "%", "monthly"),
@@ -841,25 +885,60 @@ def store_github_repository(result: ProviderResult, source: Source, run: Ingesti
 
 
 def store_cftc_positions(result: ProviderResult, source: Source, run: IngestionRun) -> int:
+    fetched_at = result.fetched_at
+    if timezone.is_naive(fetched_at):
+        fetched_at = timezone.make_aware(fetched_at, UTC)
     count = 0
-    for record in result.records:
-        CFTCPosition.objects.update_or_create(
-            report_type=record["report_type"],
-            report_date=parse_date(record["report_date"]),
-            market_code=record["market_code"],
-            trader_group=record["trader_group"],
-            defaults={
-                "market_name": record["market_name"],
-                "long_positions": record["long_positions"],
-                "short_positions": record["short_positions"],
-                "open_interest": record.get("open_interest"),
-                "fetched_at": timezone.now(),
-                "batch_id": run.batch_id,
-                "source": source,
-                "quality_status": Observation.Quality.FRESH,
-            },
+    chunk_size = 5_000
+    for offset in range(0, len(result.records), chunk_size):
+        objects = []
+        for record in result.records[offset : offset + chunk_size]:
+            published_at = parse_datetime(record.get("published_at") or "")
+            source_updated_at = parse_datetime(record.get("source_updated_at") or "")
+            if published_at and timezone.is_naive(published_at):
+                published_at = timezone.make_aware(published_at, UTC)
+            if source_updated_at and timezone.is_naive(source_updated_at):
+                source_updated_at = timezone.make_aware(source_updated_at, UTC)
+            objects.append(
+                CFTCPosition(
+                    report_type=record["report_type"],
+                    report_date=parse_date(record["report_date"]),
+                    published_at=published_at,
+                    source_updated_at=source_updated_at,
+                    market_code=record["market_code"],
+                    market_name=record["market_name"],
+                    trader_group=record["trader_group"],
+                    long_positions=record["long_positions"],
+                    short_positions=record["short_positions"],
+                    open_interest=record.get("open_interest"),
+                    fetched_at=fetched_at,
+                    batch_id=run.batch_id,
+                    source=source,
+                    quality_status=(
+                        Observation.Quality.FRESH if published_at else Observation.Quality.ERROR
+                    ),
+                )
+            )
+        CFTCPosition.objects.bulk_create(
+            objects,
+            batch_size=1_000,
+            update_conflicts=True,
+            update_fields=[
+                "published_at",
+                "source_updated_at",
+                "market_name",
+                "long_positions",
+                "short_positions",
+                "open_interest",
+                "fetched_at",
+                "batch_id",
+                "source",
+                "quality_status",
+                "updated_at",
+            ],
+            unique_fields=["report_type", "report_date", "market_code", "trader_group"],
         )
-        count += 1
+        count += len(objects)
     return count
 
 

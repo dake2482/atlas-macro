@@ -19,14 +19,14 @@ def test_global_search_finds_content_without_leaking_unmatched_rows(client, seed
         title="ZXQ-731 Global Search Needle",
         summary="Unique global search fixture",
         source_name="Fixture Wire",
-        source_url="https://example.com/global-search",
+        source_url="https://www.sec.gov/fixtures/global-search",
         category="fixture-search",
         published_at=timezone.now(),
     )
     NewsItem.objects.create(
         title="ZXQ-000 Search Decoy",
         source_name="Fixture Wire",
-        source_url="https://example.com/global-decoy",
+        source_url="https://www.sec.gov/fixtures/global-decoy",
         category="fixture-search",
         published_at=timezone.now(),
     )
@@ -43,21 +43,21 @@ def test_news_filters_are_shareable_and_composable(client):
         title="NEWS-ALPHA Composed Match",
         summary="Semiconductor credit crossover",
         source_name="Alpha Fixture Wire",
-        source_url="https://example.com/news-alpha",
+        source_url="https://www.sec.gov/fixtures/news-alpha",
         category="fixture-credit",
         published_at=timezone.now(),
     )
     NewsItem.objects.create(
         title="NEWS-BETA Wrong Source",
         source_name="Beta Fixture Wire",
-        source_url="https://example.com/news-beta",
+        source_url="https://www.sec.gov/fixtures/news-beta",
         category="fixture-credit",
         published_at=timezone.now(),
     )
     NewsItem.objects.create(
         title="NEWS-GAMMA Wrong Category",
         source_name="Alpha Fixture Wire",
-        source_url="https://example.com/news-gamma",
+        source_url="https://www.sec.gov/fixtures/news-gamma",
         category="fixture-rates",
         published_at=timezone.now(),
     )
@@ -84,7 +84,8 @@ def test_research_filters_are_shareable_and_composable(client):
         category="fixture-ai",
         stance="bullish",
         published_at=now,
-        source_url="https://example.com/report-alpha",
+        source_url="https://www.federalreserve.gov/fixtures/report-alpha",
+        review_status="reviewed",
     )
     ResearchMention.objects.create(
         bank="Fixture Beta Bank",
@@ -92,7 +93,8 @@ def test_research_filters_are_shareable_and_composable(client):
         category="fixture-ai",
         stance="bullish",
         published_at=now,
-        source_url="https://example.com/report-beta",
+        source_url="https://www.federalreserve.gov/fixtures/report-beta",
+        review_status="reviewed",
     )
 
     body = page_text(
@@ -119,7 +121,7 @@ def test_fund_letter_filters_are_shareable_and_composable(client):
         strategy="fixture-value",
         stance="constructive",
         summary="Unique fund letter fixture",
-        original_url="https://example.com/letter-alpha",
+        original_url="https://www.berkshirehathaway.com/letters/letter-alpha",
         published_at=date(2099, 12, 31),
     )
     FundLetter.objects.create(
@@ -128,7 +130,7 @@ def test_fund_letter_filters_are_shareable_and_composable(client):
         strategy="fixture-value",
         stance="constructive",
         summary="Fund letter decoy",
-        original_url="https://example.com/letter-beta",
+        original_url="https://www.berkshirehathaway.com/letters/letter-beta",
         published_at=date(2099, 9, 30),
     )
 
@@ -156,6 +158,7 @@ def test_market_map_filters_nodes_and_companies(client):
         layer="fixture-layer",
         quadrant="fixture-quadrant",
         description="Unique market map fixture",
+        source_note="Reviewed company disclosures",
     )
     node_decoy = SupplyChainNode.objects.create(
         slug="fixture-decoy-node",
@@ -163,6 +166,7 @@ def test_market_map_filters_nodes_and_companies(client):
         layer="fixture-other-layer",
         quadrant="fixture-quadrant",
         description="Market map decoy",
+        source_note="Reviewed company disclosures",
     )
     Company.objects.create(
         slug="fixture-filter-company",
@@ -170,6 +174,7 @@ def test_market_map_filters_nodes_and_companies(client):
         ticker="MAPA",
         primary_node=node_match,
         description="Unique company fixture",
+        data_source_note="SEC EDGAR",
     )
     Company.objects.create(
         slug="fixture-decoy-company",
@@ -177,6 +182,7 @@ def test_market_map_filters_nodes_and_companies(client):
         ticker="MAPB",
         primary_node=node_decoy,
         description="Company decoy",
+        data_source_note="SEC EDGAR",
     )
 
     body = page_text(

@@ -96,6 +96,7 @@ NAV_GROUPS = [
             ("产业链", "/ai-industry/chain/"),
             ("算力供应链", "/supply-chain/"),
             ("大模型演变", "/ai-industry/chain/model-evolution/"),
+            ("Coding Agents", "/ai-industry/vibe-coding/"),
             ("AI 应用", "/ai-industry/chain/applications/"),
             ("专业术语", "/ai-industry/chain/glossary/"),
         ],
@@ -131,6 +132,8 @@ ROUTE_REQUIREMENT_KEYS = {
     "ai-teardown": ("ai-teardown",),
     "model-evolution": ("model-evolution",),
     "model-detail": ("model-evolution",),
+    "coding-agents": ("model-evolution",),
+    "coding-agent-detail": ("model-evolution",),
     "applications": ("applications",),
 }
 

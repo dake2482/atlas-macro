@@ -19,7 +19,7 @@
           {% if item.original_title %}<p class="mt-1 text-[10px] muted">{{ item.original_title }}</p>{% endif %}
           <p class="mt-2 text-[11px] leading-5 muted">{{ item.summary }}</p>
           {% if item.tickers or item.themes %}<div class="mt-3 flex flex-wrap gap-1.5">{% for ticker in item.tickers %}<span class="rounded bg-[var(--surface-2)] px-1.5 py-0.5 font-mono text-[9px]">${{ ticker }}</span>{% endfor %}{% for theme in item.themes %}<span class="rounded bg-[var(--cyan-soft)] px-1.5 py-0.5 text-[9px] text-[var(--cyan)]"># {{ theme }}</span>{% endfor %}</div>{% endif %}
-          <div class="source-line mt-3"><span>许可：{{ item.license_status }}</span><span>相关度 {{ item.relevance }}/100</span></div>
+          <div class="source-line mt-3"><span>许可：{{ item.license_status }}</span><span>{% if item.relevance > 0 %}相关度 {{ item.relevance }}/100{% else %}相关度待评估{% endif %}</span></div>
         </article>
       {% empty %}<div class="panel">{% include "research/includes/empty_state.html" with empty_title="没有匹配资讯" empty_message="试试减少筛选条件，或等待下一轮来源采集。" empty_href=request.path empty_action="查看全部" %}</div>{% endfor %}
       {% include "research/includes/pagination.html" %}

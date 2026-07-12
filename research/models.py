@@ -502,7 +502,7 @@ class FundLetter(TimestampedModel):
     original_url = models.URLField(max_length=800)
     source_label = models.CharField(max_length=120, default="基金官网")
     license_status = models.CharField(max_length=20, default="link-only")
-    published_at = models.DateField()
+    published_at = models.DateField(null=True, blank=True)
 
     class Meta:
         ordering = ["-published_at", "fund_name"]
@@ -635,7 +635,7 @@ class ModelProfile(TimestampedModel):
     context_tokens = models.PositiveIntegerField(default=0)
     input_price = models.DecimalField(max_digits=10, decimal_places=3, null=True, blank=True)
     output_price = models.DecimalField(max_digits=10, decimal_places=3, null=True, blank=True)
-    capability_score = models.DecimalField(max_digits=5, decimal_places=2)
+    capability_score = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
     tier = models.CharField(max_length=10, default="T1")
     description = models.TextField()
     sources = models.JSONField(default=list)
@@ -643,20 +643,26 @@ class ModelProfile(TimestampedModel):
     class Meta:
         ordering = ["-capability_score"]
 
+    def get_absolute_url(self) -> str:
+        return reverse("model-detail", kwargs={"slug": self.slug})
+
 
 class CodingAgentProfile(TimestampedModel):
     slug = models.SlugField(max_length=120, unique=True)
     name = models.CharField(max_length=160)
     provider = models.CharField(max_length=120)
     product_type = models.CharField(max_length=80)
-    release_date = models.DateField()
+    release_date = models.DateField(null=True, blank=True)
     price_label = models.CharField(max_length=120)
-    capability_score = models.DecimalField(max_digits=5, decimal_places=2)
+    capability_score = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
     description = models.TextField()
     homepage = models.URLField(blank=True)
 
     class Meta:
         ordering = ["-capability_score"]
+
+    def get_absolute_url(self) -> str:
+        return reverse("coding-agent-detail", kwargs={"slug": self.slug})
 
 
 class GitHubProject(TimestampedModel):
@@ -752,6 +758,17 @@ class CFTCPosition(TimestampedModel):
 
     report_type = models.CharField(max_length=30, default="tff-futures")
     report_date = models.DateField(db_index=True)
+    published_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        db_index=True,
+        help_text="Initial PRE row publication timestamp from the Socrata :created_at field.",
+    )
+    source_updated_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="Latest PRE row revision timestamp from the Socrata :updated_at field.",
+    )
     market_code = models.CharField(max_length=24, db_index=True)
     market_name = models.CharField(max_length=240)
     trader_group = models.CharField(max_length=40, db_index=True)

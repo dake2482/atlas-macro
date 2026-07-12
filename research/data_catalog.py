@@ -102,10 +102,11 @@ DATA_REQUIREMENTS = [
     {
         "key": "nyfed-policy-rates",
         "page_key": "fed-funds",
-        "metric_name": "SOFR、EFFR 与政策走廊",
+        "metric_name": "SOFR、EFFR、IORB 与政策走廊",
         "status": LIVE,
-        "source_name": "Federal Reserve Bank of New York Markets API",
-        "source_url": "https://markets.newyorkfed.org/static/docs/markets-api.html",
+        "source_name": "New York Fed Markets API and Federal Reserve PRATES DDP",
+        "source_url": "https://www.federalreserve.gov/datadownload/Choose.aspx?rel=PRATES",
+        "reason": "SOFR/EFFR 取纽约联储，IORB 直接解析 Federal Reserve PRATES；SOFR−IORB 与 99P−IORB 均为透明计算。",
         "priority": 1,
     },
     {
@@ -528,14 +529,24 @@ DATA_REQUIREMENTS = [
         "priority": 2,
     },
     {
+        "key": "berkshire-shareholder-letter-index",
+        "page_key": "fund-letters",
+        "metric_name": "Berkshire Hathaway 1977–2024 股东信官方链接元数据",
+        "status": LIVE,
+        "source_name": "Berkshire Hathaway official shareholder-letter index",
+        "source_url": "https://www.berkshirehathaway.com/letters/letters.html",
+        "reason": "仅保存报告年度、第一方链接和核验哈希；不抓取、托管或生成信函正文摘要，未知发布日期保持空缺。",
+        "priority": 3,
+    },
+    {
         "key": "fund-letters",
         "page_key": "fund-letters",
         "metric_name": "基金信函元数据与原创中文摘要",
         "status": NEEDS_SOURCE,
         "source_name": "Fund official websites",
         "reason": (
-            "需建立基金官网白名单、许可记录和删除机制；公开可下载不等于允许 Atlas "
-            "再次托管，尤其不能默认镜像 PDF。"
+            "Berkshire 官方链接元数据已接入；其他基金仍需官网白名单、许可记录和删除机制。"
+            "公开可下载不等于允许 Atlas 再次托管，尤其不能默认镜像 PDF。"
         ),
         "proxy_description": "仅保存元数据、官方外链和基于合法阅读的原创摘要，不托管原文或 PDF。",
         "priority": 3,
@@ -639,13 +650,25 @@ DATA_REQUIREMENTS = [
         "key": "model-vendor-metadata",
         "page_key": "model-evolution",
         "metric_name": "模型官方价格、上下文长度、发布日期与退役时间",
-        "status": NEEDS_SOURCE,
+        "status": LIVE,
         "source_name": "Model-provider official pricing, release and deprecation documentation",
         "reason": (
-            "需建立官方链接白名单、字段口径、变更快照和人工复核；厂商文档可作为事实"
-            "来源，但大段文案和品牌素材仍不可直接复制。"
+            "12 个模型与 11 个 Coding Agent 的合同路由已使用厂商一手文档建立资料目录；"
+            "仅录入能按单一口径核验的发布日、上下文和 API 标价，未核验字段留空。"
         ),
-        "priority": 2,
+        "priority": 1,
+    },
+    {
+        "key": "ai-supply-chain-node-taxonomy",
+        "page_key": "ai-industry-graph",
+        "metric_name": "AI 产业链 45 节点、9 层资料目录",
+        "status": LIVE,
+        "source_name": "Official company, standards-body and government documentation",
+        "reason": (
+            "45 个公开路由已以 9 层原创分类和一手来源链接建立资料目录；"
+            "未取得完整公司关系证据前，不填叙事分、财务汇总、估值或投资 Thesis。"
+        ),
+        "priority": 1,
     },
     {
         "key": "github-project-radar",
@@ -701,6 +724,16 @@ DATA_REQUIREMENTS = [
         "priority": 2,
     },
     {
+        "key": "fed-h10-fx-reference",
+        "page_key": "assets-fx",
+        "metric_name": "广义美元指数与主要货币日频参考汇率",
+        "status": LIVE,
+        "source_name": "Federal Reserve H.10 Data Download Program",
+        "source_url": "https://www.federalreserve.gov/datadownload/Choose.aspx?rel=H10",
+        "reason": "直接解析 H.10 广义美元、EUR/USD、USD/CNY、USD/JPY；明确标为日频官方参考值，不冒充 DXY 或可交易实时现货。",
+        "priority": 2,
+    },
+    {
         "key": "fx-market-data",
         "page_key": "assets-fx",
         "metric_name": "主要货币现货、远期点与美元指数",
@@ -717,7 +750,7 @@ DATA_REQUIREMENTS = [
         "metric_name": "六层流动性传导链完整输入",
         "status": NEEDS_SOURCE,
         "source_name": "NY Fed, Federal Reserve H.4.1, Treasury plus licensed FX/volatility/credit inputs",
-        "reason": "SOFR/EFFR 已接入，但离岸基差、AOCI、中介能力与资产反应仍缺授权输入。",
+        "reason": "SOFR/EFFR/IORB 已接入，但离岸基差、AOCI、中介能力与资产反应仍缺授权输入。",
         "priority": 1,
     },
     {
@@ -765,7 +798,7 @@ DATA_REQUIREMENTS = [
         "status": LIVE,
         "source_name": "Federal Reserve Bank of New York Markets API",
         "source_url": "https://markets.newyorkfed.org/static/docs/markets-api.html",
-        "reason": "已发布 SOFR 99P、99P−SOFR、成交量和历史图，并合并现行常备回购每日两场操作。",
+        "reason": "已发布 SOFR 99P、99P−SOFR、99P−IORB、成交量和历史图，并合并现行常备回购每日两场操作。",
         "priority": 1,
     },
     {

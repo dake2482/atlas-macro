@@ -390,26 +390,47 @@ def test_bls_provider_normalizes_monthly_series():
 def test_cftc_provider_expands_trader_groups_and_keeps_tuesday_date():
     payload = [
         {
+            ":created_at": "2026-07-10T19:31:01.434Z",
+            ":updated_at": "2026-07-10T19:31:01.434Z",
             "report_date_as_yyyy_mm_dd": "2026-07-07T00:00:00.000",
+            "market_and_exchange_names": "E-MINI S&P 500 - CME",
             "contract_market_name": "E-MINI S&P 500",
             "cftc_contract_market_code": "13874A",
             "open_interest_all": "1000",
+            "dealer_positions_long_all": "120",
+            "dealer_positions_short_all": "180",
             "asset_mgr_positions_long": "600",
             "asset_mgr_positions_short": "200",
             "lev_money_positions_long": "100",
             "lev_money_positions_short": "300",
+            "other_rept_positions_long": "80",
+            "other_rept_positions_short": "60",
+            "nonrept_positions_long_all": "100",
+            "nonrept_positions_short_all": "160",
         }
     ]
-    provider = CFTCProvider(client=_client(lambda _: httpx.Response(200, json=payload)))
+
+    def handler(request):
+        assert ":created_at" in request.url.params["$select"]
+        assert request.url.params["$where"].endswith("'2024-01-01T00:00:00.000'")
+        return httpx.Response(200, json=payload)
+
+    provider = CFTCProvider(client=_client(handler))
     result = provider.positions(start_date="2024-01-01")
 
     assert result.ok
-    assert result.row_count == 2
+    assert result.row_count == 5
     assert {item["trader_group"] for item in result.records} == {
+        "dealer",
         "asset-manager",
         "leveraged-money",
+        "other-reportables",
+        "non-reportables",
     }
     assert {item["report_date"] for item in result.records} == {"2026-07-07"}
+    assert {item["published_at"] for item in result.records} == {"2026-07-10T19:31:01.434Z"}
+    assert {item["market_name"] for item in result.records} == {"E-MINI S&P 500 - CME"}
+    assert result.metadata["publication_timestamp_field"] == ":created_at"
 
 
 @pytest.mark.django_db
@@ -675,9 +696,7 @@ def test_monthly_and_quarterly_freshness_start_from_period_end():
 def test_current_restricted_or_expired_licence_suppresses_old_dashboard(client, decision):
     expired_at = timezone.localdate() - timedelta(days=1) if decision == "expired" else None
     status = (
-        Source.LicenseStatus.RESTRICTED
-        if decision == "restricted"
-        else Source.LicenseStatus.OPEN
+        Source.LicenseStatus.RESTRICTED if decision == "restricted" else Source.LicenseStatus.OPEN
     )
     source = _licensed_source(
         f"dashboard-{decision}",

@@ -19,5 +19,5 @@ def seeded_platform(django_db_setup, django_db_blocker):
     """Load the deterministic offline product-shape dataset once per test run."""
 
     with django_db_blocker.unblock():
-        call_command("seed_platform", verbosity=0)
+        call_command("seed_platform", allow_demo_data=True, verbosity=0)
     return None

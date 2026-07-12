@@ -986,10 +986,6 @@ class CFTCProvider(HTTPProvider):
     DATASETS = {
         "tff-futures": "gpe5-46if",
         "tff-combined": "yw9f-hn96",
-        "disaggregated-futures": "72hh-3qpy",
-        "disaggregated-combined": "kh3c-gbw2",
-        "legacy-futures": "6dca-aqww",
-        "legacy-combined": "jun7-fc8e",
     }
 
     def positions(
@@ -1005,10 +1001,14 @@ class CFTCProvider(HTTPProvider):
             return ProviderResult.failure(self.key, dataset, f"unsupported report: {report_type}")
         params: dict[str, Any] = {
             "$select": (
-                "report_date_as_yyyy_mm_dd,contract_market_name,"
+                ":created_at,:updated_at,report_date_as_yyyy_mm_dd,"
+                "market_and_exchange_names,contract_market_name,"
                 "cftc_contract_market_code,open_interest_all,"
+                "dealer_positions_long_all,dealer_positions_short_all,"
                 "asset_mgr_positions_long,asset_mgr_positions_short,"
-                "lev_money_positions_long,lev_money_positions_short"
+                "lev_money_positions_long,lev_money_positions_short,"
+                "other_rept_positions_long,other_rept_positions_short,"
+                "nonrept_positions_long_all,nonrept_positions_short_all"
             ),
             "$order": "report_date_as_yyyy_mm_dd DESC",
             "$limit": min(int(limit), 50000),
@@ -1018,16 +1018,31 @@ class CFTCProvider(HTTPProvider):
         payload, failure = self._get_json(dataset, f"/resource/{dataset_id}.json", params=params)
         if failure:
             return failure
+        if not isinstance(payload, list):
+            return ProviderResult.failure(self.key, dataset, "unexpected PRE response shape")
         groups = {
+            "dealer": ("dealer_positions_long_all", "dealer_positions_short_all"),
             "asset-manager": ("asset_mgr_positions_long", "asset_mgr_positions_short"),
             "leveraged-money": ("lev_money_positions_long", "lev_money_positions_short"),
+            "other-reportables": (
+                "other_rept_positions_long",
+                "other_rept_positions_short",
+            ),
+            "non-reportables": (
+                "nonrept_positions_long_all",
+                "nonrept_positions_short_all",
+            ),
         }
         records = []
+        missing_publication_timestamps = 0
         for item in payload:
             market_code = item.get("cftc_contract_market_code")
             report_date = (item.get("report_date_as_yyyy_mm_dd") or "")[:10]
             if not market_code or not report_date:
                 continue
+            published_at = item.get(":created_at")
+            if not published_at:
+                missing_publication_timestamps += 1
             open_interest = _decimal_or_none(item.get("open_interest_all"))
             for trader_group, (long_key, short_key) in groups.items():
                 long_positions = _decimal_or_none(item.get(long_key))
@@ -1038,8 +1053,14 @@ class CFTCProvider(HTTPProvider):
                     {
                         "report_type": report_type,
                         "report_date": report_date,
+                        "published_at": published_at,
+                        "source_updated_at": item.get(":updated_at"),
                         "market_code": market_code,
-                        "market_name": item.get("contract_market_name") or market_code,
+                        "market_name": (
+                            item.get("market_and_exchange_names")
+                            or item.get("contract_market_name")
+                            or market_code
+                        ),
                         "trader_group": trader_group,
                         "long_positions": int(long_positions),
                         "short_positions": int(short_positions),
@@ -1050,7 +1071,16 @@ class CFTCProvider(HTTPProvider):
             provider=self.key,
             dataset=dataset,
             records=records,
-            metadata={"dataset_id": dataset_id, "source_rows": len(payload)},
+            metadata={
+                "dataset_id": dataset_id,
+                "source_rows": len(payload),
+                "missing_publication_timestamps": missing_publication_timestamps,
+                "publication_timestamp_field": ":created_at",
+                "source_revision_timestamp_field": ":updated_at",
+                "report_date_semantics": "COT positions as of the report date, usually Tuesday",
+                "publication_semantics": "PRE initial row publication timestamp",
+                "quality_status": ("partial" if missing_publication_timestamps else "complete"),
+            },
         )
 
 

@@ -122,6 +122,10 @@ CELERY_BEAT_SCHEDULE = {
         "task": "research.tasks.refresh_news_sources",
         "schedule": crontab(minute=12),
     },
+    "refresh-berkshire-letters-weekly": {
+        "task": "research.tasks.refresh_berkshire_letter_sources",
+        "schedule": crontab(day_of_week="mon", hour=9, minute=40),
+    },
     "refresh-official-every-2h": {
         "task": "research.tasks.refresh_official_sources",
         "schedule": crontab(hour="*/2", minute=22),
@@ -129,6 +133,14 @@ CELERY_BEAT_SCHEDULE = {
     "refresh-h41-weekly": {
         "task": "research.tasks.refresh_h41_sources",
         "schedule": crontab(day_of_week="fri", hour=6, minute=0),
+    },
+    "refresh-prates-daily": {
+        "task": "research.tasks.refresh_prates_sources",
+        "schedule": crontab(hour=6, minute=20),
+    },
+    "refresh-h10-daily": {
+        "task": "research.tasks.refresh_h10_sources",
+        "schedule": crontab(hour=6, minute=40),
     },
     "refresh-credit-official-daily": {
         "task": "research.tasks.refresh_credit_official_sources",
@@ -149,6 +161,12 @@ CELERY_BEAT_SCHEDULE = {
     "refresh-cftc-weekly": {
         "task": "research.tasks.refresh_cftc_sources",
         "schedule": crontab(day_of_week="sat", hour=8, minute=0),
+    },
+    "refresh-cftc-holiday-recheck": {
+        # CFTC notes that federal holidays can move the usual Friday release
+        # to Monday. Tuesday morning China time catches that delayed batch.
+        "task": "research.tasks.refresh_cftc_sources",
+        "schedule": crontab(day_of_week="tue", hour=8, minute=0),
     },
     "refresh-github-daily": {
         "task": "research.tasks.refresh_github_sources",

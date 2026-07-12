@@ -21,7 +21,9 @@ from django.utils import timezone
 
 from .calculations import yield_spread
 from .credit_official import FederalReserveSLOOSProvider, TreasuryHQMProvider
+from .fed_h10 import FederalReserveH10Provider
 from .fed_h41 import FederalReserveH41Provider
+from .fed_prates import FederalReservePRATESProvider
 from .macro_official import BEANIPAProvider, CensusMRTSProvider
 from .models import (
     DashboardSnapshot,
@@ -324,14 +326,14 @@ def _sofr_market_metrics() -> list[dict[str, Any]]:
         metrics.append(
             {
                 "key": "sofr-p99-minus-rate",
-                "label": "SOFR 99P−利率",
+                "label": "SOFR 99P−SOFR",
                 "value": float(tail),
                 "display_value": f"{tail:+,.0f}bp",
                 "change": None,
                 "unit": "bp",
                 "quality_status": Observation.Quality.ESTIMATED,
                 "source": f"Atlas Macro 计算：{latest.source.name}",
-                "source_key": latest.source.key,
+                "source_key": "internal",
                 "source_keys": [latest.source.key, "internal"],
                 "as_of": latest.as_of.isoformat(),
                 "value_date": latest.value_date.isoformat(),
@@ -344,6 +346,40 @@ def _sofr_market_metrics() -> list[dict[str, Any]]:
                 },
             }
         )
+        iorb = _real_observations("IORB").first()
+        if iorb is not None:
+            iorb_tail = (Decimal(str(percentile_99)) - iorb.value) * Decimal("100")
+            iorb_fresh_until = min(fresh_until, _fresh_until(iorb))
+            source_keys = sorted({latest.source.key, iorb.source.key, "internal"})
+            metrics.append(
+                {
+                    "key": "sofr-p99-minus-iorb",
+                    "label": "SOFR 99P−IORB",
+                    "value": float(iorb_tail),
+                    "display_value": f"{iorb_tail:+,.0f}bp",
+                    "change": None,
+                    "unit": "bp",
+                    "quality_status": (
+                        Observation.Quality.STALE
+                        if timezone.now() > iorb_fresh_until
+                        else Observation.Quality.ESTIMATED
+                    ),
+                    "source": (
+                        f"Atlas Macro 计算：{latest.source.name} 99P − {iorb.source.name} IORB"
+                    ),
+                    "source_key": "internal",
+                    "source_keys": source_keys,
+                    "as_of": min(latest.as_of, iorb.as_of).isoformat(),
+                    "value_date": min(latest.value_date, iorb.value_date).isoformat(),
+                    "fetched_at": max(latest.fetched_at, iorb.fetched_at).isoformat(),
+                    "fresh_until": iorb_fresh_until.isoformat(),
+                    "batch_id": f"{latest.batch_id},{iorb.batch_id}",
+                    "metadata": {
+                        "formula": "SOFR percentPercentile99 - IORB",
+                        "source_keys": sorted({latest.source.key, iorb.source.key}),
+                    },
+                }
+            )
     return metrics
 
 
@@ -472,8 +508,8 @@ def _auction_snapshot_data() -> tuple[list[dict[str, Any]], list[dict[str, Any]]
     return metrics, rows
 
 
-def _store_h41_observations(result, source, run) -> int:
-    """Persist normalized H.4.1 rows plus an immutable download fingerprint."""
+def _store_board_archive_observations(result, source, run) -> int:
+    """Persist Board DDP rows plus an immutable ZIP download fingerprint."""
 
     row_count = store_series_observations(result, source, run)
     archive_hash = str(result.metadata.get("archive_sha256") or "")
@@ -488,6 +524,20 @@ def _store_h41_observations(result, source, run) -> int:
             size_bytes=archive_size,
         )
     return row_count
+
+
+def _store_h41_observations(result, source, run) -> int:
+    """Backward-compatible H.4.1 persistence entry point used by tests/jobs."""
+
+    return _store_board_archive_observations(result, source, run)
+
+
+def _store_prates_observations(result, source, run) -> int:
+    return _store_board_archive_observations(result, source, run)
+
+
+def _store_h10_observations(result, source, run) -> int:
+    return _store_board_archive_observations(result, source, run)
 
 
 def _publish_dashboard(
@@ -699,7 +749,9 @@ def publish_official_dashboards() -> list[DashboardSnapshot]:
                 ),
                 _metric("TGA", "TGA", scale=Decimal("0.001"), suffix=" USD bn"),
                 _metric("SOFR", "SOFR", suffix="%"),
+                _metric("IORB", "IORB", suffix="%"),
                 _derived_metric("sofr-effr", "SOFR−EFFR", "SOFR", "EFFR", basis_points=True),
+                _derived_metric("sofr-iorb", "SOFR−IORB", "SOFR", "IORB", basis_points=True),
             ),
             "chart_data": _history_rows({"TGA": "TGA", "ONRRP": "ON RRP"}, limit=90),
         },
@@ -714,7 +766,9 @@ def publish_official_dashboards() -> list[DashboardSnapshot]:
                     "ONRRP", "ON RRP", decimals=3, scale=Decimal("0.001"), suffix=" USD bn"
                 ),
                 _metric("SOFR", "SOFR", suffix="%"),
+                _metric("IORB", "IORB", suffix="%"),
                 _derived_metric("sofr-effr", "SOFR−EFFR", "SOFR", "EFFR", basis_points=True),
+                _derived_metric("sofr-iorb", "SOFR−IORB", "SOFR", "IORB", basis_points=True),
                 _metric(
                     "FXSWAP-USD-OUTSTANDING",
                     "央行美元互换",
@@ -722,7 +776,7 @@ def publish_official_dashboards() -> list[DashboardSnapshot]:
                     suffix=" USD mn",
                 ),
             ),
-            "chart_data": _history_rows({"SOFR": "SOFR", "EFFR": "EFFR"}),
+            "chart_data": _history_rows({"SOFR": "SOFR", "EFFR": "EFFR", "IORB": "IORB"}),
         },
         {
             "key": "fed-balance-sheet",
@@ -761,13 +815,15 @@ def publish_official_dashboards() -> list[DashboardSnapshot]:
         {
             "key": "fed-funds",
             "title": "联邦基金利率",
-            "summary": "SOFR 与 EFFR 直接来自纽约联储；每个卡片单独标记有效日期。",
+            "summary": "SOFR 与 EFFR 直接来自纽约联储，IORB 直接来自 Federal Reserve PRATES；每个卡片单独标记有效日期。",
             "metrics": _existing(
                 _metric("EFFR", "EFFR", suffix="%"),
                 _metric("SOFR", "SOFR", suffix="%"),
+                _metric("IORB", "IORB", suffix="%"),
                 _derived_metric("sofr-effr", "SOFR−EFFR", "SOFR", "EFFR", basis_points=True),
+                _derived_metric("sofr-iorb", "SOFR−IORB", "SOFR", "IORB", basis_points=True),
             ),
-            "chart_data": _history_rows({"SOFR": "SOFR", "EFFR": "EFFR"}),
+            "chart_data": _history_rows({"SOFR": "SOFR", "EFFR": "EFFR", "IORB": "IORB"}),
         },
         {
             "key": "rates",
@@ -776,11 +832,30 @@ def publish_official_dashboards() -> list[DashboardSnapshot]:
             "metrics": _existing(
                 _metric("EFFR", "EFFR", suffix="%"),
                 _metric("SOFR", "SOFR", suffix="%"),
+                _metric("IORB", "IORB", suffix="%"),
                 _metric("UST-2Y", "2Y", suffix="%"),
                 _metric("UST-10Y", "10Y", suffix="%"),
                 _derived_metric("2s10s", "2s10s", "UST-10Y", "UST-2Y", basis_points=True),
             ),
             "chart_data": _history_rows({"UST-2Y": "2Y", "UST-10Y": "10Y"}),
+        },
+        {
+            "key": "assets-fx",
+            "title": "外汇",
+            "summary": "日频参考值直接来自 Federal Reserve H.10；广义美元指数不是 ICE DXY，参考汇率也不是可交易实时现货或远期报价。",
+            "metrics": _existing(
+                _metric("H10-BROAD-DOLLAR", "广义美元指数", decimals=2),
+                _metric("H10-EURUSD", "EUR/USD 参考汇率", decimals=4),
+                _metric("H10-USDCNY", "USD/CNY 参考汇率", decimals=4),
+                _metric("H10-USDJPY", "USD/JPY 参考汇率", decimals=4),
+            ),
+            "chart_data": _history_rows(
+                {
+                    "H10-BROAD-DOLLAR": "广义美元指数",
+                    "H10-EURUSD": "EUR/USD",
+                },
+                limit=120,
+            ),
         },
         {
             "key": "yield-curve",
@@ -941,9 +1016,11 @@ def publish_official_dashboards() -> list[DashboardSnapshot]:
         {
             "key": "subsurface",
             "title": "次表层资金流",
-            "summary": "SOFR 尾分位、成交量与常备回购直接取纽约联储底层数据；早午两场按日合并，小额技术测试不解读为压力。",
+            "summary": "SOFR 尾分位、成交量与常备回购取纽约联储底层数据，IORB 取 Federal Reserve PRATES；早午两场按日合并，小额技术测试不解读为压力。",
             "metrics": _existing(
                 *sofr_market_metrics,
+                _metric("IORB", "IORB", suffix="%"),
+                _derived_metric("sofr-iorb", "SOFR−IORB", "SOFR", "IORB", basis_points=True),
                 _metric("SRP", "常备回购", decimals=0, suffix=" USD mn"),
                 _metric("SRP-RATE", "常备回购利率", suffix="%"),
             ),
@@ -1148,6 +1225,56 @@ def refresh_h41_data() -> dict[str, Any]:
     try:
         result = provider.h41()
         run = record_provider_result(result, persist=_store_h41_observations)
+    finally:
+        provider.close()
+    dashboards = publish_official_dashboards() if _has_publishable_run([run]) else []
+    return {
+        "runs": [
+            {
+                "source": run.source.key,
+                "dataset": run.dataset,
+                "status": run.status,
+                "row_count": run.row_count,
+                "error": run.error,
+                "metadata": run.metadata,
+            }
+        ],
+        "dashboard_keys": [dashboard.key for dashboard in dashboards],
+    }
+
+
+def refresh_prates_data() -> dict[str, Any]:
+    """Refresh the Board's daily IORB series separately from the main batch."""
+
+    provider = FederalReservePRATESProvider()
+    try:
+        result = provider.iorb()
+        run = record_provider_result(result, persist=_store_prates_observations)
+    finally:
+        provider.close()
+    dashboards = publish_official_dashboards() if _has_publishable_run([run]) else []
+    return {
+        "runs": [
+            {
+                "source": run.source.key,
+                "dataset": run.dataset,
+                "status": run.status,
+                "row_count": run.row_count,
+                "error": run.error,
+                "metadata": run.metadata,
+            }
+        ],
+        "dashboard_keys": [dashboard.key for dashboard in dashboards],
+    }
+
+
+def refresh_h10_data() -> dict[str, Any]:
+    """Refresh Board H.10 daily reference FX data and publish the FX page."""
+
+    provider = FederalReserveH10Provider()
+    try:
+        result = provider.h10()
+        run = record_provider_result(result, persist=_store_h10_observations)
     finally:
         provider.close()
     dashboards = publish_official_dashboards() if _has_publishable_run([run]) else []

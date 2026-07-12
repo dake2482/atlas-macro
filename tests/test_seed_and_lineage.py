@@ -54,7 +54,7 @@ def test_seed_platform_creates_full_product_shape(seeded_platform):
 def test_seed_platform_is_idempotent(seeded_platform):
     before = {model: model.objects.count() for model in BASELINE_COUNTS}
 
-    call_command("seed_platform", verbosity=0)
+    call_command("seed_platform", allow_demo_data=True, verbosity=0)
 
     assert {model: model.objects.count() for model in BASELINE_COUNTS} == before
 

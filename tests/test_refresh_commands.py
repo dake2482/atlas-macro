@@ -38,6 +38,40 @@ from django.core.management.base import CommandError
             "upstream archive unavailable",
         ),
         (
+            "refresh_prates_data",
+            "research.management.commands.refresh_prates_data.refresh_prates_data",
+            {
+                "runs": [
+                    {
+                        "source": "federal-reserve",
+                        "dataset": "prates:iorb",
+                        "status": "failed",
+                        "row_count": 0,
+                        "error": "PRATES unavailable",
+                    }
+                ],
+                "dashboard_keys": [],
+            },
+            "PRATES unavailable",
+        ),
+        (
+            "refresh_h10_data",
+            "research.management.commands.refresh_h10_data.refresh_h10_data",
+            {
+                "runs": [
+                    {
+                        "source": "federal-reserve",
+                        "dataset": "h10",
+                        "status": "partial",
+                        "row_count": 3,
+                        "error": "",
+                    }
+                ],
+                "dashboard_keys": [],
+            },
+            "H.10 refresh incomplete",
+        ),
+        (
             "refresh_credit_data",
             "research.management.commands.refresh_credit_data.refresh_credit_official_data",
             {
@@ -77,6 +111,31 @@ from django.core.management.base import CommandError
             {"runs": [{}], "row_count": 0, "failed": 1, "partial": 0},
             "official news feeds failed",
         ),
+        (
+            "refresh_berkshire_letters",
+            "research.management.commands.refresh_berkshire_letters.refresh_berkshire_letters",
+            {
+                "runs": [
+                    {
+                        "source": "berkshire-hathaway",
+                        "status": "partial",
+                        "row_count": 39,
+                        "error": "",
+                        "metadata": {"first_year": 1977, "last_year": 2024},
+                    }
+                ],
+                "row_count": 39,
+                "failed": 0,
+                "partial": 1,
+            },
+            "Berkshire letter index is incomplete",
+        ),
+        (
+            "refresh_cftc_data",
+            "research.management.commands.refresh_cftc_data.refresh_cftc_sources",
+            {"runs": [{}], "row_count": 0, "failed": 0, "partial": 1},
+            "CFTC TFF datasets failed or were incomplete",
+        ),
     ],
 )
 def test_refresh_commands_raise_command_error_for_real_failures(
@@ -108,8 +167,6 @@ def test_refresh_commands_raise_command_error_for_real_failures(
         ),
     ],
 )
-def test_optional_credential_partial_refreshes_keep_zero_exit_code(
-    command_name, target, summary
-):
+def test_optional_credential_partial_refreshes_keep_zero_exit_code(command_name, target, summary):
     with patch(target, return_value=summary):
         call_command(command_name, stdout=StringIO(), stderr=StringIO())

@@ -3,11 +3,11 @@
 {% block content %}
 {% with item=object %}
 <div class="content-wrap">
-  <header class="mb-6 border-b hairline pb-6"><div class="flex flex-wrap gap-2"><span class="eyebrow">Supply-chain node</span><span class="badge">{{ item.layer }}</span><span class="badge badge-accent">{{ item.quadrant }}</span></div><h1 class="page-title mt-4">{{ item.name }}</h1><p class="page-deck">{{ item.description }}</p><div class="source-line mt-4"><span>{{ item.source_note|default:"自有分类库 · 人工审核" }}</span></div></header>
+  <header class="mb-6 border-b hairline pb-6"><div class="flex flex-wrap gap-2"><span class="eyebrow">Supply-chain node</span><span class="badge">{{ item.layer }}</span><span class="badge badge-accent">{{ item.quadrant }}</span></div><h1 class="page-title mt-4">{{ item.name }}</h1><p class="page-deck">{{ item.description }}</p><div class="source-line mt-4">{% if item.source_note|slice:":8" == "https://" %}<a class="hover:text-[var(--accent)]" href="{{ item.source_note }}" rel="noopener noreferrer" target="_blank">一手资料来源 ↗</a>{% elif item.source_note %}<span>{{ item.source_note }}</span>{% else %}<span>自有分类库 · 人工审核</span>{% endif %}</div></header>
   <div class="grid gap-3 grid-cols-2 lg:grid-cols-5">
-    <article class="metric-card"><p class="metric-label">叙事强度</p><p class="metric-value">{{ item.narrative_score|floatformat:0 }}</p><p class="metric-delta muted">/ 100</p></article>
-    <article class="metric-card"><p class="metric-label">收入增速</p><p class="metric-value">{{ item.revenue_growth|floatformat:1|default:"—" }}%</p></article>
-    <article class="metric-card"><p class="metric-label">中位毛利率</p><p class="metric-value">{{ item.gross_margin|floatformat:1|default:"—" }}%</p></article>
+    <article class="metric-card"><p class="metric-label">叙事强度</p><p class="metric-value">{% if item.narrative_score > 0 %}{{ item.narrative_score|floatformat:0 }}{% else %}—{% endif %}</p><p class="metric-delta muted">{% if item.narrative_score > 0 %}/ 100{% else %}待可追溯评分{% endif %}</p></article>
+    <article class="metric-card"><p class="metric-label">收入增速</p><p class="metric-value">{% if item.revenue_growth != None %}{{ item.revenue_growth|floatformat:1 }}%{% else %}—{% endif %}</p></article>
+    <article class="metric-card"><p class="metric-label">中位毛利率</p><p class="metric-value">{% if item.gross_margin != None %}{{ item.gross_margin|floatformat:1 }}%{% else %}—{% endif %}</p></article>
     <article class="metric-card"><p class="metric-label">中位 P/E</p><p class="metric-value">{{ item.median_pe|floatformat:1|default:"—" }}</p></article>
     <article class="metric-card"><p class="metric-label">聚合市值</p><p class="metric-value">{% if item.market_cap_usd_m %}${{ item.market_cap_usd_m|floatformat:0 }}m{% else %}—{% endif %}</p></article>
   </div>

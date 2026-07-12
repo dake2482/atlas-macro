@@ -3,14 +3,31 @@ from __future__ import annotations
 from copy import deepcopy
 
 
-def metric(label, value, change="", status="fresh", source="官方/授权数据", as_of="最近批次"):
+def metric(
+    label,
+    _legacy_value=None,
+    _legacy_change="",
+    _legacy_status="fresh",
+    _legacy_source="官方/授权数据",
+    _legacy_as_of="最近批次",
+    **_legacy_kwargs,
+):
+    """Describe an expected metric without shipping a plausible demo value.
+
+    Older registry declarations still pass prototype values so their labels can
+    be reviewed against the source-site contract.  Public configuration always
+    reduces those declarations to an explicit missing-data card; a published
+    dashboard snapshot is the only path that may supply a numeric value.
+    """
+
     return {
         "label": label,
-        "value": value,
-        "change": change,
-        "status": status,
-        "source": source,
-        "as_of": as_of,
+        "value": None,
+        "display_value": "—",
+        "change": None,
+        "status": "stale",
+        "source": "等待已授权数据源",
+        "as_of": None,
     }
 
 
@@ -642,6 +659,11 @@ for config in PAGE_CONFIGS.values():
             },
         ],
     )
+    if config.get("metrics"):
+        config["analysis"] = (
+            "本页尚无通过来源许可与质量校验的可发布快照；"
+            "不使用注册表中的原型数值或市场结论填充。"
+        )
 
 
 def get_page_config(key: str) -> dict:

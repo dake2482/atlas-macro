@@ -9,13 +9,16 @@ from celery import shared_task
 from django.conf import settings
 from django.utils import timezone
 
+from .berkshire_letters import refresh_berkshire_letters
 from .github_catalog import GITHUB_PROJECT_SEEDS
 from .models import DashboardSnapshot, GeneratedAnalysis, IngestionRun
 from .official_data import (
     refresh_credit_official_data,
+    refresh_h10_data,
     refresh_h41_data,
     refresh_macro_official_data,
     refresh_official_data,
+    refresh_prates_data,
 )
 from .official_news import (
     BLSReleaseProvider,
@@ -66,6 +69,20 @@ def refresh_h41_sources() -> dict[str, Any]:
     """Refresh the weekly Federal Reserve H.4.1 DDP archive."""
 
     return refresh_h41_data()
+
+
+@shared_task(name="research.tasks.refresh_prates_sources")
+def refresh_prates_sources() -> dict[str, Any]:
+    """Refresh daily IORB directly from the Federal Reserve PRATES package."""
+
+    return refresh_prates_data()
+
+
+@shared_task(name="research.tasks.refresh_h10_sources")
+def refresh_h10_sources() -> dict[str, Any]:
+    """Refresh Board H.10 daily FX reference series."""
+
+    return refresh_h10_data()
 
 
 @shared_task(name="research.tasks.refresh_credit_official_sources")
@@ -169,6 +186,13 @@ def refresh_news_sources() -> dict[str, Any]:
     return summarize_runs(runs)
 
 
+@shared_task(name="research.tasks.refresh_berkshire_letter_sources")
+def refresh_berkshire_letter_sources() -> dict[str, Any]:
+    """Refresh first-party shareholder-letter link metadata only."""
+
+    return refresh_berkshire_letters()
+
+
 @shared_task(name="research.tasks.refresh_market_sources")
 def refresh_market_sources() -> dict[str, Any]:
     return summarize_runs(
@@ -185,15 +209,15 @@ def refresh_market_sources() -> dict[str, Any]:
 @shared_task(name="research.tasks.refresh_cftc_sources")
 def refresh_cftc_sources() -> dict[str, Any]:
     provider = CFTCProvider()
+    runs = []
     try:
-        result = provider.positions(
-            report_type="tff-futures",
-            start_date=f"{max(timezone.now().year - 2, 2000)}-01-01",
-        )
-        run = record_provider_result(result, persist=store_cftc_positions)
+        start_date = f"{max(timezone.localdate().year - 5, 2000)}-01-01"
+        for report_type in ("tff-futures", "tff-combined"):
+            result = provider.positions(report_type=report_type, start_date=start_date)
+            runs.append(record_provider_result(result, persist=store_cftc_positions))
     finally:
         provider.close()
-    return summarize_runs([run])
+    return summarize_runs(runs)
 
 
 @shared_task(name="research.tasks.generate_daily_research")

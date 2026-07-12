@@ -86,6 +86,7 @@ STATIC_PUBLIC_PATHS = [
     "/ai-industry/chain/",
     "/ai-industry/chain/semiconductor-manufacturing/",
     "/ai-industry/chain/model-evolution/",
+    "/ai-industry/vibe-coding/",
     "/ai-industry/chain/applications/",
     "/ai-industry/chain/glossary/",
     "/ai-industry/chain/teardown/",
@@ -183,6 +184,7 @@ def test_dynamic_detail_routes_render(client, seeded_platform):
         release_date="2030-01-01",
         capability_score=1,
         description="Official vendor metadata fixture",
+        sources=[{"label": "Vendor", "url": "https://openai.com/research/fixture"}],
     )
     agent = CodingAgentProfile.objects.create(
         slug="verified-fixture-agent",

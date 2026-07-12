@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import json
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from xml.sax.saxutils import escape
+from zoneinfo import ZoneInfo
 
 from django.conf import settings
 from django.contrib.postgres.search import (
@@ -14,12 +15,14 @@ from django.contrib.postgres.search import (
 )
 from django.core.paginator import Paginator
 from django.db import connection
-from django.db.models import Avg, Count, Q, Sum
+from django.db.models import Avg, Count, F, Max, Min, Prefetch, Q, Sum
 from django.http import Http404, HttpResponse, JsonResponse
 from django.shortcuts import get_object_or_404, render
-from django.urls import reverse
+from django.urls import get_resolver, reverse
+from django.urls.resolvers import URLPattern, URLResolver
 from django.utils import timezone
 
+from .ai_glossary_catalog import AI_GLOSSARY_TERM_SLUGS
 from .calculations import percentile_rank
 from .models import (
     CFTCPosition,
@@ -45,6 +48,7 @@ from .models import (
     Thesis,
 )
 from .page_registry import get_page_config
+from .public_ai_contract import is_pending_ai_company_contract_slug
 from .services import (
     public_display_license_q,
     public_source_notices,
@@ -66,6 +70,107 @@ def _snapshot_source_keys(data):
             str(key) for key in (metric.get("metadata") or {}).get("source_keys", []) if key
         )
     return keys
+
+
+def _public_theses():
+    """Return only explicitly published, non-demonstration research reports."""
+
+    return (
+        Thesis.objects.filter(is_published=True)
+        .exclude(summary__startswith="演示日报 ")
+        .exclude(source_snapshot__source__key="demo-market")
+        .exclude(source_snapshot__data__demo=True)
+    )
+
+
+def _public_news_items():
+    return NewsItem.objects.exclude(source_url__icontains="example.com").exclude(
+        license_status__in=["synthetic", "restricted", "blocked"]
+    )
+
+
+def _public_research_mentions():
+    return ResearchMention.objects.filter(review_status="reviewed").exclude(
+        source_url__icontains="example.com"
+    )
+
+
+def _public_fund_letters():
+    return FundLetter.objects.exclude(original_url__icontains="example.com").exclude(
+        license_status__in=["synthetic", "restricted", "blocked"]
+    )
+
+
+def _public_fed_documents():
+    return (
+        FedDocument.objects.filter(
+            Q(original_url__istartswith="https://www.federalreserve.gov/")
+            | Q(original_url__istartswith="https://federalreserve.gov/")
+        )
+        .exclude(slug__startswith="clean-room-fed-document-")
+        .exclude(original_url__icontains="example.com")
+    )
+
+
+def _public_glossary_terms():
+    return GlossaryTerm.objects.exclude(source_url__icontains="example.com").exclude(
+        slug__startswith="clean-room-term-"
+    )
+
+
+def _public_ai_glossary_terms():
+    return _public_glossary_terms().filter(slug__in=AI_GLOSSARY_TERM_SLUGS)
+
+
+def _public_supply_chain_nodes():
+    return (
+        SupplyChainNode.objects.exclude(source_note="")
+        .exclude(slug__startswith="clean-room-node-")
+        .exclude(source_note__icontains="合成演示")
+    )
+
+
+def _public_companies():
+    return (
+        Company.objects.exclude(data_source_note="")
+        .exclude(slug__startswith="clean-room-company-")
+        .exclude(data_source_note__icontains="合成演示")
+        .exclude(investor_relations_url__icontains="example.com")
+    )
+
+
+def _public_model_profiles():
+    return (
+        ModelProfile.objects.exclude(sources=[])
+        .exclude(slug__startswith="clean-room-model-")
+        .order_by(
+            F("capability_score").desc(nulls_last=True),
+            F("release_date").desc(nulls_last=True),
+            "name",
+        )
+    )
+
+
+def _public_coding_agents():
+    return (
+        CodingAgentProfile.objects.exclude(homepage="")
+        .exclude(slug__startswith="clean-room-coding-agent-")
+        .exclude(homepage__icontains="example.com")
+        .order_by(
+            F("capability_score").desc(nulls_last=True),
+            F("release_date").desc(nulls_last=True),
+            "name",
+        )
+    )
+
+
+def _public_github_projects():
+    return (
+        GitHubProject.objects.exclude(repo__startswith="atlas-clean-room/")
+        .exclude(homepage__icontains="example.com")
+        .filter(public_display_license_q())
+        .distinct()
+    )
 
 
 def _text_search(queryset, query: str, fields: list[str], similarity_field: str):
@@ -138,8 +243,7 @@ def _market_card(symbol: str, fallback_name: str):
 
 def home(request):
     thesis = (
-        Thesis.objects.filter(is_published=True)
-        .exclude(summary__startswith="演示日报 ")
+        _public_theses()
         .select_related("source_snapshot", "source_snapshot__source")
         .order_by("-date")
         .first()
@@ -167,11 +271,9 @@ def home(request):
         "current_thesis": thesis,
         "evidence": normalized_evidence,
         "market_cards": market_cards,
-        "news_items": NewsItem.objects.exclude(source_url__contains="example.com/clean-room")[:5],
-        "research_items": ResearchMention.objects.exclude(
-            source_url__contains="example.com/clean-room"
-        )[:4],
-        "letters": FundLetter.objects.exclude(original_url__contains="example.com/clean-room")[:3],
+        "news_items": _public_news_items()[:5],
+        "research_items": _public_research_mentions()[:4],
+        "letters": _public_fund_letters()[:3],
         "breadcrumbs": [],
         "data_sources": Source.objects.exclude(key="demo-market").order_by("name")[:8],
         "as_of": source_snapshot.as_of if source_snapshot else None,
@@ -181,11 +283,7 @@ def home(request):
 
 
 def regime_log(request):
-    theses = (
-        Thesis.objects.filter(is_published=True)
-        .exclude(summary__startswith="演示日报 ")
-        .order_by("-date")
-    )
+    theses = _public_theses().order_by("-date")
     reviewed = theses.exclude(hit_rate__isnull=True)
     aggregates = reviewed.aggregate(avg_hit=Avg("hit_rate"), avg_return=Avg("simulated_return"))
     context = {
@@ -201,11 +299,7 @@ def regime_log(request):
 
 
 def daily_list(request):
-    queryset = (
-        Thesis.objects.filter(is_published=True)
-        .exclude(summary__startswith="演示日报 ")
-        .order_by("-date")
-    )
+    queryset = _public_theses().order_by("-date")
     query = request.GET.get("q", "").strip()
     status = request.GET.get("status", "").strip()
     if query:
@@ -232,15 +326,11 @@ def daily_detail(request, report_date: str):
     except ValueError as exc:
         raise Http404("无效报告日期") from exc
     thesis = get_object_or_404(
-        Thesis.objects.filter(is_published=True).exclude(summary__startswith="演示日报 "),
+        _public_theses(),
         date=parsed_date,
     )
-    previous = (
-        Thesis.objects.filter(is_published=True, date__lt=thesis.date).order_by("-date").first()
-    )
-    following = (
-        Thesis.objects.filter(is_published=True, date__gt=thesis.date).order_by("date").first()
-    )
+    previous = _public_theses().filter(date__lt=thesis.date).order_by("-date").first()
+    following = _public_theses().filter(date__gt=thesis.date).order_by("date").first()
     return render(
         request,
         "research/daily_detail.html",
@@ -302,14 +392,31 @@ def assets_overview(request):
                 }
             )
         groups.append({"key": asset_class, "label": label, "rows": rows})
+    covered_groups = sum(bool(group["rows"]) for group in groups)
+    covered_instruments = sum(len(group["rows"]) for group in groups)
     config = {
         "title": "大类资产",
         "eyebrow": "Cross-Asset Dashboard",
         "description": "把权益、久期、信用、商品、外汇和加密放在同一证据框架下。",
         "metrics": [
-            {"label": "资产类别", "value": "6", "change": "统一口径", "status": "fresh"},
-            {"label": "相关性窗口", "value": "30 / 90D", "change": "可切换", "status": "fresh"},
-            {"label": "数据血缘", "value": "逐组件", "change": "可追溯", "status": "fresh"},
+            {
+                "label": "已授权资产类别",
+                "display_value": f"{covered_groups} / {len(groups)}",
+                "change": "按实际可发布数据计数",
+                "status": "fresh" if covered_groups else "stale",
+            },
+            {
+                "label": "已覆盖标的",
+                "display_value": str(covered_instruments),
+                "change": "通过当前许可校验",
+                "status": "fresh" if covered_instruments else "stale",
+            },
+            {
+                "label": "30 / 90D 相关性",
+                "display_value": "—",
+                "change": "等待授权行情完整覆盖",
+                "status": "stale",
+            },
         ],
         "chart_data": [],
         "analysis": "尚未取得可公开展示的跨资产行情授权；页面只展示已通过许可校验的数据。",
@@ -391,7 +498,9 @@ def dashboard_page(request, page_key: str):
         snapshot.data = snapshot_data
         config["snapshot"] = snapshot
         config["required_notices"] = public_source_notices(snapshot_source_keys)
-        config["analysis"] = snapshot.summary or config.get("analysis", "")
+        config["analysis"] = snapshot.summary or (
+            "本批次只发布了通过许可和质量校验的数值，尚未生成经审核的信号解读。"
+        )
         config["metrics"] = snapshot_data.get("metrics", [])
         config["chart_data"] = snapshot_data.get("chart_data", [])
         config["sections"] = sections
@@ -525,59 +634,215 @@ def options_view(request):
 
 
 def positioning_view(request):
+    report_types = [
+        ("tff-futures", "TFF Futures Only"),
+        ("tff-combined", "TFF Futures + Options"),
+    ]
+    allowed_reports = {value for value, _ in report_types}
     report = request.GET.get("report", "tff-futures").strip() or "tff-futures"
+    if report not in allowed_reports:
+        report = "tff-futures"
     query = request.GET.get("q", "").strip()
-    latest_date = (
+    trader_group = request.GET.get("group", "").strip()
+    group_labels = {
+        "dealer": "交易商 / 中介机构",
+        "asset-manager": "资产管理机构",
+        "leveraged-money": "杠杆资金",
+        "other-reportables": "其他需申报交易者",
+        "non-reportables": "非申报交易者",
+    }
+    if trader_group not in group_labels:
+        trader_group = ""
+
+    visible_rows = (
         CFTCPosition.objects.filter(report_type=report)
-        .order_by("-report_date")
-        .values_list("report_date", flat=True)
-        .first()
+        .filter(public_display_license_q())
+        .select_related("source")
+        .distinct()
     )
-    latest_rows = CFTCPosition.objects.filter(report_type=report, report_date=latest_date)
+    latest_date = (
+        visible_rows.order_by("-report_date").values_list("report_date", flat=True).first()
+    )
+    latest_all = (
+        visible_rows.filter(report_date=latest_date) if latest_date else visible_rows.none()
+    )
+    latest_rows = latest_all
     if query:
         latest_rows = latest_rows.filter(
             Q(market_name__icontains=query) | Q(market_code__icontains=query)
         )
-    latest_rows = latest_rows.order_by("-open_interest", "market_name")[:30]
+    if trader_group:
+        latest_rows = latest_rows.filter(trader_group=trader_group)
+    latest_rows = list(latest_rows.order_by("-open_interest", "market_name", "trader_group")[:40])
+
+    pairs = {(row.market_code, row.trader_group) for row in latest_rows}
+    histories: dict[tuple[str, str], list[CFTCPosition]] = {pair: [] for pair in pairs}
+    if pairs and latest_date:
+        history_rows = visible_rows.filter(
+            report_date__lte=latest_date,
+            market_code__in={pair[0] for pair in pairs},
+            trader_group__in={pair[1] for pair in pairs},
+        ).order_by("report_date")
+        for history_row in history_rows:
+            pair = (history_row.market_code, history_row.trader_group)
+            if pair in histories:
+                histories[pair].append(history_row)
+
     positions = []
     for row in latest_rows:
-        history = list(
-            CFTCPosition.objects.filter(
-                report_type=report,
-                market_code=row.market_code,
-                trader_group=row.trader_group,
-            ).order_by("report_date")
-        )
+        history = histories[(row.market_code, row.trader_group)][-156:]
         nets = [item.net_position for item in history]
-        rank = percentile_rank(nets) if nets else 0
+        rank = percentile_rank(nets) if len(nets) >= 26 else None
         previous = history[-2].net_position if len(history) > 1 else None
         weekly_change = row.net_position - previous if previous is not None else None
+        if rank is None:
+            crowding = "样本不足"
+            crowding_level = "unknown"
+        elif rank >= 90:
+            crowding = "极度净多"
+            crowding_level = "extreme"
+        elif rank >= 80:
+            crowding = "净多拥挤"
+            crowding_level = "crowded"
+        elif rank <= 10:
+            crowding = "极度净空"
+            crowding_level = "extreme"
+        elif rank <= 20:
+            crowding = "净空拥挤"
+            crowding_level = "crowded"
+        else:
+            crowding = "中性"
+            crowding_level = "neutral"
         positions.append(
             {
                 "name": row.market_name,
                 "symbol": row.market_code,
-                "value": "—",
-                "group": "资产管理机构" if row.trader_group == "asset-manager" else "杠杆资金",
+                "group": group_labels[row.trader_group],
+                "trader_group": row.trader_group,
+                "long_positions": row.long_positions,
+                "short_positions": row.short_positions,
                 "net_position": row.net_position,
                 "weekly_change": weekly_change,
                 "percentile": rank,
-                "crowding": "拥挤" if rank >= 80 else "中性" if rank >= 30 else "低配",
+                "net_oi_pct": (
+                    round(row.net_position / row.open_interest * 100, 1)
+                    if row.open_interest
+                    else None
+                ),
+                "open_interest": row.open_interest,
+                "crowding": crowding,
+                "crowding_level": crowding_level,
             }
         )
+
+    focus_market = request.GET.get("market", "").strip()
+    focus_group = request.GET.get("focus_group", "").strip()
+    focus_pair = (focus_market, focus_group)
+    if focus_pair not in histories or not histories.get(focus_pair):
+        focus_pair = (
+            (positions[0]["symbol"], positions[0]["trader_group"]) if positions else ("", "")
+        )
+    focus_history = histories.get(focus_pair, [])[-156:]
+    focus_row = next(
+        (row for row in latest_rows if (row.market_code, row.trader_group) == focus_pair),
+        None,
+    )
+    chart_data = [
+        {"date": item.report_date.isoformat(), "净仓": item.net_position} for item in focus_history
+    ]
+
+    release = latest_all.aggregate(
+        first_published_at=Min("published_at"),
+        last_source_updated_at=Max("source_updated_at"),
+        last_fetched_at=Max("fetched_at"),
+        row_count=Count("pk"),
+        published_count=Count("published_at"),
+    )
+    published_at = release["first_published_at"]
+    source_updated_at = release["last_source_updated_at"]
+    fetched_at = release["last_fetched_at"]
+    if latest_date and (published_at is None or release["published_count"] != release["row_count"]):
+        quality_status = "error"
+    elif published_at and published_at < timezone.now() - timedelta(days=10):
+        quality_status = "stale"
+    elif published_at:
+        quality_status = "fresh"
+    else:
+        quality_status = "stale"
+    eastern = ZoneInfo("America/New_York")
+    published_at_et = published_at.astimezone(eastern) if published_at else None
+    source_updated_at_et = source_updated_at.astimezone(eastern) if source_updated_at else None
+    source = latest_all.first().source if latest_date else None
+    market_open_interest: dict[str, int] = {}
+    for market_code, open_interest in latest_all.values_list("market_code", "open_interest"):
+        if open_interest is not None:
+            market_open_interest[market_code] = open_interest
+    metrics = []
+    if latest_date:
+        common_metric = {
+            "quality_status": quality_status,
+            "source": source,
+            # Keep the report date date-only. ``metric_card`` also supports
+            # intraday timestamps and would otherwise apply a time formatter
+            # to a ``date`` object.
+            "as_of": latest_date.isoformat(),
+            "fetched_at": fetched_at,
+        }
+        metrics = [
+            {
+                **common_metric,
+                "label": "持仓日（通常周二）",
+                "display_value": latest_date.strftime("%Y-%m-%d"),
+            },
+            {
+                **common_metric,
+                "label": "PRE 发布时间",
+                "display_value": (
+                    published_at_et.strftime("%m-%d %H:%M ET") if published_at_et else "未提供"
+                ),
+            },
+            {
+                **common_metric,
+                "label": "当期合约数",
+                "display_value": f"{len(market_open_interest):,}",
+            },
+            {
+                **common_metric,
+                "label": "总未平仓量",
+                "display_value": f"{sum(market_open_interest.values()):,}",
+            },
+        ]
     return render(
         request,
         "research/positioning.html",
         {
             "title": "CFTC 持仓追踪",
             "positions": positions,
-            "report_types": [
-                ("tff-futures", "TFF Futures Only"),
-                ("tff-combined", "TFF Futures + Options"),
-            ],
+            "report": report,
+            "report_types": report_types,
+            "group_labels": group_labels,
+            "selected_group": trader_group,
             "as_of": latest_date,
-            "source": "CFTC Public Reporting Environment" if latest_date else None,
-            "quality_status": "fresh" if latest_date else "stale",
-            "chart_data": [item["net_position"] for item in positions[:20]],
+            "published_at": published_at,
+            "published_at_et": published_at_et,
+            "published_at_et_display": (
+                published_at_et.strftime("%Y-%m-%d %H:%M ET") if published_at_et else ""
+            ),
+            "source_updated_at_et": source_updated_at_et,
+            "source_updated_at_et_display": (
+                source_updated_at_et.strftime("%Y-%m-%d %H:%M ET") if source_updated_at_et else ""
+            ),
+            "fetched_at": fetched_at,
+            "source": source,
+            "quality_status": quality_status,
+            "metrics": metrics,
+            "chart_data": chart_data,
+            "focus_market": focus_pair[0],
+            "focus_group": focus_pair[1],
+            "focus_name": focus_row.market_name if focus_row else "",
+            "focus_group_label": group_labels.get(focus_pair[1], ""),
+            "percentile_window": 156,
+            "required_notices": public_source_notices(["cftc"]) if latest_date else [],
             "breadcrumbs": _breadcrumbs(("首页", "/"), ("大类资产", "/assets/"), ("CFTC 持仓", "")),
         },
     )
@@ -609,7 +874,7 @@ def crypto_derivatives(request):
 
 
 def fed_hub(request):
-    documents = FedDocument.objects.exclude(original_url__contains="example.com/clean-room")
+    documents = _public_fed_documents()
     latest = {
         key: documents.filter(document_type=key).first()
         for key in [
@@ -618,7 +883,8 @@ def fed_hub(request):
             FedDocument.DocumentType.NEWS,
         ]
     }
-    average = documents.aggregate(score=Avg("hawkish_score"))["score"] or 0
+    scored_documents = documents.exclude(summary="")
+    average = scored_documents.aggregate(score=Avg("hawkish_score"))["score"]
     return render(
         request,
         "research/fed_list.html",
@@ -637,9 +903,7 @@ def fed_list(request, doc_type: str):
     valid_types = {choice[0] for choice in FedDocument.DocumentType.choices}
     if doc_type not in valid_types:
         raise Http404("未知文档类型")
-    queryset = FedDocument.objects.filter(document_type=doc_type).exclude(
-        original_url__contains="example.com/clean-room"
-    )
+    queryset = _public_fed_documents().filter(document_type=doc_type)
     page_obj = Paginator(queryset, 20).get_page(request.GET.get("page"))
     labels = dict(FedDocument.DocumentType.choices)
     return render(
@@ -657,7 +921,7 @@ def fed_list(request, doc_type: str):
 
 def fed_detail(request, doc_type: str, slug: str):
     document = get_object_or_404(
-        FedDocument.objects.exclude(original_url__contains="example.com/clean-room"),
+        _public_fed_documents(),
         document_type=doc_type,
         slug=slug,
     )
@@ -679,7 +943,7 @@ def fed_detail(request, doc_type: str, slug: str):
 
 
 def _news_queryset(request, semiconductor_only=False, ai_only=False):
-    queryset = NewsItem.objects.exclude(source_url__contains="example.com/clean-room")
+    queryset = _public_news_items()
     if semiconductor_only:
         queryset = queryset.filter(
             Q(category__in=["ai", "foundry", "memory", "packaging", "materials", "supply-chain"])
@@ -703,16 +967,13 @@ def news_list(request, semiconductor_only=False, ai_only=False):
     queryset, filters = _news_queryset(request, semiconductor_only, ai_only)
     page_obj = Paginator(queryset, 20).get_page(request.GET.get("page"))
     sources = (
-        NewsItem.objects.exclude(source_url__contains="example.com/clean-room")
+        _public_news_items()
         .order_by("source_name")
         .values_list("source_name", flat=True)
         .distinct()
     )
     categories = (
-        NewsItem.objects.exclude(source_url__contains="example.com/clean-room")
-        .order_by("category")
-        .values_list("category", flat=True)
-        .distinct()
+        _public_news_items().order_by("category").values_list("category", flat=True).distinct()
     )
     title = "AI 资讯" if ai_only else "半导体行业资讯" if semiconductor_only else "新闻 / 事件"
     return render(
@@ -731,7 +992,7 @@ def news_list(request, semiconductor_only=False, ai_only=False):
 
 
 def reports(request, all_reports=False):
-    public_research = ResearchMention.objects.exclude(source_url__contains="example.com/clean-room")
+    public_research = _public_research_mentions()
     queryset = public_research
     query = request.GET.get("q", "").strip()
     bank = request.GET.get("bank", "").strip()
@@ -779,8 +1040,12 @@ def reports(request, all_reports=False):
 
 
 def fund_letters(request):
-    public_letters = FundLetter.objects.exclude(original_url__contains="example.com/clean-room")
-    queryset = public_letters
+    public_letters = _public_fund_letters()
+    queryset = public_letters.order_by(
+        F("published_at").desc(nulls_last=True),
+        "-quarter",
+        "fund_name",
+    )
     query = request.GET.get("q", "").strip()
     if query:
         queryset = _text_search(
@@ -795,7 +1060,7 @@ def fund_letters(request):
             queryset = queryset.filter(**{key: value})
     page_obj = Paginator(queryset, 24).get_page(request.GET.get("page"))
     options = {
-        key: public_letters.order_by(key).values_list(key, flat=True).distinct()
+        key: public_letters.exclude(**{key: ""}).order_by(key).values_list(key, flat=True).distinct()
         for key in ["quarter", "strategy", "stance"]
     }
     fund_count = public_letters.values("fund_name").distinct().count()
@@ -816,9 +1081,13 @@ def fund_letters(request):
 
 
 def fund_letter_detail(request, pk: int):
-    public_letters = FundLetter.objects.exclude(original_url__contains="example.com/clean-room")
+    public_letters = _public_fund_letters()
     letter = get_object_or_404(public_letters, pk=pk)
-    related = public_letters.filter(fund_name=letter.fund_name).exclude(pk=letter.pk)[:8]
+    related = (
+        public_letters.filter(fund_name=letter.fund_name)
+        .exclude(pk=letter.pk)
+        .order_by(F("published_at").desc(nulls_last=True), "-quarter")[:8]
+    )
     return render(
         request,
         "research/fund_letter_detail.html",
@@ -836,7 +1105,7 @@ def fund_letter_detail(request, pk: int):
 
 
 def glossary(request, ai_only=False):
-    public_terms = GlossaryTerm.objects.exclude(source_url__contains="example.com/")
+    public_terms = _public_ai_glossary_terms() if ai_only else _public_glossary_terms()
     queryset = public_terms
     filters = {
         key: request.GET.get(key, "").strip()
@@ -867,7 +1136,43 @@ def glossary(request, ai_only=False):
             "filters": filters,
             "filter_options": options,
             "ai_only": ai_only,
-            "breadcrumbs": _breadcrumbs(("首页", "/"), ("术语库", "")),
+            "page_description": (
+                "用原创中文定义梳理 AI 模型、半导体与算力基础设施概念，并逐项链接一手来源。"
+                if ai_only
+                else "把指标定义、公式、解释边界与来源放在一起，减少同词异义。"
+            ),
+            "breadcrumbs": (
+                _breadcrumbs(
+                    ("首页", "/"),
+                    ("AI 产业观察", "/ai-industry/"),
+                    ("AI 术语库", ""),
+                )
+                if ai_only
+                else _breadcrumbs(("首页", "/"), ("术语库", ""))
+            ),
+        },
+    )
+
+
+def ai_glossary_detail(request, slug: str):
+    term = get_object_or_404(_public_ai_glossary_terms(), slug=slug)
+    return render(
+        request,
+        "research/glossary.html",
+        {
+            "title": term.term,
+            "terms": [term],
+            "filters": {},
+            "filter_options": {},
+            "ai_only": True,
+            "detail_term": term,
+            "page_description": term.definition,
+            "breadcrumbs": _breadcrumbs(
+                ("首页", "/"),
+                ("AI 产业观察", "/ai-industry/"),
+                ("AI 术语库", reverse("ai-glossary")),
+                (term.term, ""),
+            ),
         },
     )
 
@@ -881,31 +1186,31 @@ def search(request):
     glossary_results = GlossaryTerm.objects.none()
     if query:
         company_results = _text_search(
-            Company.objects.exclude(data_source_note__icontains="合成演示"),
+            _public_companies(),
             query,
             ["name", "name_en", "ticker", "description"],
             "name",
         )[:10]
         news_results = _text_search(
-            NewsItem.objects.exclude(source_url__contains="example.com/clean-room"),
+            _public_news_items(),
             query,
             ["title", "original_title", "summary"],
             "title",
         )[:10]
         research_results = _text_search(
-            ResearchMention.objects.exclude(source_url__contains="example.com/clean-room"),
+            _public_research_mentions(),
             query,
             ["title", "summary", "bank"],
             "title",
         )[:10]
         letter_results = _text_search(
-            FundLetter.objects.exclude(original_url__contains="example.com/clean-room"),
+            _public_fund_letters(),
             query,
             ["fund_name", "fund_name_en", "manager", "summary"],
             "fund_name",
         )[:10]
         glossary_results = _text_search(
-            GlossaryTerm.objects.exclude(source_url__contains="example.com/"),
+            _public_glossary_terms(),
             query,
             ["term", "term_en", "definition"],
             "term",
@@ -951,6 +1256,20 @@ def data_sources(request):
         status: requirements.filter(status=status).count()
         for status, _ in DataRequirement.Status.choices
     }
+    current_licenses = (
+        SourceLicense.objects.filter(is_current=True)
+        .exclude(source__key="demo-market")
+        .exclude(reviewed_by="clean-room seed policy")
+        .exclude(terms_url__icontains="example.com")
+        .select_related("source")
+    )
+    sources = (
+        Source.objects.exclude(key="demo-market")
+        .exclude(homepage__icontains="example.com")
+        .prefetch_related(
+            Prefetch("licenses", queryset=current_licenses, to_attr="public_licenses")
+        )
+    )
     return render(
         request,
         "research/data_sources.html",
@@ -958,25 +1277,22 @@ def data_sources(request):
             "title": "数据源与采购台账",
             "requirements": requirements,
             "status_counts": status_counts,
-            "sources": Source.objects.exclude(key="demo-market").prefetch_related("licenses"),
-            "licenses": SourceLicense.objects.select_related("source").all(),
+            "sources": sources,
+            "licenses": current_licenses,
             "breadcrumbs": _breadcrumbs(("首页", "/"), ("数据源与采购", "")),
         },
     )
 
 
 def ai_hub(request, chain_mode=False):
-    nodes = SupplyChainNode.objects.exclude(source_note__icontains="合成演示").annotate(
-        company_count=Count("companies")
+    public_companies = _public_companies()
+    nodes = _public_supply_chain_nodes().annotate(
+        company_count=Count("companies", filter=Q(companies__in=public_companies))
     )
-    companies = Company.objects.exclude(data_source_note__icontains="合成演示")
-    models = ModelProfile.objects.exclude(slug__startswith="clean-room-model-")
-    agents = CodingAgentProfile.objects.exclude(homepage__contains="example.com/clean-room")
-    projects = (
-        GitHubProject.objects.exclude(repo__startswith="atlas-clean-room/")
-        .filter(public_display_license_q())
-        .distinct()
-    )
+    companies = public_companies
+    models = _public_model_profiles()
+    agents = _public_coding_agents()
+    projects = _public_github_projects()
     latest_project = (
         projects.filter(data_as_of__isnull=False)
         .select_related("source")
@@ -1030,19 +1346,22 @@ def ai_hub(request, chain_mode=False):
         "top_models": models[:4],
         "top_agents": agents[:4],
         "top_projects": projects[:8],
-        "news_items": NewsItem.objects.exclude(
-            source_url__contains="example.com/clean-room"
-        ).filter(Q(category="ai") | Q(themes__icontains="AI"))[:5],
+        "news_items": _public_news_items().filter(Q(category="ai") | Q(themes__icontains="AI"))[:5],
         "breadcrumbs": _breadcrumbs(("首页", "/"), ("AI 产业观察", "")),
     }
     return render(request, "research/ai_hub.html", context)
 
 
 def ai_market_map(request):
-    nodes = SupplyChainNode.objects.exclude(source_note__icontains="合成演示").annotate(
-        company_count=Count("companies")
+    public_companies = _public_companies()
+    nodes = (
+        _public_supply_chain_nodes()
+        .annotate(company_count=Count("companies", filter=Q(companies__in=public_companies)))
+        .prefetch_related(
+            Prefetch("companies", queryset=public_companies, to_attr="public_companies")
+        )
     )
-    companies = Company.objects.exclude(data_source_note__icontains="合成演示")
+    companies = public_companies
     query = request.GET.get("q", "").strip()
     layer = request.GET.get("layer", "").strip()
     quadrant = request.GET.get("quadrant", "").strip()
@@ -1111,8 +1430,9 @@ def ai_market_map(request):
 
 
 def ai_graph(request):
-    node_query = SupplyChainNode.objects.exclude(source_note__icontains="合成演示").annotate(
-        company_count=Count("companies")
+    public_companies = _public_companies()
+    node_query = _public_supply_chain_nodes().annotate(
+        company_count=Count("companies", filter=Q(companies__in=public_companies))
     )
     query = request.GET.get("q", "").strip()
     layer = request.GET.get("layer", "").strip()
@@ -1123,9 +1443,13 @@ def ai_graph(request):
         node_query = node_query.filter(layer=layer)
     nodes = list(node_query)
     node_ids = [node.pk for node in nodes]
-    edge_query = SupplyChainEdge.objects.filter(
-        source_node_id__in=node_ids, target_node_id__in=node_ids, reviewed=True
-    ).exclude(evidence_url__contains="example.com/clean-room")
+    edge_query = (
+        SupplyChainEdge.objects.filter(
+            source_node_id__in=node_ids, target_node_id__in=node_ids, reviewed=True
+        )
+        .exclude(evidence_url="")
+        .exclude(evidence_url__icontains="example.com")
+    )
     if confidence:
         try:
             edge_query = edge_query.filter(confidence__gte=Decimal(confidence))
@@ -1157,9 +1481,9 @@ def ai_graph(request):
         {
             "title": "AI 产业关系图谱",
             "nodes": nodes,
-            "companies": Company.objects.exclude(data_source_note__icontains="合成演示")
-            .filter(primary_node_id__in=node_ids)
-            .select_related("primary_node"),
+            "companies": public_companies.filter(primary_node_id__in=node_ids).select_related(
+                "primary_node"
+            ),
             "edges": edges,
             "layers": sorted({node.layer for node in nodes}),
             "filters": {"q": query, "layer": layer, "confidence": confidence},
@@ -1172,18 +1496,20 @@ def ai_graph(request):
 
 
 def ai_node(request, slug: str):
-    node = get_object_or_404(
-        SupplyChainNode.objects.exclude(source_note__icontains="合成演示"), slug=slug
+    node = get_object_or_404(_public_supply_chain_nodes(), slug=slug)
+    companies = _public_companies().filter(primary_node=node).order_by("-market_cap_usd_m")
+    inbound = (
+        node.inbound_edges.exclude(evidence_url__icontains="example.com")
+        .exclude(evidence_url="")
+        .filter(reviewed=True)
+        .select_related("source_node")
     )
-    companies = node.companies.exclude(data_source_note__icontains="合成演示").order_by(
-        "-market_cap_usd_m"
+    outbound = (
+        node.outbound_edges.exclude(evidence_url__icontains="example.com")
+        .exclude(evidence_url="")
+        .filter(reviewed=True)
+        .select_related("target_node")
     )
-    inbound = node.inbound_edges.exclude(
-        evidence_url__contains="example.com/clean-room"
-    ).select_related("source_node")
-    outbound = node.outbound_edges.exclude(
-        evidence_url__contains="example.com/clean-room"
-    ).select_related("target_node")
     return render(
         request,
         "research/ai_node.html",
@@ -1196,14 +1522,16 @@ def ai_node(request, slug: str):
             "inbound_edges": inbound,
             "outbound_edges": outbound,
             "chart_data": [
-                float(value or 0)
-                for value in [
-                    node.narrative_score,
-                    node.revenue_growth,
-                    node.gross_margin,
-                    node.median_pe,
-                    node.median_ps,
-                ]
+                (None if value is None or (index == 0 and value == 0) else float(value))
+                for index, value in enumerate(
+                    [
+                        node.narrative_score,
+                        node.revenue_growth,
+                        node.gross_margin,
+                        node.median_pe,
+                        node.median_ps,
+                    ]
+                )
             ],
             "breadcrumbs": _breadcrumbs(
                 ("首页", "/"),
@@ -1216,16 +1544,28 @@ def ai_node(request, slug: str):
 
 
 def ai_company(request, slug: str):
-    company = get_object_or_404(
-        Company.objects.exclude(data_source_note__icontains="合成演示").select_related(
-            "primary_node"
-        ),
-        slug=slug,
+    company = (
+        _public_companies().select_related("primary_node").filter(slug=slug).first()
     )
+    if company is None:
+        if not is_pending_ai_company_contract_slug(slug):
+            raise Http404("公司档案不存在")
+        return render(
+            request,
+            "research/ai_company_pending.html",
+            {
+                "title": f"{slug} · 公司数据待接入",
+                "contract_slug": slug,
+                "breadcrumbs": _breadcrumbs(
+                    ("首页", "/"),
+                    ("AI 产业观察", "/ai-industry/"),
+                    ("公司档案", ""),
+                    (slug, ""),
+                ),
+            },
+        )
     financials = (
-        company.financials.select_related("source")
-        .filter(public_display_license_q())
-        .distinct()
+        company.financials.select_related("source").filter(public_display_license_q()).distinct()
     )
     latest_fact = financials.first()
     chart_data = list(
@@ -1238,9 +1578,7 @@ def ai_company(request, slug: str):
         .values_list("close", flat=True)[:240]
     )
     related = (
-        Company.objects.exclude(data_source_note__icontains="合成演示")
-        .filter(primary_node=company.primary_node)
-        .exclude(pk=company.pk)[:8]
+        _public_companies().filter(primary_node=company.primary_node).exclude(pk=company.pk)[:8]
     )
     return render(
         request,
@@ -1265,15 +1603,65 @@ def ai_company(request, slug: str):
 
 
 def model_evolution(request):
+    models = _public_model_profiles()
+    agents = _public_coding_agents()
+    model_rows = list(models)
+    as_of = max((item.release_date for item in model_rows), default=None)
+    capability_data = [
+        {
+            "name": item.name,
+            "Terminal-Bench 2.1": float(item.capability_score),
+        }
+        for item in model_rows
+        if item.capability_score is not None and item.capability_score > 0
+    ]
+    cost_data = [
+        {
+            "name": item.name,
+            "输入 $/M": float(item.input_price),
+            "输出 $/M": float(item.output_price),
+        }
+        for item in model_rows
+        if item.input_price is not None and item.output_price is not None
+    ]
     return render(
         request,
         "research/model_evolution.html",
         {
             "title": "大模型演变",
-            "models": ModelProfile.objects.exclude(slug__startswith="clean-room-model-"),
-            "agents": CodingAgentProfile.objects.exclude(
-                homepage__contains="example.com/clean-room"
-            ),
+            "models": model_rows,
+            "agents": agents,
+            "capability_data": capability_data,
+            "cost_data": cost_data,
+            "metrics": [
+                {
+                    "label": "官方来源模型",
+                    "display_value": str(len(model_rows)),
+                    "status": "fresh" if model_rows else "stale",
+                    "as_of": as_of,
+                },
+                {
+                    "label": "公开标价模型",
+                    "display_value": str(sum(item.input_price is not None for item in model_rows)),
+                    "status": "fresh" if model_rows else "stale",
+                    "as_of": as_of,
+                },
+                {
+                    "label": "Coding Agents",
+                    "display_value": str(agents.count()),
+                    "status": "fresh" if agents.exists() else "stale",
+                    "as_of": as_of,
+                },
+                {
+                    "label": "统一 Agent 评分",
+                    "display_value": "—",
+                    "change": "待同批次独立评测",
+                    "status": "stale",
+                    "as_of": as_of,
+                },
+            ],
+            "source": "厂商官方发布页（人工核验）" if model_rows else None,
+            "as_of": as_of,
             "breadcrumbs": _breadcrumbs(
                 ("首页", "/"), ("AI 产业观察", "/ai-industry/"), ("大模型演变", "")
             ),
@@ -1282,7 +1670,7 @@ def model_evolution(request):
 
 
 def model_detail(request, slug: str):
-    public_models = ModelProfile.objects.exclude(slug__startswith="clean-room-model-")
+    public_models = _public_model_profiles()
     profile = get_object_or_404(public_models, slug=slug)
     peers = public_models.exclude(pk=profile.pk)[:5]
     return render(
@@ -1295,6 +1683,16 @@ def model_detail(request, slug: str):
             "profile": profile,
             "model": profile,
             "peers": peers,
+            "benchmark_data": [
+                {
+                    "label": "Terminal-Bench 2.1",
+                    "score": float(profile.capability_score),
+                }
+            ]
+            if profile.capability_score is not None and profile.capability_score > 0
+            else [],
+            "source": profile.sources[0].get("label") if profile.sources else None,
+            "as_of": profile.release_date,
             "breadcrumbs": _breadcrumbs(
                 ("首页", "/"),
                 ("大模型演变", "/ai-industry/chain/model-evolution/"),
@@ -1305,7 +1703,7 @@ def model_detail(request, slug: str):
 
 
 def coding_agent_detail(request, slug: str):
-    public_agents = CodingAgentProfile.objects.exclude(homepage__contains="example.com/clean-room")
+    public_agents = _public_coding_agents()
     profile = get_object_or_404(public_agents, slug=slug)
     peers = public_agents.exclude(pk=profile.pk)[:5]
     return render(
@@ -1318,6 +1716,9 @@ def coding_agent_detail(request, slug: str):
             "profile": profile,
             "agent": profile,
             "peers": peers,
+            "benchmark_data": [],
+            "source": profile.homepage,
+            "as_of": profile.release_date,
             "breadcrumbs": _breadcrumbs(
                 ("首页", "/"),
                 ("Coding Agent", "/ai-industry/chain/model-evolution/"),
@@ -1327,14 +1728,55 @@ def coding_agent_detail(request, slug: str):
     )
 
 
+def coding_agents(request):
+    query = request.GET.get("q", "").strip()
+    product_type = request.GET.get("type", "").strip()
+    public_agents = _public_coding_agents()
+    product_types = list(
+        public_agents.order_by("product_type")
+        .values_list("product_type", flat=True)
+        .distinct()
+    )
+    agents = public_agents
+    if query:
+        agents = _text_search(
+            agents,
+            query,
+            ["name", "provider", "product_type", "description"],
+            "name",
+        )
+    if product_type:
+        agents = agents.filter(product_type=product_type)
+    rows = list(agents)
+    known_release_dates = [item.release_date for item in rows if item.release_date]
+    as_of = max(known_release_dates, default=None)
+    return render(
+        request,
+        "research/coding_agents.html",
+        {
+            "title": "Coding Agent 目录",
+            "agents": rows,
+            "total_count": public_agents.count(),
+            "filtered_count": len(rows),
+            "product_types": product_types,
+            "filters": {"q": query, "type": product_type},
+            "as_of": as_of,
+            "source": "厂商官方产品页（人工核验）" if rows else None,
+            "breadcrumbs": _breadcrumbs(
+                ("首页", "/"),
+                ("AI 产业观察", "/ai-industry/"),
+                ("Coding Agents", ""),
+            ),
+        },
+    )
+
+
 def applications(request):
     query = request.GET.get("q", "").strip()
     category = request.GET.get("category", "").strip()
     sort = request.GET.get("sort", "momentum").strip()
-    public_projects = (
-        GitHubProject.objects.exclude(repo__startswith="atlas-clean-room/")
-        .filter(public_display_license_q())
-        .distinct()
+    public_projects = _public_github_projects().annotate(
+        snapshot_count=Count("snapshots", distinct=True)
     )
     categories = list(
         public_projects.exclude(category="")
@@ -1364,24 +1806,31 @@ def applications(request):
         .order_by("-data_as_of")
         .first()
     )
+    delta_ready_projects = projects.filter(snapshot_count__gte=2)
     category_momentum = list(
-        projects.values("category").annotate(value=Sum("stars_7d")).order_by("-value", "category")
+        delta_ready_projects.values("category")
+        .annotate(value=Sum("stars_7d"))
+        .order_by("-value", "category")
     )
     total_stars = projects.aggregate(total=Sum("stars"))["total"] or 0
+    weekly_delta = sum(item["value"] or 0 for item in category_momentum)
+    has_weekly_delta = delta_ready_projects.exists()
     return render(
         request,
         "research/applications.html",
         {
             "title": "AI 应用开源雷达",
             "projects": projects,
-            "top_weekly": projects.order_by("-stars_7d", "-stars")[:8],
+            "top_weekly": delta_ready_projects.filter(stars_7d__gt=0).order_by(
+                "-stars_7d", "-stars"
+            )[:8],
             "categories": categories,
             "selected_category": category,
             "selected_sort": sort,
             "query": query,
             "total_stars": total_stars,
             "as_of": latest.data_as_of if latest else None,
-            "source": latest.source if latest else "GitHub REST API",
+            "source": latest.source if latest else "数据源覆盖台账",
             "required_notices": public_source_notices(["github"]) if latest else [],
             "chart_data": [
                 {"label": item["category"] or "Uncategorised", "value": item["value"] or 0}
@@ -1405,8 +1854,9 @@ def applications(request):
                 },
                 {
                     "label": "7 日新增",
-                    "display_value": f"{sum(item['value'] or 0 for item in category_momentum):,}",
+                    "display_value": (f"{weekly_delta:,}" if has_weekly_delta else "—"),
                     "source": "每日快照差值",
+                    "change": ("等待第二个每日快照" if not has_weekly_delta else "已对齐两个快照"),
                 },
             ],
             "breadcrumbs": _breadcrumbs(
@@ -1440,6 +1890,105 @@ def gone(request, reason="该模块已下线，历史 URL 仅用于兼容。"):
     )
 
 
+_LLMS_EXCLUDED_ROUTE_NAMES = {
+    "credit-issuance",
+    "credit-events",
+    "search",
+    "robots",
+    "sitemap",
+    "llms",
+    "manifest",
+    "service-worker",
+    "offline",
+    "health",
+}
+
+
+def _public_static_route_names(patterns=None):
+    """Yield argument-free content routes while excluding internal and lifecycle endpoints."""
+
+    if patterns is None:
+        patterns = get_resolver().url_patterns
+    for pattern in patterns:
+        if isinstance(pattern, URLResolver):
+            if pattern.namespace == "admin":
+                continue
+            yield from _public_static_route_names(pattern.url_patterns)
+            continue
+        if not isinstance(pattern, URLPattern) or not pattern.name:
+            continue
+        route = str(pattern.pattern)
+        if "<" in route or pattern.name in _LLMS_EXCLUDED_ROUTE_NAMES:
+            continue
+        yield pattern.name
+
+
+def _llms_label(value):
+    return str(value).replace("[", "").replace("]", "").replace("\n", " ").strip()
+
+
+def llms_txt(request):
+    """Publish a database-aware inventory of content URLs suitable for LLM discovery."""
+
+    entries = []
+    for route_name in dict.fromkeys(_public_static_route_names()):
+        entries.append((route_name.replace("-", " ").title(), reverse(route_name)))
+
+    entries.extend(
+        (f"日报 {item.date.isoformat()}", item.get_absolute_url()) for item in _public_theses()
+    )
+    entries.extend(
+        (f"{item.fund_name} {item.quarter}", item.get_absolute_url())
+        for item in _public_fund_letters()
+    )
+    entries.extend((item.name, item.get_absolute_url()) for item in _public_supply_chain_nodes())
+    entries.extend((item.name, item.get_absolute_url()) for item in _public_companies())
+    for item in _public_fed_documents():
+        route_name = {
+            FedDocument.DocumentType.STATEMENT: "fed-detail",
+            FedDocument.DocumentType.SPEECH: "fed-speech-detail",
+            FedDocument.DocumentType.NEWS: "fed-news-detail",
+        }[item.document_type]
+        entries.append((item.title, reverse(route_name, kwargs={"slug": item.slug})))
+    entries.extend(
+        (item.name, reverse("model-detail", kwargs={"slug": item.slug}))
+        for item in _public_model_profiles()
+    )
+    entries.extend(
+        (item.name, reverse("coding-agent-detail", kwargs={"slug": item.slug}))
+        for item in _public_coding_agents()
+    )
+    entries.extend(
+        (f"术语：{item.term}", f"{reverse('glossary')}#{item.slug}")
+        for item in _public_glossary_terms().exclude(slug__in=AI_GLOSSARY_TERM_SLUGS)
+    )
+    entries.extend(
+        (
+            f"AI 术语：{item.term}",
+            reverse("ai-glossary-detail", kwargs={"slug": item.slug}),
+        )
+        for item in _public_ai_glossary_terms()
+    )
+
+    lines = [
+        f"# {settings.SITE_NAME}",
+        "",
+        "> 可追溯的跨资产宏观与 AI 产业研究平台。仅列出当前可公开访问的内容路由。",
+        "",
+        "## Public content",
+        "",
+    ]
+    seen = set()
+    for label, path in entries:
+        url = request.build_absolute_uri(path)
+        if url in seen:
+            continue
+        seen.add(url)
+        lines.append(f"- [{_llms_label(label)}]({url})")
+    lines.append("")
+    return HttpResponse("\n".join(lines), content_type="text/plain; charset=utf-8")
+
+
 def robots_txt(request):
     content = "\n".join(
         [
@@ -1449,6 +1998,9 @@ def robots_txt(request):
             "Disallow: /api/",
             "Disallow: /internal/",
             "Disallow: /search/",
+            "Disallow: /login/",
+            "Disallow: /logout/",
+            "Disallow: /static/research_pdfs/",
             f"Sitemap: {settings.SITE_URL}/sitemap.xml",
             "",
         ]
@@ -1526,28 +2078,21 @@ def sitemap_xml(request):
         "ai-chain",
         "semiconductor-chain",
         "model-evolution",
+        "coding-agents",
         "applications",
         "ai-glossary",
         "ai-teardown",
     ]
     urls = [request.build_absolute_uri(reverse(name)) for name in static_names]
+    urls.extend(request.build_absolute_uri(item.get_absolute_url()) for item in _public_theses())
     urls.extend(
-        request.build_absolute_uri(item.get_absolute_url())
-        for item in Thesis.objects.exclude(summary__startswith="演示日报 ")
+        request.build_absolute_uri(item.get_absolute_url()) for item in _public_fund_letters()
     )
     urls.extend(
-        request.build_absolute_uri(item.get_absolute_url())
-        for item in FundLetter.objects.exclude(original_url__contains="example.com/clean-room")
+        request.build_absolute_uri(item.get_absolute_url()) for item in _public_supply_chain_nodes()
     )
-    urls.extend(
-        request.build_absolute_uri(item.get_absolute_url())
-        for item in SupplyChainNode.objects.exclude(source_note__icontains="合成演示")
-    )
-    urls.extend(
-        request.build_absolute_uri(item.get_absolute_url())
-        for item in Company.objects.exclude(data_source_note__icontains="合成演示")
-    )
-    for item in FedDocument.objects.exclude(original_url__contains="example.com/clean-room"):
+    urls.extend(request.build_absolute_uri(item.get_absolute_url()) for item in _public_companies())
+    for item in _public_fed_documents():
         route_name = {
             FedDocument.DocumentType.STATEMENT: "fed-detail",
             FedDocument.DocumentType.SPEECH: "fed-speech-detail",
@@ -1556,11 +2101,15 @@ def sitemap_xml(request):
         urls.append(request.build_absolute_uri(reverse(route_name, kwargs={"slug": item.slug})))
     urls.extend(
         request.build_absolute_uri(reverse("model-detail", kwargs={"slug": item.slug}))
-        for item in ModelProfile.objects.exclude(slug__startswith="clean-room-model-")
+        for item in _public_model_profiles()
     )
     urls.extend(
         request.build_absolute_uri(reverse("coding-agent-detail", kwargs={"slug": item.slug}))
-        for item in CodingAgentProfile.objects.exclude(homepage__contains="example.com/clean-room")
+        for item in _public_coding_agents()
+    )
+    urls.extend(
+        request.build_absolute_uri(reverse("ai-glossary-detail", kwargs={"slug": item.slug}))
+        for item in _public_ai_glossary_terms()
     )
     now = timezone.localdate().isoformat()
     body = "".join(

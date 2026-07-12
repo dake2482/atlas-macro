@@ -40,11 +40,19 @@ docker compose up -d db redis
 docker compose run --rm web python manage.py migrate
 docker compose run --rm web python manage.py sync_data_requirements
 docker compose run --rm web python manage.py refresh_official_data
+docker compose run --rm web python manage.py refresh_prates_data
+docker compose run --rm web python manage.py refresh_h10_data
+docker compose run --rm web python manage.py refresh_h41_data
 docker compose run --rm web python manage.py refresh_cftc_data
+docker compose run --rm web python manage.py refresh_berkshire_letters
+docker compose run --rm web python manage.py sync_official_glossary
+docker compose run --rm web python manage.py sync_ai_glossary_catalog
+docker compose run --rm web python manage.py sync_ai_reference_catalog
+docker compose run --rm web python manage.py sync_ai_supply_chain_catalog
 docker compose up -d
 ```
 
-Open <http://localhost>. The admin is at <http://localhost/admin/>. Create its
+Open <http://localhost:3080>. The admin is at <http://localhost:3080/admin/>. Create its
 first user with:
 
 ```bash
@@ -60,6 +68,12 @@ docker compose exec web python manage.py check --deploy
 docker compose exec web python manage.py sync_data_requirements
 docker compose exec web python manage.py purge_demo_data --dry-run
 docker compose exec web python manage.py refresh_official_data
+docker compose exec web python manage.py refresh_prates_data
+docker compose exec web python manage.py refresh_h10_data
+docker compose exec web python manage.py refresh_berkshire_letters
+docker compose exec web python manage.py sync_ai_glossary_catalog
+docker compose exec web python manage.py sync_ai_reference_catalog
+docker compose exec web python manage.py sync_ai_supply_chain_catalog
 docker compose down
 ```
 
@@ -83,7 +97,7 @@ cp .env.example .env
 export DATABASE_URL=sqlite:///db.sqlite3
 export CELERY_TASK_ALWAYS_EAGER=1
 python manage.py migrate
-python manage.py seed_platform
+python manage.py seed_platform --allow-demo-data
 python manage.py runserver
 ```
 
@@ -128,8 +142,10 @@ public only after its required inputs pass the batch quality gate; on failure,
 the last complete snapshot remains visible and is marked stale.
 
 Production snapshots currently pull directly from the New York Fed, U.S.
-Treasury interest-rate and FiscalData APIs, BLS, CFTC PRE, and Federal Reserve
-RSS. FRED is not treated as a blanket redistribution licence. OKX and Deribit
+Treasury interest-rate and FiscalData APIs, BLS, CFTC PRE, Federal Reserve RSS,
+H.4.1, H.10 and PRATES. The fund-letter library also stores metadata-only links
+from Berkshire Hathaway's first-party index. FRED is not treated as a blanket
+redistribution licence. OKX and Deribit
 adapters are internal diagnostics only and never feed the public site without
 written display and redistribution permission. Paid CDS, commercial news,
 exchange data, branded indices, and third-party PDFs stay disabled until the

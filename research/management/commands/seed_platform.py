@@ -8,7 +8,7 @@ from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 from typing import Any
 
-from django.core.management.base import BaseCommand
+from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 
 from research.calculations import net_liquidity, yield_curve_spreads
@@ -59,6 +59,11 @@ class Command(BaseCommand):
 
     def add_arguments(self, parser: Any) -> None:
         parser.add_argument(
+            "--allow-demo-data",
+            action="store_true",
+            help="Acknowledge that synthetic records will be written (development/test only).",
+        )
+        parser.add_argument(
             "--anchor-date",
             type=date.fromisoformat,
             default=ANCHOR_DATE,
@@ -67,6 +72,11 @@ class Command(BaseCommand):
 
     @transaction.atomic
     def handle(self, *args: Any, **options: Any) -> None:
+        if not options["allow_demo_data"]:
+            raise CommandError(
+                "seed_platform writes synthetic demonstration records; rerun with "
+                "--allow-demo-data only in an isolated development or test database."
+            )
         anchor: date = options["anchor_date"]
         self.sources = self._seed_sources()
         run = self._seed_ingestion_run(anchor)
@@ -194,6 +204,7 @@ class Command(BaseCommand):
                 source=source,
                 reviewed_by="clean-room seed policy",
                 defaults={
+                    "is_current": False,
                     "status": license_status,
                     "scope": source.license_scope,
                     "terms_url": homepage,
