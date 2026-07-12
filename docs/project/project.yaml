@@ -9,10 +9,10 @@ success_metrics:
 current_milestone:
   id: AI-RESEARCH-002
   title: 发布可追溯的 GDP 修订轨迹
-  status: REVIEW
+  status: DONE
 health: GREEN
-next_action: Run the project closeout gate after recording production evidence.
-updated_at: '2026-07-12T22:18:30+08:00'
+next_action: Start AI-RESEARCH-003 to correct the employment page with BLS and DOL official data.
+updated_at: '2026-07-12T22:19:38+08:00'
 validation_commands:
   - .venv/bin/ruff check .
   - .venv/bin/pytest -q

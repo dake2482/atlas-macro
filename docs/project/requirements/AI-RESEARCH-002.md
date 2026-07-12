@@ -3,15 +3,15 @@ schema_version: 1
 id: AI-RESEARCH-002
 project_id: AI-RESEARCH
 title: 发布可追溯的 GDP 修订轨迹
-status: REVIEW
+status: DONE
 priority: P1
 executor: codex
 task_id: atlas-gdp-vintage-20260712
 branch: main
 worktree: local
 dependencies: []
-updated_at: '2026-07-12T22:18:30+08:00'
-next_action: Run the project closeout gate after recording production evidence.
+updated_at: '2026-07-12T22:19:38+08:00'
+next_action: Start AI-RESEARCH-003 to correct the employment page with BLS and DOL official data.
 evidence:
 - The official GDP/GDI Vintage History workbook is already downloaded and fingerprinted by the production
   macro refresh.
@@ -19,6 +19,8 @@ evidence:
   independently.
 - Production 0850cf2 stores 3,953 BEA vintage observations across 1,052 release rounds, publishes two
   GDP charts plus an eight-quarter revision table, and passed desktop/390px browser QA on port 3080.
+- portfolio closeout AI-RESEARCH passed on commit 9e9179e with Ruff, the complete pytest suite, Django
+  checks, strict portfolio validation, and the local-only Git boundary verified.
 started_at: '2026-07-12T21:43:47+08:00'
 ---
 
