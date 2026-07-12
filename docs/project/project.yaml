@@ -9,10 +9,10 @@ success_metrics:
 current_milestone:
   id: AI-RESEARCH-007
   title: 流动性快照原子协调与净流动性同日化
-  status: IN_PROGRESS
+  status: DONE
 health: GREEN
-next_action: Replace the latest-per-series liquidity proxy with an exact-batch common-date coordinator for H.4.1, ON RRP, TGA and the validated Fed Funds component.
-updated_at: '2026-07-13T02:32:47+08:00'
+next_action: Define the next reviewed requirement to replace the lagging Census retail workbook tail with the current official release and full historical series.
+updated_at: '2026-07-13T03:24:00+08:00'
 validation_commands:
   - .venv/bin/ruff check .
   - .venv/bin/pytest -q

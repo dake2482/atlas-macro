@@ -4,9 +4,9 @@
 
 - Purpose: Build a clean-room macro-research and AI supply-chain intelligence platform with traceable public sources, explicit data-quality labels, and original presentation.
 - Health: `GREEN`
-- Milestone: `AI-RESEARCH-007` — 流动性快照原子协调与净流动性同日化 (`IN_PROGRESS`)
-- Next action: Replace the latest-per-series liquidity proxy with an exact-batch common-date coordinator for H.4.1, ON RRP, TGA and the validated Fed Funds component.
-- Updated: `2026-07-13T02:32:47+08:00`
+- Milestone: `AI-RESEARCH-007` — 流动性快照原子协调与净流动性同日化 (`DONE`)
+- Next action: Define the next reviewed requirement to replace the lagging Census retail workbook tail with the current official release and full historical series.
+- Updated: `2026-07-13T03:24:00+08:00`
 - Git boundary: branch `main`; run `portfolio closeout AI-RESEARCH` for live delivery state.
 - Execution metadata: Codex 0/0 active/total; ZCode 0/0 active/total
 
@@ -14,7 +14,7 @@
 
 | Requirement | State | Priority | Executor | Task | Branch / worktree | Next action |
 |---|---|---|---|---|---|---|
-| AI-RESEARCH-007 | IN_PROGRESS | P1 | codex | atlas-liquidity-alignment-20260713 | main / local | Replace the latest-per-series liquidity proxy with an exact-batch common-date coordinator for H.4.1, ON RRP, TGA and the validated Fed Funds component. |
+| - | - | - | - | - | - | No active requirement |
 
 ## Blockers
 
@@ -22,4 +22,4 @@
 
 ## Latest verification evidence
 
-- Mina serves cb1872b on HTTP 3080. All six Compose services are running with zero restarts and no OOM; production checks only retain the expected HSTS/SSL-redirect warnings for the deliberately non-TLS origin, and host port 3003 remains an unrelated untouched service.
+- The validated pre-release PostgreSQL backup is /srv/atlasmacro/backups/20260712T191302Z.dump, size 7,696,693 bytes, SHA-256 3119a323e8cd91e386717cfb95fe99575247ba9557228102912788e83d02808b; pg_restore catalog validation succeeded.
