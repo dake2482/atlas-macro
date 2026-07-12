@@ -89,6 +89,16 @@ services:
         condition: service_healthy
       web:
         condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "celery -A atlasmacro inspect ping -d celery@$$HOSTNAME --timeout=5 | grep -q pong",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
     logging: *default-logging
 
   beat:
@@ -106,6 +116,8 @@ services:
         condition: service_healthy
       web:
         condition: service_healthy
+    healthcheck:
+      disable: true
     logging: *default-logging
 
   nginx:
