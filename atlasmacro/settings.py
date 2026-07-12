@@ -115,17 +115,13 @@ CELERY_RESULT_BACKEND = os.getenv("CELERY_RESULT_BACKEND", CELERY_BROKER_URL)
 CELERY_TASK_ALWAYS_EAGER = os.getenv("CELERY_TASK_ALWAYS_EAGER", "0") == "1"
 CELERY_TIMEZONE = TIME_ZONE
 CELERY_BEAT_SCHEDULE = {
-    "refresh-crypto-5m": {
-        "task": "research.tasks.refresh_crypto_sources",
-        "schedule": 300.0,
-    },
     "refresh-news-hourly": {
         "task": "research.tasks.refresh_news_sources",
         "schedule": crontab(minute=12),
     },
-    "refresh-official-hourly": {
+    "refresh-official-every-2h": {
         "task": "research.tasks.refresh_official_sources",
-        "schedule": crontab(minute=22),
+        "schedule": crontab(hour="*/2", minute=22),
     },
     "refresh-market-daily": {
         "task": "research.tasks.refresh_market_sources",

@@ -423,6 +423,196 @@ PAGE_CONFIGS = {
         ],
         "analysis": "压力仍低于警戒线，但变化速度与贷款标准方向不利。",
     },
+    "trade-map": {
+        "title": "今日 Trade Map",
+        "eyebrow": "Cross-Asset Decision Map",
+        "description": "将已审核的宏观主线映射到受益资产、回避资产、触发器、证伪条件与风险预算。",
+        "metrics": [],
+        "chart_data": [],
+        "analysis": "当前尚无通过证据完整性检查的 Trade Map 批次，页面不展示估算或演示结论。",
+        "sections": [
+            {
+                "title": "数据缺口",
+                "body": "需要已发布 Thesis、可追溯 EvidenceItem、Trigger、Invalidation、Outcome 以及同批次跨资产快照。",
+            },
+            {
+                "title": "目标字段",
+                "body": "as_of、regime、confidence、beneficiary_assets、avoid_assets、risk_budget、triggers、invalidations、confirmation_matrix、divergences、source_ids、batch_id、review_status。",
+            },
+        ],
+        "source_notes": ["仅在当日必需数据完整且研判通过审核后发布。"],
+    },
+    "volatility-move": {
+        "title": "MOVE 指数",
+        "eyebrow": "Treasury Volatility",
+        "description": "跟踪美债期权隐含波动率、曲线波动分解与历史分位。",
+        "metrics": [],
+        "chart_data": [],
+        "analysis": "MOVE 是授权指数；在取得可公开展示的许可之前，不生成或填充代理数值。",
+        "sections": [
+            {
+                "title": "数据缺口",
+                "body": "需要 ICE MOVE 延迟或收盘数据的展示与再分发许可，以及可选的期限分量。",
+            },
+            {
+                "title": "目标字段",
+                "body": "value_date、move_close、move_change_1d、move_change_5d、percentile_1y、percentile_10y、term_components、source_id、fetched_at、license_scope、quality_status。",
+            },
+        ],
+        "source_notes": ["建议向 ICE Data Indices 采购 MOVE 延迟、收盘或历史数据权限。"],
+    },
+    "fx-vol": {
+        "title": "外汇波动率",
+        "eyebrow": "FX Volatility",
+        "description": "比较主要货币对的隐含波动率、实现波动率、风险逆转与期限结构。",
+        "metrics": [],
+        "chart_data": [],
+        "analysis": "尚未接入具备公开展示授权的 FX 期权波动率面，页面保持空状态。",
+        "sections": [
+            {
+                "title": "数据缺口",
+                "body": "需要 G10 及主要新兴市场货币对的 ATM IV、25Δ risk reversal、butterfly 与日线现货历史。",
+            },
+            {
+                "title": "目标字段",
+                "body": "pair、tenor、atm_iv、realized_vol_20d、risk_reversal_25d、butterfly_25d、iv_rv_spread、percentile、value_date、source_id、license_scope、quality_status。",
+            },
+        ],
+        "source_notes": ["优先询价 CME FX/CVOL、LSEG、Bloomberg 或其他允许网页展示的授权供应商。"],
+    },
+    "implied-vs-realized": {
+        "title": "隐含 vs 实现波动率",
+        "eyebrow": "Implied / Realized Volatility",
+        "description": "按资产和时间窗口对比期权隐含波动率、实现波动率与波动率风险溢价。",
+        "metrics": [],
+        "chart_data": [],
+        "analysis": "期权链和可追溯日线尚未形成同批次数据，因此不发布 IV-RV 差值。",
+        "sections": [
+            {
+                "title": "数据缺口",
+                "body": "需要授权期权链、标的收盘价、统一交易日历与稳定的 ATM IV 选取方法。",
+            },
+            {
+                "title": "目标字段",
+                "body": "instrument、tenor、atm_iv、realized_vol_5d、realized_vol_20d、realized_vol_60d、variance_risk_premium、percentile、value_date、batch_id、source_id、quality_status。",
+            },
+        ],
+        "source_notes": ["期权与现货数据必须同批次对齐；缺任一输入时不生成结果。"],
+    },
+    "supply-chain": {
+        "title": "AI 算力供应链",
+        "eyebrow": "AI Compute Supply Chain",
+        "description": "连接晶圆代工、先进封装、HBM、加速器与下游需求的公开证据链。",
+        "metrics": [],
+        "chart_data": [],
+        "analysis": "五环节实际供需数据尚未完成授权与人工校验，页面不使用合成覆盖率或产能数值。",
+        "sections": [
+            {
+                "title": "数据缺口",
+                "body": "需要五环节快照、供需状态、产能事件、产品路线图、上下游依赖及每条证据的审核状态。",
+            },
+            {
+                "title": "目标字段",
+                "body": "node、period、supply_capacity、demand_capacity、coverage_ratio、lead_time、status、event_type、evidence_url、confidence、reviewed_at、source_id、license_scope。",
+            },
+        ],
+        "source_notes": ["免费层使用公司 IR、SEC 和交易所公告；专有供需估算需单独采购授权。"],
+    },
+    "supply-chain-foundry": {
+        "title": "晶圆代工",
+        "eyebrow": "Foundry Capacity",
+        "description": "跟踪先进制程产能、利用率、市占率、工厂爬坡与主要客户需求。",
+        "metrics": [],
+        "chart_data": [],
+        "analysis": "晶圆厂月度先进制程利用率通常不公开；在没有授权估算时必须显示数据缺口。",
+        "sections": [
+            {
+                "title": "可免费补齐",
+                "body": "公司季报与法说会、月度营收、CapEx、节点路线图、新厂投产时间及公司指引。",
+            },
+            {
+                "title": "目标字段",
+                "body": "company、fab、location、process_node、wafer_capacity_monthly、utilization_rate、market_share、revenue、capex、guidance_period、status、source_id、confidence。",
+            },
+        ],
+        "source_notes": ["利用率与市占率建议询价 TrendForce、TechInsights 或 Omdia，并单独确认网页展示权。"],
+    },
+    "supply-chain-packaging": {
+        "title": "先进封装",
+        "eyebrow": "Advanced Packaging",
+        "description": "跟踪 CoWoS、SoIC 及其他 AI 加速器封装产能、供需缺口与扩产进度。",
+        "metrics": [],
+        "chart_data": [],
+        "analysis": "尚无经许可的封装月产能和需求拆分，不发布供需缺口百分比。",
+        "sections": [
+            {
+                "title": "数据缺口",
+                "body": "需要各封装平台月产能、在建产能、良率、需求分配、交付周期和主要 OSAT 参与者。",
+            },
+            {
+                "title": "目标字段",
+                "body": "company、platform、period、capacity_monthly、planned_capacity、yield_rate、demand_monthly、coverage_ratio、lead_time_weeks、customer_mix、source_id、confidence。",
+            },
+        ],
+        "source_notes": ["免费证据优先来自公司 IR；精确产能与客户分配建议购买 SemiAnalysis、TechInsights 或 TrendForce。"],
+    },
+    "supply-chain-hbm": {
+        "title": "HBM 内存",
+        "eyebrow": "High-Bandwidth Memory",
+        "description": "跟踪 HBM 代际、位产出、供需覆盖、客户认证、合约价与产能爬坡。",
+        "metrics": [],
+        "chart_data": [],
+        "analysis": "HBM 位产出、合约价和客户分配多为专有数据；未取得来源时不用新闻传言填充。",
+        "sections": [
+            {
+                "title": "可免费补齐",
+                "body": "SK Hynix、Micron、Samsung 的法说会、财报、路线图、量产/送样/认证里程碑和 CapEx 指引。",
+            },
+            {
+                "title": "目标字段",
+                "body": "vendor、generation、stack_height、period、bit_output、capacity、demand、coverage_ratio、contract_price_change、qualification_status、customer、milestone_date、source_id、confidence。",
+            },
+        ],
+        "source_notes": ["位产出、供需和价格建议向 TrendForce、TechInsights、Omdia 或 SemiAnalysis 采购。"],
+    },
+    "supply-chain-gpu": {
+        "title": "AI 加速器",
+        "eyebrow": "GPU and Accelerator Supply",
+        "description": "跟踪 GPU、ASIC 与系统级产品路线图、出货、交付周期、库存和单位经济性。",
+        "metrics": [],
+        "chart_data": [],
+        "analysis": "产品出货和客户分配尚无可公开展示的稳定数据源，页面不展示估算出货量。",
+        "sections": [
+            {
+                "title": "可免费补齐",
+                "body": "厂商路线图、发布日、产品规格、数据中心收入、公司指引、出口限制与已公告的云厂商部署。",
+            },
+            {
+                "title": "目标字段",
+                "body": "vendor、product、architecture、release_date、shipment_period、units_shipped、asp、lead_time_weeks、installed_base、customer、revenue、export_scope、source_id、confidence。",
+            },
+        ],
+        "source_notes": ["出货、ASP、客户分配和安装基数建议购买 SemiAnalysis Accelerator Model、TechInsights 或 Omdia。"],
+    },
+    "supply-chain-demand": {
+        "title": "AI 下游需求",
+        "eyebrow": "Hyperscaler and Enterprise Demand",
+        "description": "跟踪云厂商与企业 AI 资本开支、算力部署、库存吸收和变现效率。",
+        "metrics": [],
+        "chart_data": [],
+        "analysis": "下游需求拆分尚未形成可比口径，在公司披露与研究估计未分层前不发布总需求数值。",
+        "sections": [
+            {
+                "title": "可免费补齐",
+                "body": "云厂商 CapEx、管理层指引、数据中心在建项目、电力合同、AI 相关收入披露与 SEC 分部数据。",
+            },
+            {
+                "title": "目标字段",
+                "body": "company、period、total_capex、ai_capex、capex_guidance_low、capex_guidance_high、data_center_capacity_mw、accelerator_deployments、ai_revenue、backlog、source_id、estimate_flag、confidence。",
+            },
+        ],
+        "source_notes": ["公司披露可免费入库；客户级 GPU 部署与需求预测可询价 SemiAnalysis、Omdia 或 TechInsights。"],
+    },
 }
 
 
@@ -446,4 +636,3 @@ for config in PAGE_CONFIGS.values():
 
 def get_page_config(key: str) -> dict:
     return deepcopy(PAGE_CONFIGS[key])
-

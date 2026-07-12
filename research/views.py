@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import math
 from datetime import date
 from decimal import Decimal
 from xml.sax.saxutils import escape
@@ -21,21 +20,26 @@ from django.shortcuts import get_object_or_404, render
 from django.urls import reverse
 from django.utils import timezone
 
+from .calculations import percentile_rank
 from .models import (
+    CFTCPosition,
     CodingAgentProfile,
     Company,
     DashboardSnapshot,
+    DataRequirement,
     FedDocument,
     FundLetter,
     GitHubProject,
     GlossaryTerm,
     Instrument,
+    MarketBar,
     ModelProfile,
     NewsItem,
     Observation,
     OptionContract,
     ResearchMention,
     Source,
+    SourceLicense,
     SupplyChainEdge,
     SupplyChainNode,
     Thesis,
@@ -72,19 +76,22 @@ def _text_search(queryset, query: str, fields: list[str], similarity_field: str)
 def _latest_observation(symbol: str):
     return (
         Observation.objects.filter(instrument__symbol=symbol)
+        .exclude(source__key="demo-market")
+        .filter(source__licenses__public_display_allowed=True)
         .select_related("instrument", "source", "fallback_source")
+        .distinct()
         .order_by("-value_date")
         .first()
     )
 
 
-def _market_card(symbol: str, fallback_name: str, fallback_value: str):
+def _market_card(symbol: str, fallback_name: str):
     obs = _latest_observation(symbol)
     if not obs:
         return {
             "symbol": symbol,
             "name": fallback_name,
-            "value": fallback_value,
+            "value": "—",
             "change": "—",
             "as_of": "等待首批数据",
             "source": "未连接",
@@ -92,6 +99,9 @@ def _market_card(symbol: str, fallback_name: str, fallback_value: str):
         }
     previous = (
         Observation.objects.filter(instrument=obs.instrument, value_date__lt=obs.value_date)
+        .exclude(source__key="demo-market")
+        .filter(source__licenses__public_display_allowed=True)
+        .distinct()
         .order_by("-value_date")
         .first()
     )
@@ -110,47 +120,54 @@ def _market_card(symbol: str, fallback_name: str, fallback_value: str):
 
 
 def home(request):
-    thesis = Thesis.objects.order_by("-date").first()
+    thesis = Thesis.objects.exclude(summary__startswith="演示日报 ").order_by("-date").first()
     market_cards = [
-        _market_card("SPY", "标普 500 ETF", "548.21"),
-        _market_card("QQQ", "纳斯达克 100 ETF", "486.70"),
-        _market_card("TLT", "长久期美债", "92.43"),
-        _market_card("HYG", "高收益信用", "78.94"),
-        _market_card("CL=F", "WTI 原油", "78.42"),
-        _market_card("BTC-USD", "比特币", "67,420"),
-    ]
-    fallback_evidence = [
-        {"label": "10Y 国债收益率", "value": "4.31%", "detail": "长端期限溢价偏高"},
-        {"label": "SOFR−IORB", "value": "-8bp", "detail": "Repo 仍在政策走廊内"},
-        {"label": "HY OAS", "value": "322bp", "detail": "信用边际走弱但未失控"},
+        _market_card("SPY", "标普 500 ETF"),
+        _market_card("QQQ", "纳斯达克 100 ETF"),
+        _market_card("TLT", "长久期美债"),
+        _market_card("HYG", "高收益信用"),
+        _market_card("CL=F", "WTI 原油"),
+        _market_card("BTC-USD", "比特币"),
     ]
     evidence = thesis.evidence[:3] if thesis and isinstance(thesis.evidence, list) else []
     normalized_evidence = []
-    for index, item in enumerate(evidence):
+    for item in evidence:
         if isinstance(item, dict):
             normalized_evidence.append(item)
         else:
-            fallback = fallback_evidence[index % len(fallback_evidence)].copy()
-            fallback["detail"] = str(item)
-            normalized_evidence.append(fallback)
+            normalized_evidence.append({"label": "已审核证据", "value": "—", "detail": str(item)})
+    latest_snapshot = (
+        DashboardSnapshot.objects.filter(is_published=True)
+        .filter(Q(data__demo=False) | ~Q(data__has_key="demo"))
+        .exclude(source__key="demo-market")
+        .select_related("source")
+        .order_by("-as_of", "-created_at")
+        .first()
+    )
     context = {
         "title": "今日跨资产判断",
         "today": timezone.localdate(),
         "thesis": thesis,
         "current_thesis": thesis,
-        "evidence": normalized_evidence or fallback_evidence,
+        "evidence": normalized_evidence,
         "market_cards": market_cards,
-        "news_items": NewsItem.objects.all()[:5],
-        "research_items": ResearchMention.objects.all()[:4],
-        "letters": FundLetter.objects.all()[:3],
+        "news_items": NewsItem.objects.exclude(source_url__contains="example.com/clean-room")[:5],
+        "research_items": ResearchMention.objects.exclude(
+            source_url__contains="example.com/clean-room"
+        )[:4],
+        "letters": FundLetter.objects.exclude(
+            original_url__contains="example.com/clean-room"
+        )[:3],
         "breadcrumbs": [],
-        "data_sources": Source.objects.order_by("name")[:8],
+        "data_sources": Source.objects.exclude(key="demo-market").order_by("name")[:8],
+        "as_of": latest_snapshot.as_of if latest_snapshot else None,
+        "source": latest_snapshot.source if latest_snapshot else None,
     }
     return render(request, "research/home.html", context)
 
 
 def regime_log(request):
-    theses = Thesis.objects.order_by("-date")
+    theses = Thesis.objects.exclude(summary__startswith="演示日报 ").order_by("-date")
     reviewed = theses.exclude(hit_rate__isnull=True)
     aggregates = reviewed.aggregate(avg_hit=Avg("hit_rate"), avg_return=Avg("simulated_return"))
     context = {
@@ -166,7 +183,13 @@ def regime_log(request):
 
 
 def daily_list(request):
-    queryset = Thesis.objects.order_by("-date")
+    queryset = Thesis.objects.exclude(summary__startswith="演示日报 ").order_by("-date")
+    query = request.GET.get("q", "").strip()
+    status = request.GET.get("status", "").strip()
+    if query:
+        queryset = queryset.filter(Q(regime__icontains=query) | Q(summary__icontains=query))
+    if status:
+        queryset = queryset.filter(status=status)
     page_obj = Paginator(queryset, 20).get_page(request.GET.get("page"))
     return render(
         request,
@@ -175,6 +198,7 @@ def daily_list(request):
             "title": "每日宏观研究报告",
             "page_obj": page_obj,
             "total_count": queryset.count(),
+            "filters": {"q": query, "status": status},
             "breadcrumbs": _breadcrumbs(("首页", "/"), ("每日报告", "")),
         },
     )
@@ -185,7 +209,9 @@ def daily_detail(request, report_date: str):
         parsed_date = date.fromisoformat(report_date)
     except ValueError as exc:
         raise Http404("无效报告日期") from exc
-    thesis = get_object_or_404(Thesis, date=parsed_date)
+    thesis = get_object_or_404(
+        Thesis.objects.exclude(summary__startswith="演示日报 "), date=parsed_date
+    )
     previous = Thesis.objects.filter(date__lt=thesis.date).order_by("-date").first()
     following = Thesis.objects.filter(date__gt=thesis.date).order_by("date").first()
     return render(
@@ -216,12 +242,26 @@ def assets_overview(request):
         "crypto": "加密货币",
     }
     for asset_class, label in labels.items():
-        instruments = list(Instrument.objects.filter(asset_class=asset_class)[:8])
+        instruments = list(
+            Instrument.objects.filter(
+                asset_class=asset_class,
+                observations__source__licenses__public_display_allowed=True,
+            )
+            .exclude(
+                observations__source__key="demo-market"
+            )
+            .distinct()[:8]
+        )
         rows = []
         for instrument in instruments:
-            latest = instrument.observations.order_by("-value_date").first()
+            observations = (
+                instrument.observations.exclude(source__key="demo-market")
+                .filter(source__licenses__public_display_allowed=True)
+                .distinct()
+            )
+            latest = observations.order_by("-value_date").first()
             previous = (
-                instrument.observations.filter(
+                observations.filter(
                     value_date__lt=latest.value_date if latest else timezone.now()
                 )
                 .order_by("-value_date")
@@ -250,10 +290,10 @@ def assets_overview(request):
             {"label": "相关性窗口", "value": "30 / 90D", "change": "可切换", "status": "fresh"},
             {"label": "数据血缘", "value": "逐组件", "change": "可追溯", "status": "fresh"},
         ],
-        "chart_data": [0.21, -0.44, 0.65, 0.08, -0.17, 0.31, 0.42, -0.29, 0.73],
-        "analysis": "风险资产温和占优，但信用和久期未形成完整确认链。",
+        "chart_data": [],
+        "analysis": "尚未取得可公开展示的跨资产行情授权；页面只展示已通过许可校验的数据。",
         "sections": [],
-        "source_notes": ["演示环境由确定性种子数据驱动；生产切换至授权行情适配器。"],
+        "source_notes": ["证券与商品行情在外部展示授权完成前保持空缺，不使用合成价格。"],
     }
     return render(
         request,
@@ -263,9 +303,9 @@ def assets_overview(request):
             "dashboard": {
                 "title": config["title"],
                 "summary": config["description"],
-                "as_of": timezone.now(),
-                "source": "Atlas Macro demo seed",
-                "quality_status": "demo",
+                "as_of": None,
+                "source": "数据源采购台账",
+                "quality_status": "stale",
                 "data": {"chart": config["chart_data"]},
             },
             "asset_groups": groups,
@@ -282,8 +322,10 @@ def dashboard_page(request, page_key: str):
         raise Http404("未知仪表盘") from exc
     snapshot = (
         DashboardSnapshot.objects.filter(key=page_key, is_published=True)
+        .filter(Q(data__demo=False) | ~Q(data__has_key="demo"))
+        .exclude(source__key="demo-market")
         .select_related("source")
-        .order_by("-as_of")
+        .order_by("-as_of", "-created_at")
         .first()
     )
     if snapshot:
@@ -293,15 +335,40 @@ def dashboard_page(request, page_key: str):
             config["metrics"] = snapshot.data["metrics"]
         if snapshot.data.get("chart_data"):
             config["chart_data"] = snapshot.data["chart_data"]
+        if snapshot.data.get("sections"):
+            config["sections"] = snapshot.data["sections"]
+    else:
+        static_metrics = config.get("metrics", [])
+        requirements = list(DataRequirement.objects.filter(page_key=page_key))
+        labels = [item.get("label", "指标") for item in static_metrics]
+        if not labels:
+            labels = [requirement.metric_name for requirement in requirements[:6]]
+        config["metrics"] = [
+            {
+                "label": label,
+                "value": None,
+                "display_value": "—",
+                "change": None,
+                "status": "stale",
+                "source": "等待已授权数据源",
+            }
+            for label in labels
+        ]
+        config["chart_data"] = []
+        config["sections"] = []
+        config["analysis"] = (
+            "本页尚无通过来源许可与质量检查的可发布快照。缺失项目和采购建议见页面下方数据覆盖台账。"
+        )
+        config["source_notes"] = ["没有真实数据时显示空缺，不回退到演示或合成数值。"]
     config.update(
         {
             "page_key": page_key,
             "dashboard": {
                 "title": config["title"],
                 "summary": config.get("analysis") or config.get("description", ""),
-                "as_of": snapshot.as_of if snapshot else timezone.now(),
-                "source": snapshot.source if snapshot else "Atlas Macro demo seed",
-                "quality_status": snapshot.quality_status if snapshot else "demo",
+                "as_of": snapshot.as_of if snapshot else None,
+                "source": snapshot.source if snapshot else "数据源覆盖台账",
+                "quality_status": snapshot.quality_status if snapshot else "stale",
                 "data": {"chart": config.get("chart_data", [])},
             },
             "breadcrumbs": _breadcrumbs(("首页", "/"), (config["title"], "")),
@@ -312,17 +379,35 @@ def dashboard_page(request, page_key: str):
 
 def options_view(request):
     requested_symbol = request.GET.get("symbol", "SPY").upper()
-    available = list(Instrument.objects.filter(options__isnull=False).distinct().order_by("symbol"))
+    available = list(
+        Instrument.objects.filter(
+            options__isnull=False,
+            options__source__licenses__public_display_allowed=True,
+        )
+        .exclude(options__source__key="demo-market")
+        .distinct()
+        .order_by("symbol")
+    )
     instrument = next((item for item in available if item.symbol.upper() == requested_symbol), None)
     if not instrument:
-        instrument = available[0] if available else Instrument.objects.filter(symbol="SPY").first()
-    contracts = list(
-        OptionContract.objects.filter(instrument=instrument).order_by("expiry", "strike")
+        instrument = available[0] if available else None
+    contract_query = (
+        OptionContract.objects.filter(
+            instrument=instrument,
+            source__licenses__public_display_allowed=True,
+        )
+        .exclude(source__key="demo-market")
+        .distinct()
+        .order_by("expiry", "strike")
         if instrument
-        else []
+        else OptionContract.objects.none()
     )
-    latest = instrument.observations.order_by("-value_date").first() if instrument else None
-    spot = float(latest.value) if latest else 100.0
+    expiry = request.GET.get("expiry", "").strip()
+    if expiry:
+        contract_query = contract_query.filter(expiry=expiry)
+    contracts = list(contract_query)
+    latest = _latest_observation(instrument.symbol) if instrument else None
+    spot = float(latest.value) if latest else None
     net_gex = 0.0
     net_dex = 0.0
     call_wall = None
@@ -334,6 +419,8 @@ def options_view(request):
         sign = 1 if contract.option_type == "call" else -1
         gamma = float(contract.gamma or 0)
         delta = float(contract.delta or 0)
+        if spot is None:
+            continue
         gex = sign * gamma * contract.open_interest * 100 * spot * spot / 100
         dex = sign * delta * contract.open_interest * 100 * spot
         net_gex += gex
@@ -356,41 +443,66 @@ def options_view(request):
                 "dex": dex,
             }
         )
-    gamma_state = "正 Gamma" if net_gex >= 0 else "负 Gamma"
+    gamma_state = "等待授权期权链" if not option_rows else "正 Gamma" if net_gex >= 0 else "负 Gamma"
     context = {
         "title": "期权市场结构",
         "instrument": instrument,
+        "selected_symbol": requested_symbol,
         "available_symbols": available,
         "spot": spot,
         "contracts": contracts,
         "option_rows": option_rows,
         "chart_data": option_rows,
-        "net_gex": net_gex,
-        "net_dex": net_dex,
+        "net_gex": net_gex if option_rows else None,
+        "net_dex": net_dex if option_rows else None,
         "call_wall": call_wall,
         "put_wall": put_wall,
         "gamma_state": gamma_state,
         "tabs": ["GEX 分布", "DEX", "IV 期限结构", "Skew", "Vanna / Charm", "OI 热力", "结构解读"],
+        "expiries": sorted({contract.expiry for contract in contracts}),
         "breadcrumbs": _breadcrumbs(("首页", "/"), ("大类资产", "/assets/"), ("期权 / GEX", "")),
     }
     return render(request, "research/options.html", context)
 
 
 def positioning_view(request):
-    symbols = ["SPY", "QQQ", "TLT", "DX-Y.NYB", "CL=F", "BTC-USD"]
+    report = request.GET.get("report", "tff-futures").strip() or "tff-futures"
+    query = request.GET.get("q", "").strip()
+    latest_date = (
+        CFTCPosition.objects.filter(report_type=report)
+        .order_by("-report_date")
+        .values_list("report_date", flat=True)
+        .first()
+    )
+    latest_rows = CFTCPosition.objects.filter(report_type=report, report_date=latest_date)
+    if query:
+        latest_rows = latest_rows.filter(
+            Q(market_name__icontains=query) | Q(market_code__icontains=query)
+        )
+    latest_rows = latest_rows.order_by("-open_interest", "market_name")[:30]
     positions = []
-    for index, symbol in enumerate(symbols):
-        card = _market_card(symbol, symbol, "—")
-        percentile = 18 + ((index * 17 + 31) % 77)
-        net = (index + 1) * 12400 * (-1 if index in {2, 4} else 1)
+    for row in latest_rows:
+        history = list(
+            CFTCPosition.objects.filter(
+                report_type=report,
+                market_code=row.market_code,
+                trader_group=row.trader_group,
+            ).order_by("report_date")
+        )
+        nets = [item.net_position for item in history]
+        rank = percentile_rank(nets) if nets else 0
+        previous = history[-2].net_position if len(history) > 1 else None
+        weekly_change = row.net_position - previous if previous is not None else None
         positions.append(
             {
-                **card,
-                "group": ["股指", "股指", "利率", "外汇", "商品", "加密"][index],
-                "net_position": net,
-                "weekly_change": int(net * 0.08),
-                "percentile": percentile,
-                "crowding": "拥挤" if percentile >= 80 else "中性" if percentile >= 30 else "低配",
+                "name": row.market_name,
+                "symbol": row.market_code,
+                "value": "—",
+                "group": "资产管理机构" if row.trader_group == "asset-manager" else "杠杆资金",
+                "net_position": row.net_position,
+                "weekly_change": weekly_change,
+                "percentile": rank,
+                "crowding": "拥挤" if rank >= 80 else "中性" if rank >= 30 else "低配",
             }
         )
     return render(
@@ -399,75 +511,37 @@ def positioning_view(request):
         {
             "title": "CFTC 持仓追踪",
             "positions": positions,
+            "report_types": [
+                ("tff-futures", "TFF Futures Only"),
+                ("tff-combined", "TFF Futures + Options"),
+            ],
+            "as_of": latest_date,
+            "source": "CFTC Public Reporting Environment" if latest_date else None,
+            "quality_status": "fresh" if latest_date else "stale",
+            "chart_data": [item["net_position"] for item in positions[:20]],
             "breadcrumbs": _breadcrumbs(("首页", "/"), ("大类资产", "/assets/"), ("CFTC 持仓", "")),
         },
     )
 
 
 def crypto_derivatives(request):
-    btc = _market_card("BTC-USD", "比特币", "67,420")
-    layers = [
-        {
-            "name": "ETF 现货通道",
-            "score": 8,
-            "weight": 25,
-            "status": "温和流入",
-            "detail": "7 日净流入为正，现货需求提供中期确认。",
-        },
-        {
-            "name": "基差 Carry",
-            "score": 2,
-            "weight": 20,
-            "status": "中性",
-            "detail": "基差扣除无风险利率后仍有小幅正 alpha。",
-        },
-        {
-            "name": "CME 机构头寸",
-            "score": 3,
-            "weight": 15,
-            "status": "温和增仓",
-            "detail": "T+1 持仓作为中期通道，不用于盘中判断。",
-        },
-        {
-            "name": "期权牵引",
-            "score": -2,
-            "weight": 10,
-            "status": "上方 Call Wall",
-            "detail": "价格接近卖方对冲压力区。",
-        },
-        {
-            "name": "永续杠杆",
-            "score": 1,
-            "weight": 15,
-            "status": "低风险",
-            "detail": "Funding 与 OI 未同步过热。",
-        },
-    ]
-    kpis = [
-        {
-            "label": "BTC 现价",
-            "value": btc["value"],
-            "change": btc["change"],
-            "source": btc["source"],
-        },
-        {"label": "Funding / 8h", "value": "+0.0061%", "change": "中性", "source": "OKX"},
-        {"label": "永续 OI", "value": "$18.4B", "change": "+1.2%", "source": "OKX"},
-        {"label": "期权 PCR", "value": "0.74", "change": "中性", "source": "Deribit"},
-        {"label": "Max Pain", "value": "$66,000", "change": "最近到期", "source": "Deribit"},
-        {"label": "ETF 7D", "value": "+$428M", "change": "需许可", "source": "Farside adapter"},
-    ]
+    btc = _market_card("BTC-USD", "比特币")
     return render(
         request,
         "research/crypto_derivatives.html",
         {
             "title": "加密衍生品雷达",
             "btc": btc,
-            "score": 12,
-            "confidence": 72,
-            "bias_24h": "围绕期权墙震荡偏强",
-            "structure_7d": "现货支持、杠杆温和",
-            "layers": layers,
-            "kpis": kpis,
+            "score": None,
+            "confidence": None,
+            "bias_24h": "等待公开展示授权",
+            "structure_7d": "暂无可发布快照",
+            "layers": [],
+            "kpis": [],
+            "methodology": (
+                "OKX 与 Deribit 公共 API 不自动授予公开再分发权。取得书面授权或采购合规聚合源前，"
+                "Funding、OI、IV、Skew、清算与 ETF 流量均保持空缺。"
+            ),
             "breadcrumbs": _breadcrumbs(
                 ("首页", "/"), ("大类资产", "/assets/"), ("加密衍生品", "")
             ),
@@ -476,15 +550,16 @@ def crypto_derivatives(request):
 
 
 def fed_hub(request):
+    documents = FedDocument.objects.exclude(original_url__contains="example.com/clean-room")
     latest = {
-        key: FedDocument.objects.filter(document_type=key).first()
+        key: documents.filter(document_type=key).first()
         for key in [
             FedDocument.DocumentType.STATEMENT,
             FedDocument.DocumentType.SPEECH,
             FedDocument.DocumentType.NEWS,
         ]
     }
-    average = FedDocument.objects.aggregate(score=Avg("hawkish_score"))["score"] or 0
+    average = documents.aggregate(score=Avg("hawkish_score"))["score"] or 0
     return render(
         request,
         "research/fed_list.html",
@@ -493,7 +568,7 @@ def fed_hub(request):
             "mode": "hub",
             "latest": latest,
             "average_score": average,
-            "documents": FedDocument.objects.all()[:8],
+            "documents": documents[:8],
             "breadcrumbs": _breadcrumbs(("首页", "/"), ("美联储", "")),
         },
     )
@@ -503,7 +578,9 @@ def fed_list(request, doc_type: str):
     valid_types = {choice[0] for choice in FedDocument.DocumentType.choices}
     if doc_type not in valid_types:
         raise Http404("未知文档类型")
-    queryset = FedDocument.objects.filter(document_type=doc_type)
+    queryset = FedDocument.objects.filter(document_type=doc_type).exclude(
+        original_url__contains="example.com/clean-room"
+    )
     page_obj = Paginator(queryset, 20).get_page(request.GET.get("page"))
     labels = dict(FedDocument.DocumentType.choices)
     return render(
@@ -520,7 +597,11 @@ def fed_list(request, doc_type: str):
 
 
 def fed_detail(request, doc_type: str, slug: str):
-    document = get_object_or_404(FedDocument, document_type=doc_type, slug=slug)
+    document = get_object_or_404(
+        FedDocument.objects.exclude(original_url__contains="example.com/clean-room"),
+        document_type=doc_type,
+        slug=slug,
+    )
     return render(
         request,
         "research/fed_detail.html",
@@ -539,7 +620,7 @@ def fed_detail(request, doc_type: str, slug: str):
 
 
 def _news_queryset(request, semiconductor_only=False, ai_only=False):
-    queryset = NewsItem.objects.all()
+    queryset = NewsItem.objects.exclude(source_url__contains="example.com/clean-room")
     if semiconductor_only:
         queryset = queryset.filter(
             Q(category__in=["ai", "foundry", "memory", "packaging", "materials", "supply-chain"])
@@ -563,9 +644,17 @@ def news_list(request, semiconductor_only=False, ai_only=False):
     queryset, filters = _news_queryset(request, semiconductor_only, ai_only)
     page_obj = Paginator(queryset, 20).get_page(request.GET.get("page"))
     sources = (
-        NewsItem.objects.order_by("source_name").values_list("source_name", flat=True).distinct()
+        NewsItem.objects.exclude(source_url__contains="example.com/clean-room")
+        .order_by("source_name")
+        .values_list("source_name", flat=True)
+        .distinct()
     )
-    categories = NewsItem.objects.order_by("category").values_list("category", flat=True).distinct()
+    categories = (
+        NewsItem.objects.exclude(source_url__contains="example.com/clean-room")
+        .order_by("category")
+        .values_list("category", flat=True)
+        .distinct()
+    )
     title = "AI 资讯" if ai_only else "半导体行业资讯" if semiconductor_only else "新闻 / 事件"
     return render(
         request,
@@ -583,7 +672,10 @@ def news_list(request, semiconductor_only=False, ai_only=False):
 
 
 def reports(request, all_reports=False):
-    queryset = ResearchMention.objects.all()
+    public_research = ResearchMention.objects.exclude(
+        source_url__contains="example.com/clean-room"
+    )
+    queryset = public_research
     query = request.GET.get("q", "").strip()
     bank = request.GET.get("bank", "").strip()
     category = request.GET.get("category", "").strip()
@@ -598,15 +690,15 @@ def reports(request, all_reports=False):
         queryset = queryset.filter(stance=stance)
     page_obj = Paginator(queryset, 24).get_page(request.GET.get("page"))
     matrix = list(
-        ResearchMention.objects.values("category", "stance")
+        public_research.values("category", "stance")
         .annotate(count=Count("id"))
         .order_by("category", "stance")
     )
-    banks = ResearchMention.objects.order_by("bank").values_list("bank", flat=True).distinct()
+    banks = public_research.order_by("bank").values_list("bank", flat=True).distinct()
     categories = (
-        ResearchMention.objects.order_by("category").values_list("category", flat=True).distinct()
+        public_research.order_by("category").values_list("category", flat=True).distinct()
     )
-    stances = ResearchMention.objects.order_by("stance").values_list("stance", flat=True).distinct()
+    stances = public_research.order_by("stance").values_list("stance", flat=True).distinct()
     return render(
         request,
         "research/reports.html",
@@ -632,7 +724,8 @@ def reports(request, all_reports=False):
 
 
 def fund_letters(request):
-    queryset = FundLetter.objects.all()
+    public_letters = FundLetter.objects.exclude(original_url__contains="example.com/clean-room")
+    queryset = public_letters
     query = request.GET.get("q", "").strip()
     if query:
         queryset = _text_search(
@@ -647,10 +740,10 @@ def fund_letters(request):
             queryset = queryset.filter(**{key: value})
     page_obj = Paginator(queryset, 24).get_page(request.GET.get("page"))
     options = {
-        key: FundLetter.objects.order_by(key).values_list(key, flat=True).distinct()
+        key: public_letters.order_by(key).values_list(key, flat=True).distinct()
         for key in ["quarter", "strategy", "stance"]
     }
-    fund_count = FundLetter.objects.values("fund_name").distinct().count()
+    fund_count = public_letters.values("fund_name").distinct().count()
     filters["q"] = query
     return render(
         request,
@@ -668,8 +761,9 @@ def fund_letters(request):
 
 
 def fund_letter_detail(request, pk: int):
-    letter = get_object_or_404(FundLetter, pk=pk)
-    related = FundLetter.objects.filter(fund_name=letter.fund_name).exclude(pk=letter.pk)[:8]
+    public_letters = FundLetter.objects.exclude(original_url__contains="example.com/clean-room")
+    letter = get_object_or_404(public_letters, pk=pk)
+    related = public_letters.filter(fund_name=letter.fund_name).exclude(pk=letter.pk)[:8]
     return render(
         request,
         "research/fund_letter_detail.html",
@@ -687,7 +781,8 @@ def fund_letter_detail(request, pk: int):
 
 
 def glossary(request, ai_only=False):
-    queryset = GlossaryTerm.objects.all()
+    public_terms = GlossaryTerm.objects.exclude(source_url__contains="example.com/")
+    queryset = public_terms
     filters = {
         key: request.GET.get(key, "").strip()
         for key in ["q", "category", "subcategory", "difficulty", "tag"]
@@ -705,7 +800,7 @@ def glossary(request, ai_only=False):
     if filters["tag"]:
         queryset = queryset.filter(tags__icontains=filters["tag"])
     options = {
-        key: GlossaryTerm.objects.order_by(key).values_list(key, flat=True).distinct()
+        key: public_terms.order_by(key).values_list(key, flat=True).distinct()
         for key in ["category", "subcategory", "difficulty"]
     }
     return render(
@@ -731,22 +826,34 @@ def search(request):
     glossary_results = GlossaryTerm.objects.none()
     if query:
         company_results = _text_search(
-            Company.objects.all(), query, ["name", "name_en", "ticker", "description"], "name"
+            Company.objects.exclude(data_source_note__icontains="合成演示"),
+            query,
+            ["name", "name_en", "ticker", "description"],
+            "name",
         )[:10]
         news_results = _text_search(
-            NewsItem.objects.all(), query, ["title", "original_title", "summary"], "title"
+            NewsItem.objects.exclude(source_url__contains="example.com/clean-room"),
+            query,
+            ["title", "original_title", "summary"],
+            "title",
         )[:10]
         research_results = _text_search(
-            ResearchMention.objects.all(), query, ["title", "summary", "bank"], "title"
+            ResearchMention.objects.exclude(source_url__contains="example.com/clean-room"),
+            query,
+            ["title", "summary", "bank"],
+            "title",
         )[:10]
         letter_results = _text_search(
-            FundLetter.objects.all(),
+            FundLetter.objects.exclude(original_url__contains="example.com/clean-room"),
             query,
             ["fund_name", "fund_name_en", "manager", "summary"],
             "fund_name",
         )[:10]
         glossary_results = _text_search(
-            GlossaryTerm.objects.all(), query, ["term", "term_en", "definition"], "term"
+            GlossaryTerm.objects.exclude(source_url__contains="example.com/"),
+            query,
+            ["term", "term_en", "definition"],
+            "term",
         )[:10]
 
     company_results = list(company_results)
@@ -783,29 +890,59 @@ def search(request):
     )
 
 
+def data_sources(request):
+    requirements = DataRequirement.objects.all()
+    status_counts = {
+        status: requirements.filter(status=status).count()
+        for status, _ in DataRequirement.Status.choices
+    }
+    return render(
+        request,
+        "research/data_sources.html",
+        {
+            "title": "数据源与采购台账",
+            "requirements": requirements,
+            "status_counts": status_counts,
+            "sources": Source.objects.exclude(key="demo-market").prefetch_related("licenses"),
+            "licenses": SourceLicense.objects.select_related("source").all(),
+            "breadcrumbs": _breadcrumbs(("首页", "/"), ("数据源与采购", "")),
+        },
+    )
+
+
 def ai_hub(request, chain_mode=False):
-    nodes = SupplyChainNode.objects.annotate(company_count=Count("companies"))
+    nodes = SupplyChainNode.objects.exclude(source_note__icontains="合成演示").annotate(
+        company_count=Count("companies")
+    )
+    companies = Company.objects.exclude(data_source_note__icontains="合成演示")
+    models = ModelProfile.objects.exclude(slug__startswith="clean-room-model-")
+    agents = CodingAgentProfile.objects.exclude(homepage__contains="example.com/clean-room")
+    projects = GitHubProject.objects.exclude(repo__startswith="atlas-clean-room/")
     context = {
         "title": "AI 产业链" if chain_mode else "AI 产业观察",
         "chain_mode": chain_mode,
         "node_count": nodes.count(),
-        "company_count": Company.objects.count(),
-        "model_count": ModelProfile.objects.count(),
-        "agent_count": CodingAgentProfile.objects.count(),
-        "project_count": GitHubProject.objects.count(),
+        "company_count": companies.count(),
+        "model_count": models.count(),
+        "agent_count": agents.count(),
+        "project_count": projects.count(),
         "top_nodes": nodes.order_by("-narrative_score")[:9],
-        "top_companies": Company.objects.order_by("-return_1m")[:8],
-        "top_models": ModelProfile.objects.all()[:4],
-        "top_agents": CodingAgentProfile.objects.all()[:4],
-        "top_projects": GitHubProject.objects.all()[:8],
-        "news_items": NewsItem.objects.filter(Q(category="ai") | Q(themes__icontains="AI"))[:5],
+        "top_companies": companies.order_by("-return_1m")[:8],
+        "top_models": models[:4],
+        "top_agents": agents[:4],
+        "top_projects": projects[:8],
+        "news_items": NewsItem.objects.exclude(source_url__contains="example.com/clean-room")
+        .filter(Q(category="ai") | Q(themes__icontains="AI"))[:5],
         "breadcrumbs": _breadcrumbs(("首页", "/"), ("AI 产业观察", "")),
     }
     return render(request, "research/ai_hub.html", context)
 
 
 def ai_market_map(request):
-    nodes = SupplyChainNode.objects.annotate(company_count=Count("companies"))
+    nodes = SupplyChainNode.objects.exclude(source_note__icontains="合成演示").annotate(
+        company_count=Count("companies")
+    )
+    companies = Company.objects.exclude(data_source_note__icontains="合成演示")
     query = request.GET.get("q", "").strip()
     layer = request.GET.get("layer", "").strip()
     quadrant = request.GET.get("quadrant", "").strip()
@@ -821,6 +958,17 @@ def ai_market_map(request):
         nodes = nodes.filter(layer=layer)
     if quadrant:
         nodes = nodes.filter(quadrant=quadrant)
+    if query:
+        companies = companies.filter(
+            Q(name__icontains=query)
+            | Q(name_en__icontains=query)
+            | Q(ticker__icontains=query)
+            | Q(primary_node__name__icontains=query)
+        )
+    if layer:
+        companies = companies.filter(primary_node__layer=layer)
+    if quadrant:
+        companies = companies.filter(primary_node__quadrant=quadrant)
     sort_fields = {
         "name": "name",
         "narrative": "-narrative_score",
@@ -829,9 +977,21 @@ def ai_market_map(request):
         "market_cap": "-market_cap_usd_m",
     }
     nodes = nodes.order_by(sort_fields.get(sort, "-narrative_score"), "name")
-    layers = SupplyChainNode.objects.order_by("layer").values_list("layer", flat=True).distinct()
+    company_sort_fields = {
+        "name": "name",
+        "market_cap": "-market_cap_usd_m",
+        "revenue_growth": "-revenue_growth",
+        "gross_margin": "-gross_margin",
+        "return_6m": "-return_6m",
+        "pe": "pe",
+    }
+    companies = companies.select_related("primary_node").order_by(
+        company_sort_fields.get(sort, "-market_cap_usd_m"), "name"
+    )
+    page_obj = Paginator(companies, 100).get_page(request.GET.get("page"))
+    layers = nodes.order_by("layer").values_list("layer", flat=True).distinct()
     quadrants = (
-        SupplyChainNode.objects.order_by("quadrant").values_list("quadrant", flat=True).distinct()
+        nodes.order_by("quadrant").values_list("quadrant", flat=True).distinct()
     )
     return render(
         request,
@@ -839,7 +999,9 @@ def ai_market_map(request):
         {
             "title": "AI 产业链资本地图",
             "nodes": nodes,
-            "company_count": Company.objects.count(),
+            "companies": page_obj.object_list,
+            "page_obj": page_obj,
+            "company_count": companies.count(),
             "layers": layers,
             "quadrants": quadrants,
             "filters": {"q": query, "layer": layer, "quadrant": quadrant, "sort": sort},
@@ -851,8 +1013,27 @@ def ai_market_map(request):
 
 
 def ai_graph(request):
-    nodes = list(SupplyChainNode.objects.annotate(company_count=Count("companies")))
-    edges = list(SupplyChainEdge.objects.select_related("source_node", "target_node"))
+    node_query = SupplyChainNode.objects.exclude(source_note__icontains="合成演示").annotate(
+        company_count=Count("companies")
+    )
+    query = request.GET.get("q", "").strip()
+    layer = request.GET.get("layer", "").strip()
+    confidence = request.GET.get("confidence", "").strip()
+    if query:
+        node_query = node_query.filter(Q(name__icontains=query) | Q(description__icontains=query))
+    if layer:
+        node_query = node_query.filter(layer=layer)
+    nodes = list(node_query)
+    node_ids = [node.pk for node in nodes]
+    edge_query = SupplyChainEdge.objects.filter(
+        source_node_id__in=node_ids, target_node_id__in=node_ids, reviewed=True
+    ).exclude(evidence_url__contains="example.com/clean-room")
+    if confidence:
+        try:
+            edge_query = edge_query.filter(confidence__gte=Decimal(confidence))
+        except (ArithmeticError, ValueError):
+            pass
+    edges = list(edge_query.select_related("source_node", "target_node"))
     graph_nodes = [
         {
             "id": node.slug,
@@ -878,8 +1059,12 @@ def ai_graph(request):
         {
             "title": "AI 产业关系图谱",
             "nodes": nodes,
-            "companies": Company.objects.select_related("primary_node").all(),
+            "companies": Company.objects.exclude(data_source_note__icontains="合成演示")
+            .filter(primary_node_id__in=node_ids)
+            .select_related("primary_node"),
+            "edges": edges,
             "layers": sorted({node.layer for node in nodes}),
+            "filters": {"q": query, "layer": layer, "confidence": confidence},
             "graph_data": {"nodes": graph_nodes, "edges": graph_edges},
             "breadcrumbs": _breadcrumbs(
                 ("首页", "/"), ("AI 产业观察", "/ai-industry/"), ("关系图谱", "")
@@ -889,10 +1074,18 @@ def ai_graph(request):
 
 
 def ai_node(request, slug: str):
-    node = get_object_or_404(SupplyChainNode, slug=slug)
-    companies = node.companies.order_by("-market_cap_usd_m")
-    inbound = node.inbound_edges.select_related("source_node")
-    outbound = node.outbound_edges.select_related("target_node")
+    node = get_object_or_404(
+        SupplyChainNode.objects.exclude(source_note__icontains="合成演示"), slug=slug
+    )
+    companies = node.companies.exclude(data_source_note__icontains="合成演示").order_by(
+        "-market_cap_usd_m"
+    )
+    inbound = node.inbound_edges.exclude(evidence_url__contains="example.com/clean-room").select_related(
+        "source_node"
+    )
+    outbound = node.outbound_edges.exclude(
+        evidence_url__contains="example.com/clean-room"
+    ).select_related("target_node")
     return render(
         request,
         "research/ai_node.html",
@@ -925,15 +1118,28 @@ def ai_node(request, slug: str):
 
 
 def ai_company(request, slug: str):
-    company = get_object_or_404(Company.objects.select_related("primary_node"), slug=slug)
+    company = get_object_or_404(
+        Company.objects.exclude(data_source_note__icontains="合成演示").select_related(
+            "primary_node"
+        ),
+        slug=slug,
+    )
     financials = company.financials.select_related("source").all()
     latest_fact = financials.first()
-    price = float(company.price or 100)
-    chart_data = [
-        round(price * (0.82 + index * 0.012 + math.sin(index / 2.8) * 0.035), 2)
-        for index in range(24)
-    ]
-    related = Company.objects.filter(primary_node=company.primary_node).exclude(pk=company.pk)[:8]
+    chart_data = list(
+        MarketBar.objects.filter(
+            instrument__symbol=company.ticker,
+            source__licenses__public_display_allowed=True,
+        )
+        .exclude(source__key="demo-market")
+        .order_by("value_date")
+        .values_list("close", flat=True)[:240]
+    )
+    related = (
+        Company.objects.exclude(data_source_note__icontains="合成演示")
+        .filter(primary_node=company.primary_node)
+        .exclude(pk=company.pk)[:8]
+    )
     return render(
         request,
         "research/ai_company.html",
@@ -962,8 +1168,10 @@ def model_evolution(request):
         "research/model_evolution.html",
         {
             "title": "大模型演变",
-            "models": ModelProfile.objects.all(),
-            "agents": CodingAgentProfile.objects.all(),
+            "models": ModelProfile.objects.exclude(slug__startswith="clean-room-model-"),
+            "agents": CodingAgentProfile.objects.exclude(
+                homepage__contains="example.com/clean-room"
+            ),
             "breadcrumbs": _breadcrumbs(
                 ("首页", "/"), ("AI 产业观察", "/ai-industry/"), ("大模型演变", "")
             ),
@@ -972,8 +1180,9 @@ def model_evolution(request):
 
 
 def model_detail(request, slug: str):
-    profile = get_object_or_404(ModelProfile, slug=slug)
-    peers = ModelProfile.objects.exclude(pk=profile.pk)[:5]
+    public_models = ModelProfile.objects.exclude(slug__startswith="clean-room-model-")
+    profile = get_object_or_404(public_models, slug=slug)
+    peers = public_models.exclude(pk=profile.pk)[:5]
     return render(
         request,
         "research/model_detail.html",
@@ -994,8 +1203,9 @@ def model_detail(request, slug: str):
 
 
 def coding_agent_detail(request, slug: str):
-    profile = get_object_or_404(CodingAgentProfile, slug=slug)
-    peers = CodingAgentProfile.objects.exclude(pk=profile.pk)[:5]
+    public_agents = CodingAgentProfile.objects.exclude(homepage__contains="example.com/clean-room")
+    profile = get_object_or_404(public_agents, slug=slug)
+    peers = public_agents.exclude(pk=profile.pk)[:5]
     return render(
         request,
         "research/coding_agent_detail.html",
@@ -1017,11 +1227,11 @@ def coding_agent_detail(request, slug: str):
 
 def applications(request):
     category = request.GET.get("category", "").strip()
-    projects = GitHubProject.objects.all()
+    projects = GitHubProject.objects.exclude(repo__startswith="atlas-clean-room/")
     if category:
         projects = projects.filter(category=category)
     categories = (
-        GitHubProject.objects.order_by("category").values_list("category", flat=True).distinct()
+        projects.order_by("category").values_list("category", flat=True).distinct()
     )
     return render(
         request,
@@ -1029,10 +1239,10 @@ def applications(request):
         {
             "title": "AI 应用开源雷达",
             "projects": projects,
-            "top_weekly": GitHubProject.objects.order_by("-stars_7d")[:8],
+            "top_weekly": projects.order_by("-stars_7d")[:8],
             "categories": categories,
             "selected_category": category,
-            "total_stars": GitHubProject.objects.aggregate(total=Sum("stars"))["total"] or 0,
+            "total_stars": projects.aggregate(total=Sum("stars"))["total"] or 0,
             "breadcrumbs": _breadcrumbs(
                 ("首页", "/"), ("AI 产业观察", "/ai-industry/"), ("AI 应用", "")
             ),
@@ -1041,12 +1251,7 @@ def applications(request):
 
 
 def ai_teardown(request):
-    generations = [
-        {"name": "H100", "compute": 48, "memory": 22, "network": 12, "power": 8, "cooling": 4},
-        {"name": "GB200", "compute": 42, "memory": 27, "network": 14, "power": 9, "cooling": 8},
-        {"name": "GB300", "compute": 39, "memory": 29, "network": 15, "power": 9, "cooling": 8},
-        {"name": "Rubin", "compute": 35, "memory": 31, "network": 17, "power": 9, "cooling": 8},
-    ]
+    generations = []
     return render(
         request,
         "research/teardown.html",
@@ -1054,6 +1259,8 @@ def ai_teardown(request):
             "title": "AI 系统价值量拆解",
             "generations": generations,
             "chart_data": generations,
+            "sections": [],
+            "methodology": "价值量模型尚无逐项可追溯来源，授权数据与人工审核完成前不发布百分比。",
             "breadcrumbs": _breadcrumbs(
                 ("首页", "/"), ("AI 产业观察", "/ai-industry/"), ("价值量拆解", "")
             ),
@@ -1086,6 +1293,7 @@ def robots_txt(request):
 def sitemap_xml(request):
     static_names = [
         "home",
+        "trade-map",
         "regime-log",
         "daily-list",
         "assets-overview",
@@ -1125,6 +1333,9 @@ def sitemap_xml(request):
         "volatility-overview",
         "volatility-dashboard",
         "vix",
+        "volatility-move",
+        "fx-vol",
+        "implied-vs-realized",
         "credit-overview",
         "credit-spreads",
         "credit-cds",
@@ -1135,6 +1346,13 @@ def sitemap_xml(request):
         "reports-all",
         "fund-letters",
         "glossary",
+        "data-sources",
+        "supply-chain",
+        "supply-chain-foundry",
+        "supply-chain-packaging",
+        "supply-chain-hbm",
+        "supply-chain-gpu",
+        "supply-chain-demand",
         "ai-hub",
         "ai-market-map",
         "ai-graph",
@@ -1148,19 +1366,22 @@ def sitemap_xml(request):
     ]
     urls = [request.build_absolute_uri(reverse(name)) for name in static_names]
     urls.extend(
-        request.build_absolute_uri(item.get_absolute_url()) for item in Thesis.objects.all()
-    )
-    urls.extend(
-        request.build_absolute_uri(item.get_absolute_url()) for item in FundLetter.objects.all()
+        request.build_absolute_uri(item.get_absolute_url())
+        for item in Thesis.objects.exclude(summary__startswith="演示日报 ")
     )
     urls.extend(
         request.build_absolute_uri(item.get_absolute_url())
-        for item in SupplyChainNode.objects.all()
+        for item in FundLetter.objects.exclude(original_url__contains="example.com/clean-room")
     )
     urls.extend(
-        request.build_absolute_uri(item.get_absolute_url()) for item in Company.objects.all()
+        request.build_absolute_uri(item.get_absolute_url())
+        for item in SupplyChainNode.objects.exclude(source_note__icontains="合成演示")
     )
-    for item in FedDocument.objects.all():
+    urls.extend(
+        request.build_absolute_uri(item.get_absolute_url())
+        for item in Company.objects.exclude(data_source_note__icontains="合成演示")
+    )
+    for item in FedDocument.objects.exclude(original_url__contains="example.com/clean-room"):
         route_name = {
             FedDocument.DocumentType.STATEMENT: "fed-detail",
             FedDocument.DocumentType.SPEECH: "fed-speech-detail",
@@ -1169,11 +1390,11 @@ def sitemap_xml(request):
         urls.append(request.build_absolute_uri(reverse(route_name, kwargs={"slug": item.slug})))
     urls.extend(
         request.build_absolute_uri(reverse("model-detail", kwargs={"slug": item.slug}))
-        for item in ModelProfile.objects.all()
+        for item in ModelProfile.objects.exclude(slug__startswith="clean-room-model-")
     )
     urls.extend(
         request.build_absolute_uri(reverse("coding-agent-detail", kwargs={"slug": item.slug}))
-        for item in CodingAgentProfile.objects.all()
+        for item in CodingAgentProfile.objects.exclude(homepage__contains="example.com/clean-room")
     )
     now = timezone.localdate().isoformat()
     body = "".join(
@@ -1259,7 +1480,9 @@ def offline(request):
 
 def health(request):
     latest_run = (
-        DashboardSnapshot.objects.order_by("-updated_at")
+        DashboardSnapshot.objects.filter(Q(data__demo=False) | ~Q(data__has_key="demo"))
+        .exclude(source__key="demo-market")
+        .order_by("-updated_at")
         .values("key", "quality_status", "updated_at")
         .first()
     )

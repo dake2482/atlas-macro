@@ -55,6 +55,15 @@ class SourceLicense(TimestampedModel):
     scope = models.TextField()
     terms_url = models.URLField(max_length=800, blank=True)
     redistribution_allowed = models.BooleanField(default=False)
+    public_display_allowed = models.BooleanField(default=False)
+    derived_display_allowed = models.BooleanField(default=False)
+    historical_storage_allowed = models.BooleanField(default=False)
+    ai_use_allowed = models.BooleanField(default=False)
+    territories = models.CharField(
+        max_length=240,
+        blank=True,
+        help_text="Contracted display territories; blank means not confirmed.",
+    )
     valid_from = models.DateField(null=True, blank=True)
     valid_until = models.DateField(null=True, blank=True)
     reviewed_by = models.CharField(max_length=160, blank=True)
@@ -63,6 +72,33 @@ class SourceLicense(TimestampedModel):
 
     class Meta:
         ordering = ["-reviewed_at", "-created_at"]
+
+
+class DataRequirement(TimestampedModel):
+    """Page-level data coverage contract and procurement backlog."""
+
+    class Status(models.TextChoices):
+        LIVE = "live", "已接入"
+        PROXY = "proxy", "代理指标"
+        NEEDS_SOURCE = "needs_source", "待找数据源"
+        LICENSE_REVIEW = "license_review", "许可待审核"
+        PURCHASE_REQUIRED = "purchase_required", "需采购"
+
+    key = models.SlugField(max_length=160, unique=True)
+    page_key = models.SlugField(max_length=120, db_index=True)
+    metric_name = models.CharField(max_length=180)
+    status = models.CharField(max_length=24, choices=Status.choices)
+    source_name = models.CharField(max_length=180, blank=True)
+    source_url = models.URLField(max_length=800, blank=True)
+    vendor = models.CharField(max_length=180, blank=True)
+    product = models.CharField(max_length=240, blank=True)
+    reason = models.TextField(blank=True)
+    proxy_description = models.TextField(blank=True)
+    priority = models.PositiveSmallIntegerField(default=5)
+    last_verified_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["priority", "page_key", "metric_name"]
 
 
 class IngestionRun(TimestampedModel):
@@ -654,5 +690,80 @@ class OptionContract(TimestampedModel):
             models.UniqueConstraint(
                 fields=["instrument", "expiry", "strike", "option_type"],
                 name="unique_option_contract",
+            )
+        ]
+
+
+class CFTCPosition(TimestampedModel):
+    """Weekly Commitments of Traders position by contract and trader group."""
+
+    report_type = models.CharField(max_length=30, default="tff-futures")
+    report_date = models.DateField(db_index=True)
+    market_code = models.CharField(max_length=24, db_index=True)
+    market_name = models.CharField(max_length=240)
+    trader_group = models.CharField(max_length=40, db_index=True)
+    long_positions = models.BigIntegerField()
+    short_positions = models.BigIntegerField()
+    open_interest = models.BigIntegerField(null=True, blank=True)
+    fetched_at = models.DateTimeField()
+    batch_id = models.UUIDField(default=uuid.uuid4, db_index=True)
+    source = models.ForeignKey(Source, on_delete=models.PROTECT)
+    quality_status = models.CharField(
+        max_length=20,
+        choices=Observation.Quality.choices,
+        default=Observation.Quality.FRESH,
+    )
+
+    @property
+    def net_position(self) -> int:
+        return self.long_positions - self.short_positions
+
+    class Meta:
+        ordering = ["-report_date", "market_name", "trader_group"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["report_type", "report_date", "market_code", "trader_group"],
+                name="unique_cftc_position_snapshot",
+            )
+        ]
+        indexes = [models.Index(fields=["market_code", "trader_group", "-report_date"])]
+
+
+class TreasuryAuction(TimestampedModel):
+    cusip = models.CharField(max_length=16)
+    security_type = models.CharField(max_length=40)
+    security_term = models.CharField(max_length=40)
+    announcement_date = models.DateField(null=True, blank=True)
+    auction_date = models.DateField(db_index=True)
+    issue_date = models.DateField(null=True, blank=True)
+    maturity_date = models.DateField(null=True, blank=True)
+    offering_amount = models.DecimalField(max_digits=24, decimal_places=2, null=True, blank=True)
+    total_tendered = models.DecimalField(max_digits=24, decimal_places=2, null=True, blank=True)
+    total_accepted = models.DecimalField(max_digits=24, decimal_places=2, null=True, blank=True)
+    bid_to_cover_ratio = models.DecimalField(max_digits=10, decimal_places=4, null=True, blank=True)
+    high_yield = models.DecimalField(max_digits=10, decimal_places=6, null=True, blank=True)
+    indirect_bidder_accepted = models.DecimalField(
+        max_digits=24, decimal_places=2, null=True, blank=True
+    )
+    direct_bidder_accepted = models.DecimalField(
+        max_digits=24, decimal_places=2, null=True, blank=True
+    )
+    primary_dealer_accepted = models.DecimalField(
+        max_digits=24, decimal_places=2, null=True, blank=True
+    )
+    fetched_at = models.DateTimeField()
+    batch_id = models.UUIDField(default=uuid.uuid4, db_index=True)
+    source = models.ForeignKey(Source, on_delete=models.PROTECT)
+    quality_status = models.CharField(
+        max_length=20,
+        choices=Observation.Quality.choices,
+        default=Observation.Quality.FRESH,
+    )
+
+    class Meta:
+        ordering = ["-auction_date", "security_type", "security_term"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["cusip", "auction_date"], name="unique_treasury_auction"
             )
         ]

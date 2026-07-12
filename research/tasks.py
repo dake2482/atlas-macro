@@ -10,19 +10,12 @@ from django.conf import settings
 from django.utils import timezone
 
 from .models import DashboardSnapshot, GeneratedAnalysis, IngestionRun
-from .providers import (
-    DeribitProvider,
-    FREDProvider,
-    GitHubProvider,
-    OKXProvider,
-    ProviderResult,
-    SECProvider,
-)
+from .official_data import refresh_official_data
+from .providers import CFTCProvider, GitHubProvider, ProviderResult, SECProvider
 from .services import (
     record_provider_result,
-    store_fred_observations,
+    store_cftc_positions,
     store_github_repository,
-    store_okx_ticker,
     summarize_runs,
 )
 
@@ -51,40 +44,29 @@ def _skip(source: str, dataset: str, reason: str) -> IngestionRun:
 
 @shared_task(name="research.tasks.refresh_official_sources")
 def refresh_official_sources() -> dict[str, Any]:
-    """Refresh configured FRED series; a missing key records safe partial runs."""
+    """Refresh direct, public-display-safe official sources and dashboards."""
 
-    provider = FREDProvider()
-    runs = []
-    try:
-        for series_id in _setting_list("FRED_SERIES", DEFAULT_FRED_SERIES):
-            result = provider.series_observations(series_id, limit=5000)
-            runs.append(record_provider_result(result, persist=store_fred_observations))
-    finally:
-        provider.close()
-    return summarize_runs(runs)
+    return refresh_official_data()
 
 
 @shared_task(name="research.tasks.refresh_crypto_sources")
 def refresh_crypto_sources() -> dict[str, Any]:
-    """Refresh public BTC spot and option-summary endpoints."""
+    """Do not ingest restricted exchange data into the public production database."""
 
-    runs = []
-    okx = OKXProvider()
-    try:
-        result = okx.ticker(getattr(settings, "OKX_SPOT_INSTRUMENT", "BTC-USDT"))
-        runs.append(record_provider_result(result, persist=store_okx_ticker))
-    finally:
-        okx.close()
-
-    deribit = DeribitProvider()
-    try:
-        result = deribit.book_summary(currency="BTC", kind="option")
-        # The summary is intentionally not forced into the normalized option
-        # contract table: it lacks a complete, stable chain snapshot.
-        runs.append(record_provider_result(result))
-    finally:
-        deribit.close()
-    return summarize_runs(runs)
+    return summarize_runs(
+        [
+            _skip(
+                "okx",
+                "public-market-data",
+                "Written public-display and redistribution permission is not configured",
+            ),
+            _skip(
+                "deribit",
+                "public-market-data",
+                "Written public-display and derived-data permission is not configured",
+            ),
+        ]
+    )
 
 
 @shared_task(name="research.tasks.refresh_filing_sources")
@@ -152,15 +134,16 @@ def refresh_market_sources() -> dict[str, Any]:
 
 @shared_task(name="research.tasks.refresh_cftc_sources")
 def refresh_cftc_sources() -> dict[str, Any]:
-    return summarize_runs(
-        [
-            _skip(
-                "cftc",
-                "cot",
-                "CFTC PRE dataset identifiers must be configured before ingestion",
-            )
-        ]
-    )
+    provider = CFTCProvider()
+    try:
+        result = provider.positions(
+            report_type="tff-futures",
+            start_date=f"{max(timezone.now().year - 2, 2000)}-01-01",
+        )
+        run = record_provider_result(result, persist=store_cftc_positions)
+    finally:
+        provider.close()
+    return summarize_runs([run])
 
 
 @shared_task(name="research.tasks.generate_daily_research")
@@ -174,6 +157,8 @@ def generate_daily_research() -> dict[str, Any]:
     today = timezone.localdate()
     latest = (
         DashboardSnapshot.objects.filter(is_published=True)
+        .exclude(data__demo=True)
+        .exclude(source__key="demo-market")
         .exclude(quality_status="error")
         .order_by("-as_of")
         .first()

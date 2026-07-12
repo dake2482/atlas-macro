@@ -24,10 +24,10 @@ and lightweight browser JavaScript provide the interactive charts and filters.
 - Component-level provenance, observation timestamps, quality/fallback states,
   dynamic sitemap, robots policy, light/dark themes, and PWA offline fallback.
 
-The offline seed command creates the full product-shape baseline: 45 supply-chain
-nodes, 219 companies, 12 model profiles, 11 coding-agent profiles, 45 GitHub
-projects, and 32 glossary terms. Seed values are illustrative and visibly
-labelled; they are not current investment data.
+The offline seed command exists only for component and contract testing. Public
+views reject its records, and production releases purge them before publishing
+official snapshots. Missing licensed feeds render an explicit data-source or
+procurement gap rather than an illustrative number.
 
 ## Quick start with Docker
 
@@ -38,7 +38,9 @@ cp .env.example .env
 docker compose build
 docker compose up -d db redis
 docker compose run --rm web python manage.py migrate
-docker compose run --rm web python manage.py seed_platform
+docker compose run --rm web python manage.py sync_data_requirements
+docker compose run --rm web python manage.py refresh_official_data
+docker compose run --rm web python manage.py refresh_cftc_data
 docker compose up -d
 ```
 
@@ -55,13 +57,16 @@ Useful operational commands:
 docker compose ps
 docker compose logs -f web worker beat
 docker compose exec web python manage.py check --deploy
-docker compose exec web python manage.py seed_platform
+docker compose exec web python manage.py sync_data_requirements
+docker compose exec web python manage.py purge_demo_data --dry-run
+docker compose exec web python manage.py refresh_official_data
 docker compose down
 ```
 
-`seed_platform` is idempotent, so it is safe to run again after an upgrade. Data
-in PostgreSQL and Redis uses named Docker volumes and survives `docker compose
-down`; use `docker compose down -v` only when intentionally deleting local data.
+`seed_platform` is idempotent but development/test-only. Never run it as a
+production bootstrap. Data in PostgreSQL and Redis uses named Docker volumes and
+survives `docker compose down`; use `docker compose down -v` only when
+intentionally deleting local data.
 
 ## Local development
 
@@ -103,9 +108,10 @@ Important settings are:
 | `DATABASE_URL` | PostgreSQL URL; omitted means local SQLite |
 | `CELERY_BROKER_URL` / `CELERY_RESULT_BACKEND` | Redis endpoints for tasks |
 | `SITE_URL` / `SITE_NAME` | Canonical URL and independent product identity |
-| `FRED_API_KEY` | Optional FRED access for official time series |
+| `BLS_REGISTRATION_KEY` | Optional higher BLS public API quota |
+| `BEA_API_KEY` / `CENSUS_API_KEY` | Free official API credentials for pending adapters |
 | `SEC_USER_AGENT` | Required descriptive identity for SEC requests |
-| `MARKET_DATA_PROVIDER` | Provider adapter; `demo` is offline-only |
+| `MARKET_DATA_PROVIDER` | Redistribution-approved provider; default `none` |
 | `MARKET_DATA_API_KEY` | Credential for a redistribution-approved provider |
 | `AI_PROVIDER` / `AI_API_KEY` | Optional evidence-bound analysis provider |
 
@@ -121,12 +127,13 @@ where relevant. Raw artifacts are content-hashed. A dashboard snapshot becomes
 public only after its required inputs pass the batch quality gate; on failure,
 the last complete snapshot remains visible and is marked stale.
 
-Default source adapters target official/open services such as FRED/ALFRED, the
-New York Fed, US Treasury FiscalData, Federal Reserve, BLS, BEA, Census, CFTC,
-SEC EDGAR, GitHub, OKX, and Deribit. Availability does not imply redistribution
-permission: source licence records are the release gate. Paid CDS, commercial
-news, exchange data, and third-party PDFs stay disabled until a suitable licence
-is recorded.
+Production snapshots currently pull directly from the New York Fed, U.S.
+Treasury interest-rate and FiscalData APIs, BLS, CFTC PRE, and Federal Reserve
+RSS. FRED is not treated as a blanket redistribution licence. OKX and Deribit
+adapters are internal diagnostics only and never feed the public site without
+written display and redistribution permission. Paid CDS, commercial news,
+exchange data, branded indices, and third-party PDFs stay disabled until the
+required rights are recorded.
 
 This is a research interface, not an order-entry or automated-trading system.
 Estimates such as GEX, DEX, Vanna, Charm, gamma flip, walls, max pain, and proxy

@@ -14,9 +14,31 @@ from research.models import Company, FundLetter, SupplyChainNode
 @pytest.mark.django_db
 def test_sitemap_is_xml_and_contains_static_and_dynamic_urls(client, seeded_platform, settings):
     settings.SITE_URL = "https://atlas.example.test"
-    company = Company.objects.order_by("pk").first()
-    node = SupplyChainNode.objects.order_by("pk").first()
-    letter = FundLetter.objects.order_by("pk").first()
+    node = SupplyChainNode.objects.create(
+        slug="sitemap-verified-node",
+        name="Sitemap Verified Node",
+        layer="fixture",
+        description="Reviewed fixture",
+        source_note="Company IR",
+    )
+    company = Company.objects.create(
+        slug="sitemap-verified-company",
+        name="Sitemap Verified Company",
+        ticker="SMAP",
+        primary_node=node,
+        description="Reviewed fixture",
+        data_source_note="SEC EDGAR",
+    )
+    letter = FundLetter.objects.create(
+        fund_name="Sitemap Verified Fund",
+        quarter="2030Q1",
+        strategy="macro",
+        stance="neutral",
+        summary="Reviewed fixture",
+        key_points=[],
+        original_url="https://example.org/sitemap-letter",
+        published_at="2030-01-01",
+    )
 
     response = client.get("/sitemap.xml")
 
@@ -39,6 +61,9 @@ def test_sitemap_is_xml_and_contains_static_and_dynamic_urls(client, seeded_plat
     }
     for path in expected_paths:
         assert any(location.endswith(path) for location in locations), path
+    demo_letter = FundLetter.objects.filter(original_url__contains="example.com/clean-room").first()
+    assert demo_letter
+    assert not any(location.endswith(demo_letter.get_absolute_url()) for location in locations)
 
 
 @pytest.mark.django_db

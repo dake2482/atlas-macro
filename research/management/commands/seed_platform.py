@@ -90,9 +90,9 @@ class Command(BaseCommand):
             "fred": (
                 "Federal Reserve Economic Data",
                 "https://fred.stlouisfed.org/",
-                "official",
-                Source.LicenseStatus.OPEN,
-                True,
+                "aggregator",
+                Source.LicenseStatus.REVIEW,
+                False,
             ),
             "federal-reserve": (
                 "Federal Reserve Board",

@@ -1,15 +1,19 @@
 from django.conf import settings
 
+from .models import DataRequirement
+
 NAV_GROUPS = [
     {
         "label": "核心入口",
         "items": [
             ("今日判断", "/"),
+            ("交易地图", "/trade-map/"),
             ("市场仪表盘", "/assets/"),
             ("每日报告", "/daily-report/"),
             ("研究库", "/research/reports/"),
             ("基金信函", "/research/fund-letters/"),
             ("AI 资本地图", "/ai-industry/market-map/"),
+            ("数据源与采购", "/data-sources/"),
             ("新闻 / 事件", "/news/"),
         ],
     },
@@ -75,6 +79,9 @@ NAV_GROUPS = [
             ("通胀", "/economy/inflation/"),
             ("消费", "/economy/consumer/"),
             ("波动率", "/volatility/"),
+            ("MOVE", "/volatility/move/"),
+            ("FX 波动率", "/volatility/fx-vol/"),
+            ("IV vs RV", "/volatility/implied-vs-realized/"),
             ("信用市场", "/credit/"),
         ],
     },
@@ -87,6 +94,7 @@ NAV_GROUPS = [
             ("关系图谱", "/ai-industry/graph/"),
             ("AI 资讯", "/ai-industry/news/"),
             ("产业链", "/ai-industry/chain/"),
+            ("算力供应链", "/supply-chain/"),
             ("大模型演变", "/ai-industry/chain/model-evolution/"),
             ("AI 应用", "/ai-industry/chain/applications/"),
             ("专业术语", "/ai-industry/chain/glossary/"),
@@ -95,11 +103,48 @@ NAV_GROUPS = [
 ]
 
 
+ROUTE_REQUIREMENT_KEYS = {
+    "assets-overview": ("assets-equities",),
+    "equities": ("assets-equities",),
+    "etfs": ("assets-equities",),
+    "options": ("options",),
+    "positioning": ("positioning",),
+    "crypto": ("crypto-derivatives",),
+    "crypto-derivatives": ("crypto-derivatives",),
+    "fed-hub": ("fed",),
+    "fed-statements": ("fed",),
+    "fed-speeches": ("fed",),
+    "fed-news": ("fed",),
+    "credit-overview": ("credit-spreads", "credit-cds"),
+    "volatility-overview": ("vix", "volatility-dashboard"),
+    "news": ("news",),
+    "semiconductor-news": ("news",),
+    "reports": ("research",),
+    "reports-all": ("research",),
+    "fund-letters": ("fund-letters",),
+    "fund-letter-detail": ("fund-letters",),
+    "ai-company": ("ai-company",),
+    "ai-graph": ("ai-industry-graph",),
+    "ai-market-map": ("supply-chain", "ai-industry-graph"),
+    "ai-hub": ("supply-chain", "model-evolution", "applications"),
+    "ai-chain": ("supply-chain", "ai-industry-graph"),
+    "ai-teardown": ("ai-teardown",),
+    "model-evolution": ("model-evolution",),
+    "model-detail": ("model-evolution",),
+    "applications": ("applications",),
+}
+
+
 def site_context(request):
+    resolver_match = getattr(request, "resolver_match", None)
+    route_name = resolver_match.url_name if resolver_match else ""
+    page_key = resolver_match.kwargs.get("page_key") if resolver_match else None
+    requirement_keys = ROUTE_REQUIREMENT_KEYS.get(route_name, (page_key or route_name,))
+    requirements = DataRequirement.objects.filter(page_key__in=requirement_keys)
     return {
         "site_name": settings.SITE_NAME,
         "site_url": settings.SITE_URL,
         "nav_groups": NAV_GROUPS,
         "current_path": request.path,
+        "data_requirements": requirements,
     }
-

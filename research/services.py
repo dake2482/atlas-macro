@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections import defaultdict
 from collections.abc import Callable, Iterable, Mapping
 from datetime import UTC, date, datetime, time
 from decimal import Decimal
@@ -14,14 +15,18 @@ from django.utils import timezone
 from django.utils.dateparse import parse_date, parse_datetime
 
 from .models import (
+    CFTCPosition,
+    FedDocument,
     GitHubProject,
     IngestionRun,
     Instrument,
     Observation,
+    QualityCheck,
     RawArtifact,
     SeriesDefinition,
     Source,
     SourceLicense,
+    TreasuryAuction,
 )
 from .providers import ProviderResult
 
@@ -29,11 +34,96 @@ SOURCE_CATALOG: dict[str, dict[str, Any]] = {
     "fred": {
         "name": "Federal Reserve Economic Data",
         "homepage": "https://fred.stlouisfed.org/",
+        "kind": "aggregator",
+        "license_status": Source.LicenseStatus.REVIEW,
+        "license_scope": "Each series retains its upstream owner's rights; no blanket public redistribution",
+        "redistribution_allowed": False,
+        "public_display_allowed": False,
+        "derived_display_allowed": False,
+        "historical_storage_allowed": False,
+        "ai_use_allowed": False,
+        "terms_url": "https://fred.stlouisfed.org/docs/api/terms_of_use.html",
+        "attribution": "Federal Reserve Bank of St. Louis",
+    },
+    "ny-fed-markets": {
+        "name": "Federal Reserve Bank of New York Markets Data",
+        "homepage": "https://markets.newyorkfed.org/static/docs/markets-api.html",
         "kind": "official",
         "license_status": Source.LicenseStatus.OPEN,
-        "license_scope": "FRED terms and source-series attribution apply",
+        "license_scope": "Attributed official reference-rate display; NY Fed disclaimer applies",
         "redistribution_allowed": True,
-        "attribution": "Federal Reserve Bank of St. Louis",
+        "public_display_allowed": True,
+        "derived_display_allowed": True,
+        "historical_storage_allowed": True,
+        "ai_use_allowed": True,
+        "terms_url": "https://www.newyorkfed.org/privacy/termsofuse",
+        "attribution": "Federal Reserve Bank of New York",
+    },
+    "us-treasury-rates": {
+        "name": "U.S. Treasury Daily Interest Rates",
+        "homepage": "https://home.treasury.gov/resource-center/data-chart-center/interest-rates/",
+        "kind": "official",
+        "license_status": Source.LicenseStatus.OPEN,
+        "license_scope": "Attributed U.S. government data",
+        "redistribution_allowed": True,
+        "public_display_allowed": True,
+        "derived_display_allowed": True,
+        "historical_storage_allowed": True,
+        "ai_use_allowed": True,
+        "attribution": "U.S. Department of the Treasury",
+    },
+    "treasury-fiscal-data": {
+        "name": "U.S. Treasury FiscalData",
+        "homepage": "https://fiscaldata.treasury.gov/",
+        "kind": "official",
+        "license_status": Source.LicenseStatus.OPEN,
+        "license_scope": "Attributed U.S. government fiscal data",
+        "redistribution_allowed": True,
+        "public_display_allowed": True,
+        "derived_display_allowed": True,
+        "historical_storage_allowed": True,
+        "ai_use_allowed": True,
+        "attribution": "U.S. Department of the Treasury, FiscalData",
+    },
+    "bls": {
+        "name": "U.S. Bureau of Labor Statistics",
+        "homepage": "https://www.bls.gov/developers/",
+        "kind": "official",
+        "license_status": Source.LicenseStatus.OPEN,
+        "license_scope": "Public BLS data; access date and non-endorsement disclaimer required",
+        "redistribution_allowed": True,
+        "public_display_allowed": True,
+        "derived_display_allowed": True,
+        "historical_storage_allowed": True,
+        "ai_use_allowed": True,
+        "terms_url": "https://www.bls.gov/developers/termsOfService.htm",
+        "attribution": "U.S. Bureau of Labor Statistics",
+    },
+    "cftc": {
+        "name": "CFTC Public Reporting Environment",
+        "homepage": "https://publicreporting.cftc.gov/",
+        "kind": "official",
+        "license_status": Source.LicenseStatus.OPEN,
+        "license_scope": "Attributed official COT public reporting data",
+        "redistribution_allowed": True,
+        "public_display_allowed": True,
+        "derived_display_allowed": True,
+        "historical_storage_allowed": True,
+        "ai_use_allowed": True,
+        "attribution": "U.S. Commodity Futures Trading Commission",
+    },
+    "federal-reserve": {
+        "name": "Federal Reserve Board",
+        "homepage": "https://www.federalreserve.gov/",
+        "kind": "official",
+        "license_status": Source.LicenseStatus.OPEN,
+        "license_scope": "Attributed official document metadata and public releases",
+        "redistribution_allowed": True,
+        "public_display_allowed": True,
+        "derived_display_allowed": True,
+        "historical_storage_allowed": True,
+        "ai_use_allowed": True,
+        "attribution": "Board of Governors of the Federal Reserve System",
     },
     "sec": {
         "name": "SEC EDGAR",
@@ -42,6 +132,10 @@ SOURCE_CATALOG: dict[str, dict[str, Any]] = {
         "license_status": Source.LicenseStatus.OPEN,
         "license_scope": "Public filings; issuer material retains its own rights",
         "redistribution_allowed": True,
+        "public_display_allowed": True,
+        "derived_display_allowed": True,
+        "historical_storage_allowed": True,
+        "ai_use_allowed": True,
         "attribution": "U.S. Securities and Exchange Commission",
     },
     "github": {
@@ -51,6 +145,10 @@ SOURCE_CATALOG: dict[str, dict[str, Any]] = {
         "license_status": Source.LicenseStatus.REVIEW,
         "license_scope": "Metadata only; repository licenses apply separately",
         "redistribution_allowed": False,
+        "public_display_allowed": True,
+        "derived_display_allowed": True,
+        "historical_storage_allowed": True,
+        "ai_use_allowed": False,
         "attribution": "GitHub",
     },
     "okx": {
@@ -58,8 +156,13 @@ SOURCE_CATALOG: dict[str, dict[str, Any]] = {
         "homepage": "https://www.okx.com/docs-v5/",
         "kind": "public-api",
         "license_status": Source.LicenseStatus.REVIEW,
-        "license_scope": "Public delayed display; review production redistribution",
+        "license_scope": "Internal testing only unless OKX grants written public-display permission",
         "redistribution_allowed": False,
+        "public_display_allowed": False,
+        "derived_display_allowed": False,
+        "historical_storage_allowed": False,
+        "ai_use_allowed": False,
+        "terms_url": "https://www.okx.com/en-us/help/okx-api-agreement",
         "attribution": "OKX",
     },
     "deribit": {
@@ -67,8 +170,13 @@ SOURCE_CATALOG: dict[str, dict[str, Any]] = {
         "homepage": "https://docs.deribit.com/",
         "kind": "public-api",
         "license_status": Source.LicenseStatus.REVIEW,
-        "license_scope": "Public delayed display; review production redistribution",
+        "license_scope": "Personal/internal testing only unless Deribit grants written permission",
         "redistribution_allowed": False,
+        "public_display_allowed": False,
+        "derived_display_allowed": False,
+        "historical_storage_allowed": False,
+        "ai_use_allowed": False,
+        "terms_url": "https://statics.deribit.com/files/TermsofServiceDeribit.pdf",
         "attribution": "Deribit",
     },
     "internal": {
@@ -78,6 +186,10 @@ SOURCE_CATALOG: dict[str, dict[str, Any]] = {
         "license_status": Source.LicenseStatus.OPEN,
         "license_scope": "Original calculations derived from attributed inputs",
         "redistribution_allowed": True,
+        "public_display_allowed": True,
+        "derived_display_allowed": True,
+        "historical_storage_allowed": True,
+        "ai_use_allowed": True,
         "attribution": "Atlas Macro",
     },
 }
@@ -87,14 +199,50 @@ def ensure_source(key: str, **overrides: Any) -> Source:
     """Get or create a catalogued data source without replacing admin edits."""
 
     defaults = {**SOURCE_CATALOG.get(key, {"name": key.replace("-", " ").title()}), **overrides}
-    source, _ = Source.objects.get_or_create(key=key, defaults=defaults)
-    if not source.licenses.exists():
+    source_field_names = {
+        "name",
+        "homepage",
+        "kind",
+        "license_status",
+        "license_scope",
+        "redistribution_allowed",
+        "attribution",
+    }
+    source_defaults = {field: value for field, value in defaults.items() if field in source_field_names}
+    source, created = Source.objects.get_or_create(key=key, defaults=source_defaults)
+    # Correct unsafe seed defaults while preserving a later explicit licensed contract.
+    if not created and source.license_status != Source.LicenseStatus.LICENSED:
+        for field in (
+            "name",
+            "homepage",
+            "kind",
+            "license_status",
+            "license_scope",
+            "redistribution_allowed",
+            "attribution",
+        ):
+            if field in source_defaults:
+                setattr(source, field, source_defaults[field])
+        source.save()
+    if source.license_status == Source.LicenseStatus.LICENSED and source.licenses.filter(
+        status=Source.LicenseStatus.LICENSED
+    ).exists():
+        return source
+    licence_defaults = {
+        "status": defaults.get("license_status", Source.LicenseStatus.REVIEW),
+        "scope": defaults.get("license_scope", "Terms review required before publication"),
+        "terms_url": defaults.get("terms_url", defaults.get("homepage", "")),
+        "redistribution_allowed": defaults.get("redistribution_allowed", False),
+        "public_display_allowed": defaults.get("public_display_allowed", False),
+        "derived_display_allowed": defaults.get("derived_display_allowed", False),
+        "historical_storage_allowed": defaults.get("historical_storage_allowed", False),
+        "ai_use_allowed": defaults.get("ai_use_allowed", False),
+        "territories": defaults.get("territories", "Worldwide public web"),
+    }
+    if not source.licenses.filter(**licence_defaults).exists():
         SourceLicense.objects.create(
             source=source,
-            status=defaults.get("license_status", Source.LicenseStatus.REVIEW),
-            scope=defaults.get("license_scope", "Terms review required before publication"),
-            terms_url=defaults.get("homepage", ""),
-            redistribution_allowed=defaults.get("redistribution_allowed", False),
+            **licence_defaults,
             notes="Created automatically on first ingestion; review in Django Admin.",
         )
     return source
@@ -128,6 +276,22 @@ def finish_ingestion(
         run.metadata = {**run.metadata, **dict(metadata)}
     run.save(
         update_fields=["status", "row_count", "error", "completed_at", "metadata", "updated_at"]
+    )
+    check_status = {
+        IngestionRun.Status.SUCCESS: QualityCheck.Status.PASS,
+        IngestionRun.Status.PARTIAL: QualityCheck.Status.WARN,
+        IngestionRun.Status.FAILED: QualityCheck.Status.FAIL,
+    }.get(status, QualityCheck.Status.WARN)
+    QualityCheck.objects.update_or_create(
+        run=run,
+        batch_id=run.batch_id,
+        scope_key=f"{run.source.key}:{run.dataset}"[:160],
+        check_name="provider_result",
+        defaults={
+            "status": check_status,
+            "observed_at": run.completed_at,
+            "details": {"row_count": run.row_count, "error": run.error},
+        },
     )
     return run
 
@@ -184,44 +348,76 @@ def _aware_midnight(value: str | date | datetime) -> datetime:
     return dt
 
 
-def store_fred_observations(result: ProviderResult, source: Source, run: IngestionRun) -> int:
-    """Upsert normalized FRED observations using the ingestion batch id."""
+SERIES_CATALOG = {
+    "SOFR": ("Secured Overnight Financing Rate", "%", "daily"),
+    "EFFR": ("Effective Federal Funds Rate", "%", "daily"),
+    "TGA": ("Treasury General Account Closing Balance", "USD millions", "daily"),
+    "CES0000000001": ("Total Nonfarm Payroll Employment", "thousands", "monthly"),
+    "LNS14000000": ("Unemployment Rate", "%", "monthly"),
+    "CES0500000003": ("Average Hourly Earnings, Total Private", "USD/hour", "monthly"),
+    "JTS000000000000000JOL": ("Job Openings", "thousands", "monthly"),
+    "CUSR0000SA0": ("Consumer Price Index for All Urban Consumers", "index", "monthly"),
+    "CUSR0000SA0L1E": ("Core CPI, All Items Less Food and Energy", "index", "monthly"),
+    "WPSFD4": ("Producer Price Index: Final Demand", "index", "monthly"),
+}
 
-    if not result.records:
-        return 0
-    series_id = str(result.records[0]["series_id"])
-    series, _ = SeriesDefinition.objects.get_or_create(
-        key=series_id.lower(),
-        defaults={
-            "name": series_id,
-            "source": source,
-            "frequency": "daily",
-            "description": "Imported from FRED; metadata can be curated in admin.",
-        },
-    )
+
+def store_series_observations(result: ProviderResult, source: Source, run: IngestionRun) -> int:
+    """Upsert normalized observations from any official time-series provider."""
+
+    grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for record in result.records:
+        if record.get("series_id") and record.get("date") and record.get("value") is not None:
+            grouped[str(record["series_id"])].append(record)
     now = timezone.now()
     count = 0
-    for record in result.records:
-        value_date = _aware_midnight(record["date"])
-        Observation.objects.update_or_create(
-            series=series,
-            instrument=None,
-            value_date=value_date,
-            source=source,
+    for series_id, records in grouped.items():
+        name, unit, frequency = SERIES_CATALOG.get(
+            series_id,
+            (
+                series_id.replace("UST-", "U.S. Treasury ").replace("TIPS-", "Treasury Real "),
+                "%" if series_id.startswith(("UST-", "TIPS-")) else "",
+                "daily",
+            ),
+        )
+        series, _ = SeriesDefinition.objects.get_or_create(
+            key=series_id.lower(),
             defaults={
-                "value": record["value"],
-                "as_of": value_date,
-                "fetched_at": now,
-                "batch_id": run.batch_id,
-                "quality_status": Observation.Quality.FRESH,
-                "metadata": {
-                    "realtime_start": record.get("realtime_start"),
-                    "realtime_end": record.get("realtime_end"),
-                },
+                "name": name,
+                "unit": unit,
+                "source": source,
+                "frequency": frequency,
+                "description": f"Imported directly from {source.name}.",
             },
         )
-        count += 1
+        for record in records:
+            value_date = _aware_midnight(record["date"])
+            metadata = dict(record.get("metadata") or {})
+            for key in ("realtime_start", "realtime_end"):
+                if record.get(key) is not None:
+                    metadata[key] = record[key]
+            Observation.objects.update_or_create(
+                series=series,
+                instrument=None,
+                value_date=value_date,
+                source=source,
+                defaults={
+                    "value": record["value"],
+                    "as_of": value_date,
+                    "fetched_at": now,
+                    "batch_id": run.batch_id,
+                    "quality_status": Observation.Quality.FRESH,
+                    "metadata": metadata,
+                },
+            )
+            count += 1
     return count
+
+
+def store_fred_observations(result: ProviderResult, source: Source, run: IngestionRun) -> int:
+    """Backward-compatible FRED normalizer."""
+
+    return store_series_observations(result, source, run)
 
 
 def store_market_observation(
@@ -306,6 +502,82 @@ def store_github_repository(result: ProviderResult, _: Source, __: IngestionRun)
                 "open_issues": record.get("open_issues", 0),
                 "pushed_at": pushed_at,
                 "homepage": record.get("homepage") or f"https://github.com/{record['repo']}",
+            },
+        )
+        count += 1
+    return count
+
+
+def store_cftc_positions(result: ProviderResult, source: Source, run: IngestionRun) -> int:
+    count = 0
+    for record in result.records:
+        CFTCPosition.objects.update_or_create(
+            report_type=record["report_type"],
+            report_date=parse_date(record["report_date"]),
+            market_code=record["market_code"],
+            trader_group=record["trader_group"],
+            defaults={
+                "market_name": record["market_name"],
+                "long_positions": record["long_positions"],
+                "short_positions": record["short_positions"],
+                "open_interest": record.get("open_interest"),
+                "fetched_at": timezone.now(),
+                "batch_id": run.batch_id,
+                "source": source,
+                "quality_status": Observation.Quality.FRESH,
+            },
+        )
+        count += 1
+    return count
+
+
+def store_fed_documents(result: ProviderResult, _: Source, __: IngestionRun) -> int:
+    count = 0
+    for record in result.records:
+        published_at = parse_datetime(record.get("published_at") or "")
+        if not published_at:
+            continue
+        FedDocument.objects.update_or_create(
+            slug=record["slug"],
+            defaults={
+                "document_type": record["document_type"],
+                "title": record["title"],
+                "speaker": "",
+                "summary": record.get("summary", ""),
+                "key_points": [],
+                "published_at": published_at,
+                "hawkish_score": 0,
+                "original_url": record["original_url"],
+            },
+        )
+        count += 1
+    return count
+
+
+def store_treasury_auctions(result: ProviderResult, source: Source, run: IngestionRun) -> int:
+    count = 0
+    for record in result.records:
+        TreasuryAuction.objects.update_or_create(
+            cusip=record["cusip"],
+            auction_date=parse_date(record["auction_date"]),
+            defaults={
+                "security_type": record["security_type"],
+                "security_term": record["security_term"],
+                "announcement_date": parse_date(record.get("announcement_date") or ""),
+                "issue_date": parse_date(record.get("issue_date") or ""),
+                "maturity_date": parse_date(record.get("maturity_date") or ""),
+                "offering_amount": record.get("offering_amt"),
+                "total_tendered": record.get("total_tendered"),
+                "total_accepted": record.get("total_accepted"),
+                "bid_to_cover_ratio": record.get("bid_to_cover_ratio"),
+                "high_yield": record.get("high_yield"),
+                "indirect_bidder_accepted": record.get("indirect_bidder_accepted"),
+                "direct_bidder_accepted": record.get("direct_bidder_accepted"),
+                "primary_dealer_accepted": record.get("primary_dealer_accepted"),
+                "fetched_at": timezone.now(),
+                "batch_id": run.batch_id,
+                "source": source,
+                "quality_status": Observation.Quality.FRESH,
             },
         )
         count += 1

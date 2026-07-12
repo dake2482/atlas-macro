@@ -17,7 +17,7 @@
   {% if metric.as_of or metric.source %}
     <div class="source-line absolute bottom-3 left-4 right-4 pr-8">
       {% if metric.source %}<span>{% if metric.source.name %}{{ metric.source.name }}{% else %}{{ metric.source }}{% endif %}</span>{% endif %}
-      {% if metric.as_of %}<time datetime="{{ metric.as_of|date:'c' }}">{{ metric.as_of|date:"m-d H:i" }}</time>{% endif %}
+      {% if metric.as_of %}<time datetime="{{ metric.as_of|date:'c'|default:metric.as_of }}">{{ metric.as_of|date:"m-d H:i"|default:metric.as_of }}</time>{% endif %}
     </div>
   {% endif %}
 </article>

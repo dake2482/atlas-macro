@@ -123,6 +123,7 @@
 
       <main id="main-content" tabindex="-1">
         {% block content %}{% endblock %}
+        {% if data_requirements %}<div class="content-wrap !pt-0">{% include "research/includes/data_requirements_panel.html" %}</div>{% endif %}
       </main>
 
       <footer class="border-t hairline px-4 py-6 text-center text-[10px] text-[var(--faint)] sm:px-8">

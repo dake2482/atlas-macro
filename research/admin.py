@@ -54,6 +54,7 @@ class SupplyChainNodeAdmin(admin.ModelAdmin):
 
 for model in [
     models.SourceLicense,
+    models.DataRequirement,
     models.RawArtifact,
     models.Instrument,
     models.SeriesDefinition,
@@ -77,6 +78,8 @@ for model in [
     models.GitHubProject,
     models.GlossaryTerm,
     models.OptionContract,
+    models.CFTCPosition,
+    models.TreasuryAuction,
 ]:
     admin.site.register(model)
 

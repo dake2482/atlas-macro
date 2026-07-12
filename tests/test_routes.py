@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from datetime import date
+
 import pytest
+from django.utils import timezone
 
 from research.context_processors import NAV_GROUPS
 from research.models import (
@@ -15,6 +18,7 @@ from research.models import (
 
 STATIC_PUBLIC_PATHS = [
     "/",
+    "/trade-map/",
     "/regime-log/",
     "/daily-report/",
     "/search/",
@@ -24,6 +28,13 @@ STATIC_PUBLIC_PATHS = [
     "/research/reports/all/",
     "/research/fund-letters/",
     "/glossary/",
+    "/data-sources/",
+    "/supply-chain/",
+    "/supply-chain/foundry/",
+    "/supply-chain/packaging/",
+    "/supply-chain/hbm/",
+    "/supply-chain/gpu/",
+    "/supply-chain/demand/",
     "/assets/",
     "/assets/equities/",
     "/assets/etfs/",
@@ -61,6 +72,9 @@ STATIC_PUBLIC_PATHS = [
     "/volatility/",
     "/volatility/dashboard/",
     "/volatility/vix/",
+    "/volatility/move/",
+    "/volatility/fx-vol/",
+    "/volatility/implied-vs-realized/",
     "/credit/",
     "/credit/spreads/",
     "/credit/cds/",
@@ -91,12 +105,60 @@ def test_public_routes_render(client, seeded_platform, path):
 
 
 @pytest.mark.django_db
+def test_no_public_route_leaks_seeded_demo_content(client, seeded_platform):
+    forbidden = (
+        "演示日报",
+        "Atlas Demo Wire",
+        "Clean-room Demonstration",
+        "产业链演示公司",
+        "Frontier Demo Model",
+        "demo-project",
+    )
+    for path in STATIC_PUBLIC_PATHS:
+        body = client.get(path).content.decode()
+        assert not any(marker in body for marker in forbidden), path
+
+
+@pytest.mark.django_db
 def test_dynamic_detail_routes_render(client, seeded_platform):
+    thesis = Thesis.objects.create(
+        date=date(2030, 1, 1),
+        regime="verified fixture",
+        summary="Reviewed evidence fixture",
+        evidence=[],
+        triggers=[],
+        invalidation="fixture invalidation",
+    )
+    letter = FundLetter.objects.create(
+        fund_name="Verified Fixture Fund",
+        quarter="2030Q1",
+        strategy="macro",
+        stance="neutral",
+        summary="Reviewed fixture summary",
+        key_points=[],
+        original_url="https://example.org/verified-letter",
+        published_at="2030-01-01",
+    )
+    node = SupplyChainNode.objects.create(
+        slug="verified-fixture-node",
+        name="Verified Fixture Node",
+        layer="fixture",
+        description="Reviewed public evidence fixture",
+        source_note="Company IR",
+    )
+    company = Company.objects.create(
+        slug="verified-fixture-company",
+        name="Verified Fixture Company",
+        ticker="VFCX",
+        primary_node=node,
+        description="Reviewed public company fixture",
+        data_source_note="SEC EDGAR",
+    )
     objects = [
-        Thesis.objects.order_by("date").first(),
-        FundLetter.objects.order_by("pk").first(),
-        SupplyChainNode.objects.order_by("pk").first(),
-        Company.objects.order_by("pk").first(),
+        thesis,
+        letter,
+        node,
+        company,
     ]
 
     assert all(objects), "seed_platform must provide one example of every detail page"
@@ -104,9 +166,33 @@ def test_dynamic_detail_routes_render(client, seeded_platform):
         response = client.get(obj.get_absolute_url())
         assert response.status_code == 200, obj.get_absolute_url()
 
-    fed_document = FedDocument.objects.order_by("pk").first()
-    model = ModelProfile.objects.order_by("pk").first()
-    agent = CodingAgentProfile.objects.order_by("pk").first()
+    fed_document = FedDocument.objects.create(
+        document_type=FedDocument.DocumentType.SPEECH,
+        slug="verified-fixture-speech",
+        title="Verified Fixture Speech",
+        summary="Official metadata fixture",
+        published_at=timezone.now(),
+        original_url="https://www.federalreserve.gov/newsevents/speech/fixture.htm",
+    )
+    model = ModelProfile.objects.create(
+        slug="verified-fixture-model",
+        name="Verified Fixture Model",
+        provider="Fixture Provider",
+        release_date="2030-01-01",
+        capability_score=1,
+        description="Official vendor metadata fixture",
+    )
+    agent = CodingAgentProfile.objects.create(
+        slug="verified-fixture-agent",
+        name="Verified Fixture Agent",
+        provider="Fixture Provider",
+        product_type="CLI",
+        release_date="2030-01-01",
+        price_label="N/A",
+        capability_score=1,
+        description="Official vendor metadata fixture",
+        homepage="https://example.org/verified-agent",
+    )
     assert fed_document and model and agent
 
     fed_prefix = {
