@@ -9,10 +9,10 @@ success_metrics:
 current_milestone:
   id: AI-RESEARCH-003
   title: 修正并补齐官方就业数据页
-  status: IN_PROGRESS
+  status: REVIEW
 health: GREEN
-next_action: Validate BLS series and DOL weekly-claims contracts, then implement the employment-page correction.
-updated_at: '2026-07-12T22:21:00+08:00'
+next_action: Run the project closeout gate after recording production evidence.
+updated_at: '2026-07-12T23:17:01+08:00'
 validation_commands:
   - .venv/bin/ruff check .
   - .venv/bin/pytest -q
