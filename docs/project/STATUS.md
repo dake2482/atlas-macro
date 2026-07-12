@@ -4,9 +4,9 @@
 
 - Purpose: Build a clean-room macro-research and AI supply-chain intelligence platform with traceable public sources, explicit data-quality labels, and original presentation.
 - Health: `GREEN`
-- Milestone: `AI-RESEARCH-006` — 修正经济总览的官方变化率组合 (`DONE`)
-- Next action: Audit the next highest-impact public dashboard whose metric semantics or source batches still diverge from the clean-room contract.
-- Updated: `2026-07-13T02:23:17+08:00`
+- Milestone: `AI-RESEARCH-007` — 流动性快照原子协调与净流动性同日化 (`IN_PROGRESS`)
+- Next action: Replace the latest-per-series liquidity proxy with an exact-batch common-date coordinator for H.4.1, ON RRP, TGA and the validated Fed Funds component.
+- Updated: `2026-07-13T02:32:47+08:00`
 - Git boundary: branch `main`; run `portfolio closeout AI-RESEARCH` for live delivery state.
 - Execution metadata: Codex 0/0 active/total; ZCode 0/0 active/total
 
@@ -14,7 +14,7 @@
 
 | Requirement | State | Priority | Executor | Task | Branch / worktree | Next action |
 |---|---|---|---|---|---|---|
-| - | - | - | - | - | - | No active requirement |
+| AI-RESEARCH-007 | IN_PROGRESS | P1 | codex | atlas-liquidity-alignment-20260713 | main / local | Replace the latest-per-series liquidity proxy with an exact-batch common-date coordinator for H.4.1, ON RRP, TGA and the validated Fed Funds component. |
 
 ## Blockers
 
