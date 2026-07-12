@@ -239,14 +239,26 @@ PAGE_CONFIGS = {
     "liquidity": {
         "title": "流动性",
         "eyebrow": "Dollar Liquidity",
-        "description": "以资产负债表、Repo、离岸美元、中介能力和资产反应构成传导体系。",
+        "description": (
+            "H.4.1、ON RRP 与 TGA 严格按共同有效日计算净流动性代理，"
+            "政策利率继承已验证的 Fed Funds 快照。"
+        ),
+        "snapshot_contract_version": 1,
         "metrics": [
-            metric("LPI", "5.6 / 10", "偏紧"),
-            metric("净流动性", "$5.42T", "20D -$64B", source="WALCL−RRP−TGA"),
-            metric("准备金", "$3.31T", "4W -1.2%", source="Federal Reserve"),
-            metric("SOFR−IORB", "-8bp", "正常", source="NY Fed"),
+            metric("净流动性代理"),
+            metric("联储总资产（共同日）"),
+            metric("准备金（共同日）"),
+            metric("ON RRP（共同日）"),
+            metric("TGA（共同日）"),
+            metric("SOFR"),
+            metric("IORB"),
+            metric("SOFR−EFFR"),
+            metric("SOFR−IORB"),
         ],
-        "analysis": "缓冲仍在但边际收缩，若 TGA 上升同时准备金下降，风险资产对冲需求会加速。",
+        "analysis": (
+            "净流动性是 Atlas Macro 的透明代理计算，不是美联储官方 LPI；"
+            "任何必需组件失败时保留上一版完整快照。"
+        ),
     },
     "transmission-chain": {
         "title": "美元流动性传导链",

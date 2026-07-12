@@ -582,7 +582,13 @@ def dashboard_page(request, page_key: str):
         )
     snapshot = None
     snapshot_source_keys: set[str] = set()
+    blocked_refresh_failure = None
     for candidate in snapshot_candidates[:50]:
+        candidate_failure = (candidate.data or {}).get("refresh_failure")
+        if blocked_refresh_failure is None and isinstance(
+            candidate_failure, dict
+        ):
+            blocked_refresh_failure = candidate_failure
         candidate_source_keys = _snapshot_source_keys(candidate.data)
         if candidate.source_id:
             candidate_source_keys.add(candidate.source.key)
@@ -754,7 +760,7 @@ def dashboard_page(request, page_key: str):
         )
         config["source_notes"] = ["没有真实数据时显示空缺，不回退到演示或合成数值。"]
         config["required_notices"] = []
-        config["refresh_failure"] = None
+        config["refresh_failure"] = blocked_refresh_failure
     config["charts"] = _apply_dashboard_controls(
         request,
         config,
@@ -2243,6 +2249,11 @@ def robots_txt(request):
     return HttpResponse(content, content_type="text/plain; charset=utf-8")
 
 
+def _canonical_public_url(path: str) -> str:
+    normalized_path = path if path.startswith("/") else f"/{path}"
+    return f"{settings.SITE_URL.rstrip('/')}{normalized_path}"
+
+
 def sitemap_xml(request):
     static_names = [
         "home",
@@ -2318,32 +2329,32 @@ def sitemap_xml(request):
         "ai-glossary",
         "ai-teardown",
     ]
-    urls = [request.build_absolute_uri(reverse(name)) for name in static_names]
-    urls.extend(request.build_absolute_uri(item.get_absolute_url()) for item in _public_theses())
+    urls = [_canonical_public_url(reverse(name)) for name in static_names]
+    urls.extend(_canonical_public_url(item.get_absolute_url()) for item in _public_theses())
     urls.extend(
-        request.build_absolute_uri(item.get_absolute_url()) for item in _public_fund_letters()
+        _canonical_public_url(item.get_absolute_url()) for item in _public_fund_letters()
     )
     urls.extend(
-        request.build_absolute_uri(item.get_absolute_url()) for item in _public_supply_chain_nodes()
+        _canonical_public_url(item.get_absolute_url()) for item in _public_supply_chain_nodes()
     )
-    urls.extend(request.build_absolute_uri(item.get_absolute_url()) for item in _public_companies())
+    urls.extend(_canonical_public_url(item.get_absolute_url()) for item in _public_companies())
     for item in _public_fed_documents():
         route_name = {
             FedDocument.DocumentType.STATEMENT: "fed-detail",
             FedDocument.DocumentType.SPEECH: "fed-speech-detail",
             FedDocument.DocumentType.NEWS: "fed-news-detail",
         }[item.document_type]
-        urls.append(request.build_absolute_uri(reverse(route_name, kwargs={"slug": item.slug})))
+        urls.append(_canonical_public_url(reverse(route_name, kwargs={"slug": item.slug})))
     urls.extend(
-        request.build_absolute_uri(reverse("model-detail", kwargs={"slug": item.slug}))
+        _canonical_public_url(reverse("model-detail", kwargs={"slug": item.slug}))
         for item in _public_model_profiles()
     )
     urls.extend(
-        request.build_absolute_uri(reverse("coding-agent-detail", kwargs={"slug": item.slug}))
+        _canonical_public_url(reverse("coding-agent-detail", kwargs={"slug": item.slug}))
         for item in _public_coding_agents()
     )
     urls.extend(
-        request.build_absolute_uri(reverse("ai-glossary-detail", kwargs={"slug": item.slug}))
+        _canonical_public_url(reverse("ai-glossary-detail", kwargs={"slug": item.slug}))
         for item in _public_ai_glossary_terms()
     )
     now = timezone.localdate().isoformat()

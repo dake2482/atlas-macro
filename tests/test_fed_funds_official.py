@@ -512,11 +512,11 @@ def test_other_policy_pages_align_direct_cards_and_history(monkeypatch):
     )
 
     dashboards = publish_official_dashboards(
-        keys={"liquidity", "transmission-chain", "rates", "subsurface"}
+        keys={"transmission-chain", "rates", "subsurface"}
     )
     pages = {item.key: item.data for item in dashboards}
 
-    for page_key in ("liquidity", "transmission-chain", "rates"):
+    for page_key in ("transmission-chain", "rates"):
         metrics = {item["key"]: item for item in pages[page_key]["metrics"]}
         assert metrics["sofr"]["value_date"].startswith("2026-07-09")
         assert metrics["iorb"]["value_date"].startswith("2026-07-09")
@@ -750,6 +750,10 @@ def test_refresh_prates_entrypoint_coordinates_fed_funds(monkeypatch):
     monkeypatch.setattr(
         "research.official_data.FederalReservePRATESProvider",
         FakePRATESProvider,
+    )
+    monkeypatch.setattr(
+        "research.official_data._coordinate_liquidity_dashboard",
+        lambda runs: ([], set()),
     )
 
     result = refresh_prates_data()

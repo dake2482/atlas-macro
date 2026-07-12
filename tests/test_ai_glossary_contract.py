@@ -79,7 +79,10 @@ def test_ai_glossary_collection_is_scoped_and_every_detail_is_public(client):
 
 
 @pytest.mark.django_db
-def test_ai_glossary_details_are_in_sitemap_and_llms_inventory(client):
+def test_ai_glossary_details_are_in_sitemap_and_llms_inventory(
+    client, settings
+):
+    settings.SITE_URL = "http://public.example.test:3080"
     call_command("sync_official_glossary", verbosity=0)
     call_command("sync_ai_glossary_catalog", verbosity=0)
 
@@ -87,9 +90,9 @@ def test_ai_glossary_details_are_in_sitemap_and_llms_inventory(client):
     llms = client.get("/llms.txt").content.decode()
 
     for slug in AI_GLOSSARY_TERM_SLUGS:
-        path = f"http://testserver/ai-industry/chain/glossary/{slug}/"
-        assert path in sitemap
-        assert path in llms
+        route = f"/ai-industry/chain/glossary/{slug}/"
+        assert f"{settings.SITE_URL}{route}" in sitemap
+        assert f"http://testserver{route}" in llms
 
     assert "http://testserver/glossary/#rrp" in llms
     assert "http://testserver/glossary/#attention" not in llms

@@ -7,7 +7,7 @@
   {% else %}
     {% include "research/includes/page_header.html" with eyebrow=eyebrow page_title=title page_description=description show_copy=True %}
   {% endif %}
-  {% if snapshot.quality_status == "stale" %}<div class="callout mb-4 !border-[var(--warning)] text-[12px]"><strong class="warning">数据已过期：</strong>{% if refresh_failure.reason %}{{ refresh_failure.reason }}{% else %}上游更新尚未通过完整性检查，当前保留上一批可用快照。{% endif %}</div>{% endif %}
+  {% if snapshot.quality_status == "stale" or refresh_failure %}<div class="callout mb-4 !border-[var(--warning)] text-[12px]"><strong class="warning">数据已过期：</strong>{% if refresh_failure.reason %}{{ refresh_failure.reason }}{% else %}上游更新尚未通过完整性检查，当前保留上一批可用快照。{% endif %}</div>{% endif %}
   {% if required_notices %}<aside class="callout mb-4 text-[10px] leading-5" aria-label="数据授权声明">{% for notice in required_notices %}<p{% if not forloop.first %} class="mt-2"{% endif %}>{{ notice }}</p>{% endfor %}</aside>{% endif %}
   {% if period_options or tab_options %}
     <nav class="panel mb-4 px-4 py-3" aria-label="数据视图筛选">

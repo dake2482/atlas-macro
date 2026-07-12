@@ -13,7 +13,8 @@ from research.models import Company, FundLetter, SupplyChainNode
 
 @pytest.mark.django_db
 def test_sitemap_is_xml_and_contains_static_and_dynamic_urls(client, seeded_platform, settings):
-    settings.SITE_URL = "https://atlas.example.test"
+    settings.SITE_URL = "http://public.example.test:3080"
+    settings.ALLOWED_HOSTS = ["internal.example.test"]
     node = SupplyChainNode.objects.create(
         slug="sitemap-verified-node",
         name="Sitemap Verified Node",
@@ -40,7 +41,9 @@ def test_sitemap_is_xml_and_contains_static_and_dynamic_urls(client, seeded_plat
         published_at="2030-01-01",
     )
 
-    response = client.get("/sitemap.xml")
+    response = client.get(
+        "/sitemap.xml", HTTP_HOST="internal.example.test:9000"
+    )
 
     assert response.status_code == 200
     assert response["Content-Type"].startswith(("application/xml", "text/xml"))
@@ -60,7 +63,10 @@ def test_sitemap_is_xml_and_contains_static_and_dynamic_urls(client, seeded_plat
         letter.get_absolute_url(),
     }
     for path in expected_paths:
-        assert any(location.endswith(path) for location in locations), path
+        assert f"{settings.SITE_URL}{path}" in locations, path
+    assert all(
+        location.startswith(f"{settings.SITE_URL}/") for location in locations
+    )
     demo_letter = FundLetter.objects.filter(original_url__contains="example.com/clean-room").first()
     assert demo_letter
     assert not any(location.endswith(demo_letter.get_absolute_url()) for location in locations)

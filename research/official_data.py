@@ -104,7 +104,6 @@ FRESHNESS_DAYS = {
 
 CORE_PUBLICATION_KEYS = frozenset(
     {
-        "liquidity",
         "transmission-chain",
         "operations",
         "rates",
@@ -116,7 +115,7 @@ CORE_PUBLICATION_KEYS = frozenset(
         "auctions",
     }
 )
-H41_PUBLICATION_KEYS = frozenset({"liquidity", "fed-balance-sheet", "reserves"})
+H41_PUBLICATION_KEYS = frozenset({"fed-balance-sheet", "reserves"})
 PRATES_PUBLICATION_KEYS = frozenset(
     {"transmission-chain", "subsurface"}
 )
@@ -159,6 +158,25 @@ FED_FUNDS_REQUIRED_METRIC_KEYS = frozenset(
         "effr-p1-p99-width",
         "sofr-p1-p99-width",
         "effr-corridor-position",
+    }
+)
+LIQUIDITY_CONTRACT_VERSION = 1
+LIQUIDITY_DATASETS = {
+    "h41": ("federal-reserve", "h41"),
+    "onrrp": ("ny-fed-markets", "repo:reverse-repo-fixed-results"),
+    "tga": ("treasury-fiscal-data", "daily-treasury-statement:tga"),
+}
+LIQUIDITY_FED_FUNDS_METRIC_KEYS = frozenset(
+    {"sofr", "iorb", "sofr-effr", "sofr-iorb"}
+)
+LIQUIDITY_REQUIRED_METRIC_KEYS = frozenset(
+    {
+        "net-liquidity",
+        "walcl",
+        "wrbwfrbl",
+        "onrrp",
+        "tga",
+        *LIQUIDITY_FED_FUNDS_METRIC_KEYS,
     }
 )
 ECONOMY_CONTRACT_VERSION = 1
@@ -3265,6 +3283,1353 @@ def _coordinate_economy_dashboard() -> tuple[
     return dashboards, set()
 
 
+def _liquidity_run_identity(run: IngestionRun) -> str | None:
+    for identity, (source_key, dataset) in LIQUIDITY_DATASETS.items():
+        if run.source.key == source_key and run.dataset == dataset:
+            return identity
+    return None
+
+
+def _latest_liquidity_attempt(identity: str) -> IngestionRun | None:
+    source_key, dataset = LIQUIDITY_DATASETS[identity]
+    return (
+        IngestionRun.objects.filter(source__key=source_key, dataset=dataset)
+        .order_by("-started_at", "-id")
+        .first()
+    )
+
+
+def _liquidity_run_state(
+    identity: str,
+    run: IngestionRun | None,
+    *,
+    status: str | None = None,
+    reason: str | None = None,
+) -> dict[str, Any]:
+    source_key, dataset = LIQUIDITY_DATASETS[identity]
+    return {
+        "component": identity,
+        "kind": "ingestion_run",
+        "source": source_key,
+        "dataset": dataset,
+        "status": status or (run.status if run else "missing"),
+        "reason": (
+            reason
+            or (run.error if run else "required dataset run missing")
+        )[:320],
+        "ingestion_run_id": run.pk if run else None,
+        "batch_id": str(run.batch_id) if run else None,
+        "row_count": run.row_count if run else 0,
+        "refresh_cycle_id": (
+            str((run.metadata or {}).get("refresh_cycle_id") or "")
+            if run
+            else ""
+        ),
+        "completed_at": (
+            run.completed_at.isoformat() if run and run.completed_at else None
+        ),
+    }
+
+
+def _select_liquidity_runs(
+    trigger_runs: Iterable[IngestionRun],
+) -> tuple[dict[str, IngestionRun] | None, list[dict[str, Any]], bool]:
+    runs = list(trigger_runs)
+    relevant: dict[str, list[IngestionRun]] = {
+        identity: [] for identity in LIQUIDITY_DATASETS
+    }
+    fed_funds_triggers: list[tuple[str, IngestionRun]] = []
+    for run in runs:
+        identity = _liquidity_run_identity(run)
+        if identity:
+            relevant[identity].append(run)
+            continue
+        fed_funds_identity = _fed_funds_run_identity(run)
+        if fed_funds_identity:
+            fed_funds_triggers.append((fed_funds_identity, run))
+    triggered = any(relevant.values()) or bool(fed_funds_triggers)
+    if not triggered:
+        return None, [], False
+
+    # Delayed/replayed jobs must not overwrite the state established by a newer
+    # attempt for the same exact source+dataset identity.
+    for identity, identity_runs in relevant.items():
+        if not identity_runs:
+            continue
+        latest = _latest_liquidity_attempt(identity)
+        if latest is None or len(identity_runs) != 1 or identity_runs[0].pk != latest.pk:
+            return None, [], False
+    for identity, run in fed_funds_triggers:
+        latest = _latest_fed_funds_attempt(identity)
+        if latest is None or run.pk != latest.pk:
+            return None, [], False
+
+    selected = {
+        identity: _latest_liquidity_attempt(identity)
+        for identity in LIQUIDITY_DATASETS
+    }
+    states = [
+        _liquidity_run_state(identity, selected[identity])
+        for identity in LIQUIDITY_DATASETS
+    ]
+    if any(
+        run is None
+        or run.status != IngestionRun.Status.SUCCESS
+        or run.row_count <= 0
+        for run in selected.values()
+    ):
+        return None, states, True
+
+    onrrp_cycle = str(
+        (selected["onrrp"].metadata or {}).get("refresh_cycle_id") or ""
+    )
+    tga_cycle = str(
+        (selected["tga"].metadata or {}).get("refresh_cycle_id") or ""
+    )
+    if not onrrp_cycle or onrrp_cycle != tga_cycle:
+        states = [
+            (
+                _liquidity_run_state(
+                    identity,
+                    run,
+                    status="invalid-cycle",
+                    reason=(
+                        "ON RRP and TGA are not from the same completed refresh cycle"
+                    ),
+                )
+                if identity in {"onrrp", "tga"}
+                else _liquidity_run_state(identity, run)
+            )
+            for identity, run in selected.items()
+        ]
+        return None, states, True
+    return (
+        {identity: run for identity, run in selected.items() if run is not None},
+        states,
+        True,
+    )
+
+
+def _liquidity_component_failure(
+    component: str,
+    reason: str,
+    *,
+    status: str = "invalid",
+    snapshot: DashboardSnapshot | None = None,
+) -> dict[str, Any]:
+    return {
+        "component": component,
+        "kind": "dashboard_snapshot" if snapshot else "contract",
+        "status": status,
+        "reason": reason[:320],
+        "snapshot_id": snapshot.pk if snapshot else None,
+        "publication_batch_id": (
+            str(snapshot.batch_id) if snapshot else None
+        ),
+        "fingerprint": (
+            str((snapshot.data or {}).get("fingerprint") or "")
+            if snapshot
+            else ""
+        ),
+    }
+
+
+def _liquidity_observation_map(
+    series_key: str, *, batch_id: uuid.UUID | str
+) -> dict[date, Observation]:
+    observations: dict[date, Observation] = {}
+    for item in _real_observations(series_key).filter(batch_id=batch_id):
+        observations.setdefault(item.value_date.date(), item)
+    return observations
+
+
+def _liquidity_input_lineage(
+    observation: Observation, *, component_fresh_until: datetime
+) -> dict[str, Any]:
+    fallback_key = (
+        observation.fallback_source.key
+        if observation.fallback_source_id
+        else None
+    )
+    source_keys = sorted(_observation_source_keys(observation))
+    return {
+        "series_key": observation.series.key,
+        "value": float(observation.value),
+        "raw_value": str(observation.value),
+        "unit": observation.series.unit,
+        "source_key": observation.source.key,
+        "source_name": observation.source.name,
+        "source_keys": source_keys,
+        "license_scope": observation.source.license_scope,
+        "value_date": observation.value_date.isoformat(),
+        "as_of": observation.as_of.isoformat(),
+        "fetched_at": observation.fetched_at.isoformat(),
+        "batch_id": str(observation.batch_id),
+        "quality_status": observation.quality_status,
+        "fallback_source": fallback_key,
+        "fresh_until": component_fresh_until.isoformat(),
+        "observation_period_fresh_until": _fresh_until(
+            observation
+        ).isoformat(),
+    }
+
+
+def _liquidity_direct_metric(
+    *,
+    key: str,
+    label: str,
+    current: Observation,
+    previous: Observation,
+    scale: Decimal,
+    unit: str,
+    decimals: int,
+    component_fresh_until: datetime,
+    page_fresh_until: datetime,
+) -> dict[str, Any]:
+    value = current.value * scale
+    previous_value = previous.value * scale
+    current_lineage = _liquidity_input_lineage(
+        current, component_fresh_until=component_fresh_until
+    )
+    previous_lineage = _liquidity_input_lineage(
+        previous, component_fresh_until=component_fresh_until
+    )
+    return {
+        "key": key,
+        "label": label,
+        "value": float(value),
+        "display_value": f"{value:,.{decimals}f}{unit}",
+        "change": round(float(value - previous_value), decimals),
+        "change_unit": unit,
+        "unit": unit,
+        "quality_status": current.quality_status,
+        "source": current.source.name,
+        "source_key": current.source.key,
+        "source_keys": sorted(_observation_source_keys(current)),
+        "fallback_source": (
+            current.fallback_source.key
+            if current.fallback_source_id
+            else None
+        ),
+        "license_scope": current.source.license_scope,
+        "as_of": current.as_of.isoformat(),
+        "value_date": current.value_date.isoformat(),
+        "fetched_at": current.fetched_at.isoformat(),
+        "fresh_until": page_fresh_until.isoformat(),
+        "batch_id": str(current.batch_id),
+        "metadata": {
+            "common_effective_date": current.value_date.date().isoformat(),
+            "input_series": [current.series.key],
+            "input_batch_ids": [str(current.batch_id)],
+            "input_value_dates": [current.value_date.isoformat()],
+            "input_lineage": [current_lineage],
+            "previous_value": float(previous_value),
+            "previous_value_date": previous.value_date.isoformat(),
+            "previous_input_lineage": [previous_lineage],
+            "freshness_basis": (
+                "latest successful component release; displayed value aligned "
+                "to the liquidity common date"
+            ),
+        },
+    }
+
+
+def _liquidity_net_metric(
+    *,
+    current: dict[str, Observation],
+    previous: dict[str, Observation],
+    component_deadlines: dict[str, datetime],
+    page_fresh_until: datetime,
+) -> dict[str, Any]:
+    ordered_keys = ("walcl", "onrrp", "tga")
+    current_value = (
+        current["walcl"].value
+        - current["onrrp"].value
+        - current["tga"].value
+    )
+    previous_value = (
+        previous["walcl"].value
+        - previous["onrrp"].value
+        - previous["tga"].value
+    )
+    scale = Decimal("0.000001")
+    current_scaled = current_value * scale
+    previous_scaled = previous_value * scale
+    input_lineage = [
+        _liquidity_input_lineage(
+            current[key], component_fresh_until=component_deadlines[key]
+        )
+        for key in ordered_keys
+    ]
+    previous_input_lineage = [
+        _liquidity_input_lineage(
+            previous[key], component_fresh_until=component_deadlines[key]
+        )
+        for key in ordered_keys
+    ]
+    source_keys = sorted(
+        _observation_source_keys(*(current[key] for key in ordered_keys))
+    )
+    fallback_keys = sorted(
+        {
+            current[key].fallback_source.key
+            for key in ordered_keys
+            if current[key].fallback_source_id
+        }
+    )
+    return {
+        "key": "net-liquidity",
+        "label": "净流动性代理",
+        "value": float(current_scaled),
+        "display_value": f"{current_scaled:,.6f} USD tn",
+        "change": round(float(current_scaled - previous_scaled), 6),
+        "change_unit": " USD tn",
+        "unit": " USD tn",
+        "quality_status": Observation.Quality.ESTIMATED,
+        "source": (
+            "Atlas Macro 代理计算：WALCL − ON RRP − TGA（非官方 LPI）"
+        ),
+        "source_key": "internal",
+        "source_keys": sorted({*source_keys, "internal"}),
+        "fallback_source": fallback_keys[0] if len(fallback_keys) == 1 else None,
+        "license_scope": ensure_source("internal").license_scope,
+        "as_of": min(current[key].as_of for key in ordered_keys).isoformat(),
+        "value_date": current["walcl"].value_date.isoformat(),
+        "fetched_at": max(
+            current[key].fetched_at for key in ordered_keys
+        ).isoformat(),
+        "fresh_until": page_fresh_until.isoformat(),
+        "batch_id": ",".join(
+            sorted({str(current[key].batch_id) for key in ordered_keys})
+        ),
+        "metadata": {
+            "formula": "WALCL - ONRRP - TGA",
+            "calculation_owner": "Atlas Macro",
+            "model_label": "transparent liquidity proxy; not official LPI",
+            "common_effective_date": current[
+                "walcl"
+            ].value_date.date().isoformat(),
+            "input_series": [current[key].series.key for key in ordered_keys],
+            "input_batch_ids": sorted(
+                {str(current[key].batch_id) for key in ordered_keys}
+            ),
+            "input_value_dates": sorted(
+                {current[key].value_date.isoformat() for key in ordered_keys}
+            ),
+            "input_lineage": input_lineage,
+            "previous_value": float(previous_scaled),
+            "previous_value_date": previous[
+                "walcl"
+            ].value_date.isoformat(),
+            "previous_input_lineage": previous_input_lineage,
+            "freshness_basis": (
+                "minimum current-release deadline across H.4.1, ON RRP and TGA"
+            ),
+        },
+    }
+
+
+def _liquidity_fed_funds_component(
+    *, now: datetime
+) -> tuple[list[dict[str, Any]], dict[str, Any]] | dict[str, Any]:
+    snapshot = _latest_fed_funds_snapshot()
+    if snapshot is None:
+        return _liquidity_component_failure(
+            "fed-funds",
+            "validated Fed Funds component snapshot is missing",
+            status="missing",
+        )
+    data = dict(snapshot.data or {})
+    if snapshot.source.key == "demo-market" or data.get("demo") is not False:
+        return _liquidity_component_failure(
+            "fed-funds", "Fed Funds component is demo data", status="demo", snapshot=snapshot
+        )
+    if snapshot.quality_status in {
+        Observation.Quality.ERROR,
+        Observation.Quality.STALE,
+        Observation.Quality.FALLBACK,
+    } or data.get("refresh_failure"):
+        return _liquidity_component_failure(
+            "fed-funds",
+            "Fed Funds component has an active failure, stale or fallback state",
+            status=snapshot.quality_status,
+            snapshot=snapshot,
+        )
+    if data.get("publication_batch_id") != str(snapshot.batch_id):
+        return _liquidity_component_failure(
+            "fed-funds",
+            "Fed Funds publication batch does not match its snapshot batch",
+            snapshot=snapshot,
+        )
+    fingerprint = str(data.get("fingerprint") or "")
+    if len(fingerprint) != 64 or any(
+        character not in "0123456789abcdef" for character in fingerprint.lower()
+    ):
+        return _liquidity_component_failure(
+            "fed-funds", "Fed Funds fingerprint is missing or malformed", snapshot=snapshot
+        )
+
+    latest_runs = {
+        identity: _latest_fed_funds_attempt(identity)
+        for identity in FED_FUNDS_DATASETS
+    }
+    if any(
+        run is None
+        or run.status != IngestionRun.Status.SUCCESS
+        or run.row_count <= 0
+        for run in latest_runs.values()
+    ):
+        return _liquidity_component_failure(
+            "fed-funds",
+            "a latest SOFR, EFFR or IORB dataset attempt is not successful",
+            status=Observation.Quality.STALE,
+            snapshot=snapshot,
+        )
+    expected_batches = {
+        str(run.batch_id) for run in latest_runs.values() if run is not None
+    }
+    if set(data.get("component_batches", [])) != expected_batches:
+        return _liquidity_component_failure(
+            "fed-funds",
+            "Fed Funds snapshot does not inherit the latest three exact dataset batches",
+            status=Observation.Quality.STALE,
+            snapshot=snapshot,
+        )
+    input_specs = {
+        "sofr": ("ny-fed-markets", str(latest_runs["sofr"].batch_id)),
+        "effr": ("ny-fed-markets", str(latest_runs["effr"].batch_id)),
+        "iorb": ("federal-reserve", str(latest_runs["iorb"].batch_id)),
+    }
+    expected_metric_inputs = {
+        "sofr": {"sofr"},
+        "iorb": {"iorb"},
+        "sofr-effr": {"sofr", "effr"},
+        "sofr-iorb": {"sofr", "iorb"},
+    }
+    expected_formulas = {
+        "sofr": None,
+        "iorb": None,
+        "sofr-effr": "100 * (SOFR - EFFR)",
+        "sofr-iorb": "100 * (SOFR - IORB)",
+    }
+
+    copied_metrics: list[dict[str, Any]] = []
+    metric_snapshot_ids: list[int] = []
+    value_dates: set[str] = set()
+    for metric_key in sorted(LIQUIDITY_FED_FUNDS_METRIC_KEYS):
+        candidates = [
+            item
+            for item in data.get("metrics", [])
+            if isinstance(item, dict) and item.get("key") == metric_key
+        ]
+        if len(candidates) != 1:
+            return _liquidity_component_failure(
+                "fed-funds",
+                f"required Fed Funds metric {metric_key} is missing or duplicated",
+                snapshot=snapshot,
+            )
+        metric = candidates[0]
+        metadata = dict(metric.get("metadata") or {})
+        deadline = _parse_payload_datetime(metric.get("fresh_until"))
+        metric_date = _parse_payload_datetime(
+            metric.get("value_date") or metric.get("as_of")
+        )
+        metric_as_of = _parse_payload_datetime(metric.get("as_of"))
+        metric_fetched_at = _parse_payload_datetime(metric.get("fetched_at"))
+        if (
+            metric.get("value") is None
+            or metric.get("quality_status")
+            not in {Observation.Quality.FRESH, Observation.Quality.ESTIMATED}
+            or deadline is None
+            or deadline < now
+            or metric_date is None
+            or metric_as_of is None
+            or metric_fetched_at is None
+            or metric.get("fallback_source")
+        ):
+            return _liquidity_component_failure(
+                "fed-funds",
+                f"required Fed Funds metric {metric_key} is invalid or expired",
+                status=Observation.Quality.STALE,
+                snapshot=snapshot,
+            )
+        input_lineage = metadata.get("input_lineage")
+        input_batches = {
+            str(item) for item in metadata.get("input_batch_ids", []) if item
+        }
+        input_dates = {
+            str(item) for item in metadata.get("input_value_dates", []) if item
+        }
+        expected_inputs = expected_metric_inputs[metric_key]
+        expected_input_batches = {
+            input_specs[series_key][1] for series_key in expected_inputs
+        }
+        if (
+            not isinstance(input_lineage, list)
+            or len(input_lineage) != len(expected_inputs)
+            or input_batches != expected_input_batches
+            or set(metadata.get("input_series") or []) != expected_inputs
+            or metadata.get("formula") != expected_formulas[metric_key]
+            or input_dates != {metric_date.isoformat()}
+            or _payload_batch_ids(metric) != input_batches
+            or any(
+                not isinstance(item, dict)
+                or str(item.get("series_key") or "").lower()
+                not in expected_inputs
+                or item.get("source_key")
+                != input_specs[str(item.get("series_key") or "").lower()][0]
+                or not item.get("license_scope")
+                or item.get("value_date") != metric_date.isoformat()
+                or _parse_payload_datetime(item.get("as_of")) is None
+                or not item.get("fetched_at")
+                or item.get("batch_id")
+                != input_specs[str(item.get("series_key") or "").lower()][1]
+                or item.get("quality_status")
+                not in {Observation.Quality.FRESH, Observation.Quality.ESTIMATED}
+                or item.get("fallback_source")
+                for item in input_lineage
+            )
+            or {
+                str(item.get("series_key") or "").lower()
+                for item in input_lineage
+            }
+            != expected_inputs
+        ):
+            return _liquidity_component_failure(
+                "fed-funds",
+                f"required Fed Funds metric {metric_key} lacks exact input lineage",
+                snapshot=snapshot,
+            )
+        source_keys = _payload_source_keys(metric)
+        if not source_keys or not publicly_displayable_source_keys(source_keys):
+            return _liquidity_component_failure(
+                "fed-funds",
+                f"required Fed Funds metric {metric_key} has an unlicensed source",
+                status="unlicensed",
+                snapshot=snapshot,
+            )
+        normalized = (
+            MetricSnapshot.objects.filter(
+                key=f"fed-funds-{metric_key}", batch_id=snapshot.batch_id
+            )
+            .select_related("source", "fallback_source")
+            .first()
+        )
+        if normalized is None or normalized.value is None:
+            return _liquidity_component_failure(
+                "fed-funds",
+                f"required Fed Funds metric {metric_key} has no normalized row",
+                snapshot=snapshot,
+            )
+        try:
+            payload_value = Decimal(str(metric["value"])).quantize(
+                Decimal("0.00000001")
+            )
+        except (ArithmeticError, TypeError, ValueError):
+            return _liquidity_component_failure(
+                "fed-funds",
+                f"required Fed Funds metric {metric_key} is not numeric",
+                snapshot=snapshot,
+            )
+        if any(
+            (
+                payload_value
+                != normalized.value.quantize(Decimal("0.00000001")),
+                metric_date != normalized.value_date,
+                metric_as_of != normalized.as_of,
+                metric_fetched_at != normalized.fetched_at,
+                metric.get("source_key") != normalized.source.key,
+                bool(normalized.fallback_source_id),
+                metric.get("quality_status") != normalized.quality_status,
+                metric.get("unit", "") != normalized.unit,
+                not normalized.license_scope,
+                {
+                    str(item)
+                    for item in normalized.metadata.get("input_batch_ids", [])
+                    if item
+                }
+                != input_batches,
+                normalized.metadata.get("input_lineage") != input_lineage,
+                set(normalized.metadata.get("input_series") or [])
+                != expected_inputs,
+                normalized.metadata.get("formula")
+                != expected_formulas[metric_key],
+                normalized.metadata.get("common_effective_date")
+                != metric_date.date().isoformat(),
+            )
+        ):
+            return _liquidity_component_failure(
+                "fed-funds",
+                f"required Fed Funds metric {metric_key} disagrees with its normalized row",
+                snapshot=snapshot,
+            )
+        copied = deepcopy(metric)
+        copied_metadata = dict(copied.get("metadata") or {})
+        copied_metadata.update(
+            {
+                "component_page_key": "fed-funds",
+                "component_snapshot_id": snapshot.pk,
+                "component_publication_batch_id": str(snapshot.batch_id),
+                "component_fingerprint": fingerprint,
+                "component_metric_snapshot_id": normalized.pk,
+                "component_metric_snapshot_key": normalized.key,
+                "component_metric_snapshot_batch_id": str(normalized.batch_id),
+                "inherited_license_scope": normalized.license_scope,
+            }
+        )
+        copied["metadata"] = copied_metadata
+        copied["license_scope"] = normalized.license_scope
+        copied_metrics.append(copied)
+        metric_snapshot_ids.append(normalized.pk)
+        value_dates.add(metric_date.isoformat())
+    if len(value_dates) != 1:
+        return _liquidity_component_failure(
+            "fed-funds",
+            "selected Fed Funds metrics do not share one effective date",
+            snapshot=snapshot,
+        )
+    reference = {
+        "component": "fed-funds",
+        "kind": "dashboard_snapshot",
+        "status": "valid",
+        "snapshot_id": snapshot.pk,
+        "publication_batch_id": str(snapshot.batch_id),
+        "fingerprint": fingerprint,
+        "component_batches": sorted(expected_batches),
+        "metric_snapshot_ids": metric_snapshot_ids,
+        "common_effective_date": value_dates.pop(),
+    }
+    return copied_metrics, reference
+
+
+def _liquidity_net_from_lineage(lineage: Iterable[dict[str, Any]]) -> Decimal | None:
+    items = list(lineage)
+    if len(items) != 3:
+        return None
+    values: dict[str, Decimal] = {}
+    try:
+        for item in items:
+            if not isinstance(item, dict):
+                return None
+            series_key = str(item.get("series_key") or "").lower()
+            raw_value = item.get("raw_value", item.get("value"))
+            if not series_key or raw_value is None or series_key in values:
+                return None
+            value = Decimal(str(raw_value))
+            if not value.is_finite():
+                return None
+            values[series_key] = value
+    except (ArithmeticError, TypeError, ValueError):
+        return None
+    if set(values) != {"walcl", "onrrp", "tga"}:
+        return None
+    return (
+        values["walcl"] - values["onrrp"] - values["tga"]
+    ) * Decimal("0.000001")
+
+
+def _liquidity_page_contract_is_buildable(
+    metrics: list[dict[str, Any]],
+    charts: list[dict[str, Any]],
+    extra_data: dict[str, Any],
+) -> bool:
+    if extra_data.get("contract_version") != LIQUIDITY_CONTRACT_VERSION:
+        return False
+    if {str(item.get("key") or "") for item in metrics} != set(
+        LIQUIDITY_REQUIRED_METRIC_KEYS
+    ):
+        return False
+    if {str(item.get("key") or "") for item in charts} != {
+        "net-liquidity-history"
+    }:
+        return False
+    references = extra_data.get("component_snapshots")
+    if not isinstance(references, list) or {
+        str(item.get("component") or "")
+        for item in references
+        if isinstance(item, dict)
+    } != {"h41", "onrrp", "tga", "fed-funds"}:
+        return False
+    if any(
+        item.get("value") is None
+        or item.get("quality_status")
+        not in {Observation.Quality.FRESH, Observation.Quality.ESTIMATED}
+        or not item.get("fresh_until")
+        or item.get("fallback_source")
+        or not _payload_batch_ids(item)
+        or not _payload_source_keys(item)
+        for item in metrics
+    ):
+        return False
+    if not publicly_displayable_source_keys(_payload_source_keys(metrics)):
+        return False
+
+    def safe_lineage(item: Any) -> bool:
+        return bool(
+            isinstance(item, dict)
+            and item.get("series_key")
+            and item.get("source_key")
+            and item.get("license_scope")
+            and item.get("value_date")
+            and item.get("as_of")
+            and item.get("fetched_at")
+            and item.get("batch_id")
+            and item.get("quality_status")
+            in {Observation.Quality.FRESH, Observation.Quality.ESTIMATED}
+            and not item.get("fallback_source")
+        )
+
+    for metric in metrics:
+        metric_metadata = metric.get("metadata") or {}
+        for lineage_field in ("input_lineage", "previous_input_lineage"):
+            lineage = metric_metadata.get(lineage_field)
+            if lineage is not None and (
+                not isinstance(lineage, list)
+                or not lineage
+                or any(not safe_lineage(item) for item in lineage)
+            ):
+                return False
+
+    by_key = {str(item["key"]): item for item in metrics}
+    direct_keys = {"net-liquidity", "walcl", "wrbwfrbl", "onrrp", "tga"}
+    common_dates = {
+        str((by_key[key].get("metadata") or {}).get("common_effective_date") or "")
+        for key in direct_keys
+    }
+    if len(common_dates) != 1 or common_dates != {
+        str(extra_data.get("common_effective_date") or "")
+    }:
+        return False
+    net_metric = by_key["net-liquidity"]
+    metadata = net_metric.get("metadata") or {}
+    if metadata.get("formula") != "WALCL - ONRRP - TGA":
+        return False
+    current_value = _liquidity_net_from_lineage(metadata.get("input_lineage") or [])
+    previous_value = _liquidity_net_from_lineage(
+        metadata.get("previous_input_lineage") or []
+    )
+    if current_value is None or previous_value is None:
+        return False
+    if current_value.quantize(Decimal("0.000001")) != Decimal(
+        str(net_metric["value"])
+    ).quantize(Decimal("0.000001")):
+        return False
+    if previous_value.quantize(Decimal("0.000001")) != Decimal(
+        str(metadata.get("previous_value"))
+    ).quantize(Decimal("0.000001")):
+        return False
+    if {
+        str(item.get("value_date") or "")
+        for item in metadata.get("input_lineage", [])
+    } != {str(net_metric.get("value_date") or "")}:
+        return False
+
+    chart = charts[0]
+    rows = chart.get("data") or []
+    if len(rows) < 2 or chart.get("time_axis") != "date":
+        return False
+    if max(str(row.get("date") or "") for row in rows) != next(
+        iter(common_dates)
+    ):
+        return False
+    expected_fields = {
+        "Net Liquidity",
+        "Federal Reserve Assets",
+        "ON RRP",
+        "TGA",
+    }
+    for row in rows:
+        if not expected_fields <= set(row):
+            return False
+        row_lineage = row.get("_lineage") or {}
+        if set(row_lineage) != expected_fields or any(
+            not safe_lineage(item) for item in row_lineage.values()
+        ):
+            return False
+        net_lineage = row_lineage.get("Net Liquidity") or {}
+        if any(
+            not safe_lineage(item)
+            for item in net_lineage.get("input_lineage") or []
+        ):
+            return False
+        recomputed = _liquidity_net_from_lineage(
+            net_lineage.get("input_lineage") or []
+        )
+        if recomputed is None or recomputed.quantize(
+            Decimal("0.000001")
+        ) != Decimal(str(row["Net Liquidity"])).quantize(
+            Decimal("0.000001")
+        ):
+            return False
+    run_batches = {
+        str(item.get("batch_id"))
+        for item in references
+        if item.get("kind") == "ingestion_run" and item.get("batch_id")
+    }
+    if set(chart.get("batch_ids", [])) != run_batches:
+        return False
+    if set(chart.get("source_keys", [])) != {
+        "federal-reserve",
+        "ny-fed-markets",
+        "treasury-fiscal-data",
+        "internal",
+    }:
+        return False
+    return True
+
+
+def _liquidity_page_data(
+    selected_runs: dict[str, IngestionRun],
+) -> tuple[
+    tuple[
+        list[dict[str, Any]],
+        list[dict[str, Any]],
+        list[dict[str, Any]],
+        dict[str, Any],
+    ]
+    | None,
+    list[dict[str, Any]],
+]:
+    series_batches = {
+        "walcl": selected_runs["h41"].batch_id,
+        "wrbwfrbl": selected_runs["h41"].batch_id,
+        "onrrp": selected_runs["onrrp"].batch_id,
+        "tga": selected_runs["tga"].batch_id,
+    }
+    observations = {
+        key: _liquidity_observation_map(key, batch_id=batch_id)
+        for key, batch_id in series_batches.items()
+    }
+    missing = [key for key, values in observations.items() if not values]
+    if missing:
+        return None, [
+            _liquidity_component_failure(
+                "direct-inputs",
+                "required exact-batch series missing or unlicensed: "
+                + ", ".join(missing),
+                status="missing",
+            )
+        ]
+
+    now = timezone.now()
+    today_et = now.astimezone(ZoneInfo("America/New_York")).date()
+    component_deadlines: dict[str, datetime] = {}
+    expected_sources = {
+        "walcl": "federal-reserve",
+        "wrbwfrbl": "federal-reserve",
+        "onrrp": "ny-fed-markets",
+        "tga": "treasury-fiscal-data",
+    }
+    for key, by_date in observations.items():
+        nonfuture = [period for period in by_date if period <= today_et]
+        if not nonfuture:
+            return None, [
+                _liquidity_component_failure(
+                    key,
+                    "exact-batch series has no non-future observation",
+                    status="missing",
+                )
+            ]
+        latest = by_date[max(nonfuture)]
+        deadline = _fresh_until(latest)
+        if (
+            latest.source.key != expected_sources[key]
+            or latest.batch_id != uuid.UUID(str(series_batches[key]))
+            or latest.fallback_source_id
+            or latest.quality_status
+            not in {Observation.Quality.FRESH, Observation.Quality.ESTIMATED}
+            or deadline < now
+        ):
+            return None, [
+                _liquidity_component_failure(
+                    key,
+                    "latest exact-batch component is stale, fallback, mixed-batch or from the wrong source",
+                    status=Observation.Quality.STALE,
+                )
+            ]
+        component_deadlines[key] = deadline
+    if not publicly_displayable_source_keys(set(expected_sources.values())):
+        return None, [
+            _liquidity_component_failure(
+                "direct-inputs",
+                "a required direct input licence is not publicly displayable",
+                status="unlicensed",
+            )
+        ]
+
+    common_dates = sorted(
+        (
+            set(observations["walcl"])
+            & set(observations["wrbwfrbl"])
+            & set(observations["onrrp"])
+            & set(observations["tga"])
+        )
+        & {period for period in observations["walcl"] if period <= today_et}
+    )
+    if len(common_dates) < 2:
+        return None, [
+            _liquidity_component_failure(
+                "common-date",
+                "the four exact-batch direct series have fewer than two non-future common dates",
+                status="missing",
+            )
+        ]
+    displayed_dates = common_dates[-156:]
+    for period in displayed_dates:
+        for key, by_date in observations.items():
+            item = by_date[period]
+            if (
+                item.source.key != expected_sources[key]
+                or str(item.batch_id) != str(series_batches[key])
+                or item.fallback_source_id
+                or item.quality_status
+                not in {Observation.Quality.FRESH, Observation.Quality.ESTIMATED}
+            ):
+                return None, [
+                    _liquidity_component_failure(
+                        key,
+                        (
+                            f"displayed common-date input {period.isoformat()} is "
+                            "fallback, invalid quality, mixed-batch or from the wrong source"
+                        ),
+                        status=(
+                            Observation.Quality.FALLBACK
+                            if item.fallback_source_id
+                            else Observation.Quality.STALE
+                        ),
+                    )
+                ]
+    current_date, previous_date = common_dates[-1], common_dates[-2]
+    current = {key: values[current_date] for key, values in observations.items()}
+    previous = {key: values[previous_date] for key, values in observations.items()}
+    page_fresh_until = min(component_deadlines.values())
+
+    metrics = [
+        _liquidity_net_metric(
+            current=current,
+            previous=previous,
+            component_deadlines=component_deadlines,
+            page_fresh_until=page_fresh_until,
+        ),
+        _liquidity_direct_metric(
+            key="walcl",
+            label="联储总资产（共同日）",
+            current=current["walcl"],
+            previous=previous["walcl"],
+            scale=Decimal("0.000001"),
+            unit=" USD tn",
+            decimals=6,
+            component_fresh_until=component_deadlines["walcl"],
+            page_fresh_until=page_fresh_until,
+        ),
+        _liquidity_direct_metric(
+            key="wrbwfrbl",
+            label="准备金（共同日）",
+            current=current["wrbwfrbl"],
+            previous=previous["wrbwfrbl"],
+            scale=Decimal("0.000001"),
+            unit=" USD tn",
+            decimals=6,
+            component_fresh_until=component_deadlines["wrbwfrbl"],
+            page_fresh_until=page_fresh_until,
+        ),
+        _liquidity_direct_metric(
+            key="onrrp",
+            label="ON RRP（共同日）",
+            current=current["onrrp"],
+            previous=previous["onrrp"],
+            scale=Decimal("0.001"),
+            unit=" USD bn",
+            decimals=3,
+            component_fresh_until=component_deadlines["onrrp"],
+            page_fresh_until=page_fresh_until,
+        ),
+        _liquidity_direct_metric(
+            key="tga",
+            label="TGA（共同日）",
+            current=current["tga"],
+            previous=previous["tga"],
+            scale=Decimal("0.001"),
+            unit=" USD bn",
+            decimals=3,
+            component_fresh_until=component_deadlines["tga"],
+            page_fresh_until=page_fresh_until,
+        ),
+    ]
+
+    fed_funds = _liquidity_fed_funds_component(now=now)
+    if isinstance(fed_funds, dict):
+        return None, [fed_funds]
+    policy_metrics, fed_funds_reference = fed_funds
+    policy_by_key = {item["key"]: item for item in policy_metrics}
+    metrics.extend(
+        policy_by_key[key]
+        for key in ("sofr", "iorb", "sofr-effr", "sofr-iorb")
+    )
+
+    chart_rows: list[dict[str, Any]] = []
+    for period in displayed_dates:
+        period_inputs = {
+            key: values[period] for key, values in observations.items()
+        }
+        net_value = (
+            period_inputs["walcl"].value
+            - period_inputs["onrrp"].value
+            - period_inputs["tga"].value
+        ) * Decimal("0.000001")
+        net_input_lineage = [
+            _liquidity_input_lineage(
+                period_inputs[key],
+                component_fresh_until=component_deadlines[key],
+            )
+            for key in ("walcl", "onrrp", "tga")
+        ]
+        net_source_keys = sorted(
+            {
+                *(
+                    source_key
+                    for item in net_input_lineage
+                    for source_key in item["source_keys"]
+                ),
+                "internal",
+            }
+        )
+        chart_rows.append(
+            {
+                "date": period.isoformat(),
+                "Net Liquidity": float(net_value),
+                "Federal Reserve Assets": float(
+                    period_inputs["walcl"].value * Decimal("0.000001")
+                ),
+                "ON RRP": float(
+                    period_inputs["onrrp"].value * Decimal("0.000001")
+                ),
+                "TGA": float(
+                    period_inputs["tga"].value * Decimal("0.000001")
+                ),
+                "_source_keys": net_source_keys,
+                "_lineage": {
+                    "Net Liquidity": {
+                        "series_key": "net-liquidity",
+                        "source_key": "internal",
+                        "source_name": ensure_source("internal").name,
+                        "source_keys": net_source_keys,
+                        "license_scope": ensure_source("internal").license_scope,
+                        "value_date": period_inputs[
+                            "walcl"
+                        ].value_date.isoformat(),
+                        "as_of": min(
+                            period_inputs[key].as_of
+                            for key in ("walcl", "onrrp", "tga")
+                        ).isoformat(),
+                        "fetched_at": max(
+                            period_inputs[key].fetched_at
+                            for key in ("walcl", "onrrp", "tga")
+                        ).isoformat(),
+                        "fresh_until": page_fresh_until.isoformat(),
+                        "batch_id": ",".join(
+                            sorted(
+                                {
+                                    str(period_inputs[key].batch_id)
+                                    for key in ("walcl", "onrrp", "tga")
+                                }
+                            )
+                        ),
+                        "input_batch_ids": sorted(
+                            {
+                                str(period_inputs[key].batch_id)
+                                for key in ("walcl", "onrrp", "tga")
+                            }
+                        ),
+                        "input_lineage": net_input_lineage,
+                        "formula": "WALCL - ONRRP - TGA",
+                        "quality_status": Observation.Quality.ESTIMATED,
+                        "fallback_source": None,
+                    },
+                    "Federal Reserve Assets": _liquidity_input_lineage(
+                        period_inputs["walcl"],
+                        component_fresh_until=component_deadlines["walcl"],
+                    ),
+                    "ON RRP": _liquidity_input_lineage(
+                        period_inputs["onrrp"],
+                        component_fresh_until=component_deadlines["onrrp"],
+                    ),
+                    "TGA": _liquidity_input_lineage(
+                        period_inputs["tga"],
+                        component_fresh_until=component_deadlines["tga"],
+                    ),
+                },
+            }
+        )
+    chart = _lineage_chart(
+        key="net-liquidity-history",
+        title="同日净流动性代理",
+        description=(
+            "WALCL、ON RRP 与 TGA 只在三者共同有效日计算，全部统一为万亿美元；"
+            "该序列是 Atlas Macro 代理，不是官方 LPI。"
+        ),
+        rows=chart_rows,
+        fields=(
+            "Net Liquidity",
+            "Federal Reserve Assets",
+            "ON RRP",
+            "TGA",
+        ),
+        tab="net",
+        frequency="weekly",
+    )
+    if chart is None:
+        return None, [
+            _liquidity_component_failure(
+                "chart", "common-date chart contract could not be built"
+            )
+        ]
+
+    component_references = [
+        _liquidity_run_state(identity, selected_runs[identity], status="valid")
+        for identity in LIQUIDITY_DATASETS
+    ]
+    component_references.append(fed_funds_reference)
+    sections = [
+        {
+            "title": "共同有效日与代理口径",
+            "body": (
+                f"当前代理值使用 {current_date.isoformat()} 的 WALCL、ON RRP 与 TGA；"
+                f"前值使用 {previous_date.isoformat()}。不同频率组件绝不各取最新后混算。"
+            ),
+            "full_width": True,
+        },
+        {
+            "title": "发布失败规则",
+            "body": (
+                "H.4.1、ON RRP、TGA 或 Fed Funds 任一组件失败、过期、回退、"
+                "混批或许可失效时，页面保留上一版完整快照并显示失败组件。"
+            ),
+            "full_width": True,
+        },
+    ]
+    extra_data = {
+        "contract_version": LIQUIDITY_CONTRACT_VERSION,
+        "common_effective_date": current_date.isoformat(),
+        "component_snapshots": component_references,
+        "model_disclaimer": (
+            "Atlas Macro transparent proxy; not an official Federal Reserve LPI"
+        ),
+    }
+    prepared = (metrics, [chart], sections, extra_data)
+    if not _liquidity_page_contract_is_buildable(
+        metrics, [chart], extra_data
+    ):
+        return None, [
+            _liquidity_component_failure(
+                "liquidity", "prepared page failed the v1 contract post-build check"
+            )
+        ]
+    return prepared, []
+
+
+def _latest_liquidity_snapshot() -> DashboardSnapshot | None:
+    return (
+        DashboardSnapshot.objects.filter(
+            key="liquidity",
+            is_published=True,
+            data__contract_version=LIQUIDITY_CONTRACT_VERSION,
+        )
+        .exclude(source__key="demo-market")
+        .order_by("-created_at", "-id")
+        .first()
+    )
+
+
+def _liquidity_snapshot_effective_date(
+    snapshot: DashboardSnapshot,
+) -> date:
+    raw_value = (snapshot.data or {}).get("common_effective_date")
+    try:
+        return date.fromisoformat(str(raw_value))
+    except (TypeError, ValueError):
+        return snapshot.as_of.date()
+
+
+def _mark_liquidity_stale(
+    components: list[dict[str, Any]], *, reason: str
+) -> None:
+    latest = (
+        DashboardSnapshot.objects.select_for_update()
+        .filter(
+            key="liquidity",
+            is_published=True,
+            data__contract_version=LIQUIDITY_CONTRACT_VERSION,
+        )
+        .exclude(source__key="demo-market")
+        .order_by("-created_at", "-id")
+        .first()
+    )
+    if latest is None:
+        return
+    summary = "；".join(
+        (
+            f"{item.get('component') or 'unknown'}"
+            f"[{item.get('status') or 'invalid'}] "
+            f"{item.get('reason') or 'unknown failure'}"
+        )
+        for item in components
+    )
+    data = dict(latest.data or {})
+    data["refresh_failure"] = {
+        "checked_at": timezone.now().isoformat(),
+        "reason": f"{reason} 失败组件：{summary}" if summary else reason,
+        "components": components,
+    }
+    latest.data = data
+    latest.quality_status = Observation.Quality.STALE
+    latest.save(update_fields=["data", "quality_status", "updated_at"])
+
+
+@transaction.atomic
+def _coordinate_liquidity_dashboard(
+    trigger_runs: Iterable[IngestionRun],
+) -> tuple[list[DashboardSnapshot], set[str]]:
+    source_keys = {
+        "internal",
+        *(source_key for source_key, _ in LIQUIDITY_DATASETS.values()),
+        *(source_key for source_key, _ in FED_FUNDS_DATASETS.values()),
+    }
+    for source_key in sorted(source_keys):
+        ensure_source(source_key)
+    list(
+        Source.objects.select_for_update()
+        .filter(key__in=source_keys)
+        .order_by("key")
+        .values_list("pk", flat=True)
+    )
+    selected, states, triggered = _select_liquidity_runs(trigger_runs)
+    if not triggered:
+        return [], set()
+    if selected is None:
+        _mark_liquidity_stale(
+            states,
+            reason=(
+                "最近一次 H.4.1、ON RRP 或 TGA 必需数据集未成功完成，"
+                "或财政与回购组件不属于同一刷新周期；继续保留上一版。"
+            ),
+        )
+        return [], {"liquidity"}
+    prepared, failures = _liquidity_page_data(selected)
+    if prepared is None:
+        _mark_liquidity_stale(
+            failures,
+            reason=(
+                "必需流动性组件未形成同日、同批、有效且许可可公开的完整组合；"
+                "继续保留上一版。"
+            ),
+        )
+        return [], {"liquidity"}
+    _, _, _, extra_data = prepared
+    candidate_date = date.fromisoformat(extra_data["common_effective_date"])
+    previous_snapshot = _latest_liquidity_snapshot()
+    if (
+        previous_snapshot is not None
+        and candidate_date
+        < _liquidity_snapshot_effective_date(previous_snapshot)
+    ):
+        failures = [
+            _liquidity_component_failure(
+                "common-date",
+                "candidate common effective date is older than the published v1 snapshot",
+                status=Observation.Quality.STALE,
+                snapshot=previous_snapshot,
+            )
+        ]
+        _mark_liquidity_stale(
+            failures,
+            reason="候选共同有效日发生回退；拒绝发布并保留上一版。",
+        )
+        return [], {"liquidity"}
+
+    expected_batches = {
+        str(selected[identity].batch_id) for identity in LIQUIDITY_DATASETS
+    }
+    fed_reference = next(
+        item
+        for item in extra_data["component_snapshots"]
+        if item.get("component") == "fed-funds"
+    )
+    expected_batches.update(fed_reference.get("component_batches", []))
+    try:
+        with transaction.atomic():
+            dashboards = publish_official_dashboards(
+                keys={"liquidity"}, prepared_liquidity_data=prepared
+            )
+            latest = _latest_liquidity_snapshot()
+            postcondition_failed = (
+                latest is None
+                or (latest.data or {}).get("publication_batch_id")
+                != str(latest.batch_id)
+                or {
+                    str(item.get("key") or "")
+                    for item in (latest.data or {}).get("metrics", [])
+                }
+                != set(LIQUIDITY_REQUIRED_METRIC_KEYS)
+                or {
+                    str(item.get("key") or "")
+                    for item in (latest.data or {}).get("charts", [])
+                }
+                != {"net-liquidity-history"}
+                or set((latest.data or {}).get("component_batches", []))
+                != expected_batches
+                or (latest.data or {}).get("common_effective_date")
+                != candidate_date.isoformat()
+                or (latest.data or {}).get("refresh_failure")
+                or not _liquidity_page_contract_is_buildable(
+                    list((latest.data or {}).get("metrics", [])),
+                    list((latest.data or {}).get("charts", [])),
+                    dict(latest.data or {}),
+                )
+            )
+            if not postcondition_failed:
+                net_metric = next(
+                    item
+                    for item in (latest.data or {}).get("metrics", [])
+                    if item.get("key") == "net-liquidity"
+                )
+                normalized = MetricSnapshot.objects.filter(
+                    key="liquidity-net-liquidity", batch_id=latest.batch_id
+                ).first()
+                postcondition_failed = (
+                    normalized is None
+                    or normalized.value is None
+                    or normalized.value.quantize(Decimal("0.000001"))
+                    != Decimal(str(net_metric["value"])).quantize(
+                        Decimal("0.000001")
+                    )
+                    or normalized.value_date
+                    != _parse_payload_datetime(net_metric.get("value_date"))
+                    or normalized.metadata.get("formula")
+                    != "WALCL - ONRRP - TGA"
+                    or not normalized.metadata.get("input_lineage")
+                )
+            if postcondition_failed:
+                raise ValueError("liquidity publication postcondition failed")
+    except ValueError:
+        failures = [
+            _liquidity_component_failure(
+                "liquidity",
+                "publication postcondition failed",
+                snapshot=previous_snapshot,
+            )
+        ]
+        _mark_liquidity_stale(
+            failures,
+            reason=(
+                "流动性总览发布后置条件未满足；新写入已回滚，继续保留"
+                "上一版完整快照。"
+            ),
+        )
+        return [], {"liquidity"}
+    return dashboards, set()
+
+
 def _gdp_vintage_chart_and_section() -> tuple[
     dict[str, Any] | None,
     dict[str, Any] | None,
@@ -4008,6 +5373,15 @@ def _publish_dashboard(
                 "input_value_dates", []
             ),
             "input_lineage": component_metadata.get("input_lineage", []),
+            "previous_value": component_metadata.get("previous_value"),
+            "previous_value_date": component_metadata.get(
+                "previous_value_date"
+            ),
+            "previous_input_lineage": component_metadata.get(
+                "previous_input_lineage", []
+            ),
+            "model_label": component_metadata.get("model_label"),
+            "freshness_basis": component_metadata.get("freshness_basis"),
             "seasonal_basis": component_metadata.get("seasonal_basis"),
             "preliminary": bool(component_metadata.get("preliminary")),
             "revision_indicator": component_metadata.get(
@@ -4159,6 +5533,13 @@ def publish_official_dashboards(
         dict[str, Any],
     ]
     | None = None,
+    prepared_liquidity_data: tuple[
+        list[dict[str, Any]],
+        list[dict[str, Any]],
+        list[dict[str, Any]],
+        dict[str, Any],
+    ]
+    | None = None,
 ) -> list[DashboardSnapshot]:
     """Atomically publish only the dashboards affected by a completed source batch."""
 
@@ -4194,6 +5575,10 @@ def publish_official_dashboards(
     economy_charts: list[dict[str, Any]] = []
     economy_sections: list[dict[str, Any]] = []
     economy_extra_data: dict[str, Any] = {}
+    liquidity_metrics: list[dict[str, Any]] = []
+    liquidity_charts: list[dict[str, Any]] = []
+    liquidity_sections: list[dict[str, Any]] = []
+    liquidity_extra_data: dict[str, Any] = {}
     gdp_vintage_chart: dict[str, Any] | None = None
     gdp_vintage_section: dict[str, Any] | None = None
     if selected_keys is None or "gdp" in selected_keys:
@@ -4359,50 +5744,31 @@ def publish_official_dashboards(
             economy_sections,
             economy_extra_data,
         ) = prepared_economy_data
+    if (
+        (selected_keys is None or "liquidity" in selected_keys)
+        and prepared_liquidity_data is not None
+    ):
+        (
+            liquidity_metrics,
+            liquidity_charts,
+            liquidity_sections,
+            liquidity_extra_data,
+        ) = prepared_liquidity_data
     dashboards: list[DashboardSnapshot] = []
     definitions = [
         {
             "key": "liquidity",
             "title": "流动性",
-            "summary": "当前只发布已接入的财政现金与回购利率组件；未完成的综合 LPI 不估算。",
-            "metrics": _existing(
-                _linear_metric(
-                    "net-liquidity",
-                    "净流动性",
-                    (
-                        (Decimal("1"), "WALCL"),
-                        (Decimal("-1"), "ONRRP"),
-                        (Decimal("-1"), "TGA"),
-                    ),
-                    scale=Decimal("0.000001"),
-                    suffix=" USD tn",
-                ),
-                _metric(
-                    "WALCL",
-                    "联储总资产",
-                    scale=Decimal("0.000001"),
-                    suffix=" USD tn",
-                ),
-                _metric(
-                    "WRBWFRBL",
-                    "准备金",
-                    scale=Decimal("0.000001"),
-                    suffix=" USD tn",
-                ),
-                _metric(
-                    "ONRRP", "ON RRP", decimals=3, scale=Decimal("0.001"), suffix=" USD bn"
-                ),
-                _metric("TGA", "TGA", scale=Decimal("0.001"), suffix=" USD bn"),
-                _metric(
-                    "SOFR", "SOFR", suffix="%", aligned_with=("EFFR", "IORB")
-                ),
-                _metric(
-                    "IORB", "IORB", suffix="%", aligned_with=("SOFR", "EFFR")
-                ),
-                _derived_metric("sofr-effr", "SOFR−EFFR", "SOFR", "EFFR", basis_points=True),
-                _derived_metric("sofr-iorb", "SOFR−IORB", "SOFR", "IORB", basis_points=True),
+            "summary": (
+                "WALCL、ON RRP 与 TGA 只在最新非未来共同有效日计算净流动性代理；"
+                "该指标是 Atlas Macro 透明计算，不是美联储官方 LPI。政策利率组件继承"
+                "已通过原子契约的 Fed Funds 快照。"
             ),
-            "chart_data": _history_rows({"TGA": "TGA", "ONRRP": "ON RRP"}, limit=90),
+            "metrics": liquidity_metrics,
+            "charts": liquidity_charts,
+            "sections": liquidity_sections,
+            "extra_data": liquidity_extra_data,
+            "required_metric_keys": LIQUIDITY_REQUIRED_METRIC_KEYS,
         },
         {
             "key": "transmission-chain",
@@ -4983,6 +6349,11 @@ def refresh_official_data(*, current_year: int | None = None) -> dict[str, Any]:
     )
     dashboards.extend(fed_funds_dashboards)
     stale_dashboard_keys |= stale_fed_funds_keys
+    liquidity_dashboards, stale_liquidity_keys = (
+        _coordinate_liquidity_dashboard(runs)
+    )
+    dashboards.extend(liquidity_dashboards)
+    stale_dashboard_keys |= stale_liquidity_keys
     economy_dashboards, stale_economy_keys = _coordinate_economy_dashboard()
     dashboards.extend(economy_dashboards)
     stale_dashboard_keys |= stale_economy_keys
@@ -5016,6 +6387,10 @@ def refresh_h41_data() -> dict[str, Any]:
         if _has_publishable_run([run])
         else []
     )
+    liquidity_dashboards, stale_liquidity_keys = (
+        _coordinate_liquidity_dashboard([run])
+    )
+    dashboards.extend(liquidity_dashboards)
     return {
         "runs": [
             {
@@ -5028,6 +6403,7 @@ def refresh_h41_data() -> dict[str, Any]:
             }
         ],
         "dashboard_keys": [dashboard.key for dashboard in dashboards],
+        "stale_dashboard_keys": sorted(stale_liquidity_keys),
     }
 
 
@@ -5053,6 +6429,10 @@ def refresh_prates_data() -> dict[str, Any]:
         _coordinate_fed_funds_dashboard([run])
     )
     dashboards.extend(fed_funds_dashboards)
+    liquidity_dashboards, stale_liquidity_keys = (
+        _coordinate_liquidity_dashboard([run])
+    )
+    dashboards.extend(liquidity_dashboards)
     return {
         "runs": [
             {
@@ -5065,7 +6445,9 @@ def refresh_prates_data() -> dict[str, Any]:
             }
         ],
         "dashboard_keys": [dashboard.key for dashboard in dashboards],
-        "stale_dashboard_keys": sorted(stale_fed_funds_keys),
+        "stale_dashboard_keys": sorted(
+            stale_fed_funds_keys | stale_liquidity_keys
+        ),
     }
 
 
