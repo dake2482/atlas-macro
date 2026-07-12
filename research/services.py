@@ -132,6 +132,27 @@ SOURCE_CATALOG: dict[str, dict[str, Any]] = {
             "endorsed or certified by BEA."
         ),
     },
+    "bea-release": {
+        "name": "U.S. Bureau of Economic Analysis GDP Releases",
+        "homepage": "https://www.bea.gov/data/gdp/gross-domestic-product",
+        "kind": "official",
+        "license_status": Source.LicenseStatus.OPEN,
+        "license_scope": (
+            "Attributed U.S. government GDP release tables and workbooks; "
+            "BEA logos, seals and third-party material excluded"
+        ),
+        "redistribution_allowed": True,
+        "public_display_allowed": True,
+        "derived_display_allowed": True,
+        "historical_storage_allowed": True,
+        "ai_use_allowed": True,
+        "terms_url": "https://www.bea.gov/about/policies-and-information/data-dissemination",
+        "attribution": "U.S. Bureau of Economic Analysis",
+        "required_notice": (
+            "Source: U.S. Bureau of Economic Analysis GDP release workbooks. "
+            "Estimate and revision labels are retained; Atlas Macro is not affiliated with BEA."
+        ),
+    },
     "census": {
         "name": "U.S. Census Bureau Data API",
         "homepage": "https://www.census.gov/data/developers.html",
@@ -148,6 +169,27 @@ SOURCE_CATALOG: dict[str, dict[str, Any]] = {
         "required_notice": (
             "This product uses the Census Bureau Data API but is not endorsed or certified "
             "by the Census Bureau."
+        ),
+    },
+    "census-release": {
+        "name": "U.S. Census Bureau Monthly Retail Trade Releases",
+        "homepage": "https://www2.census.gov/retail/releases/historical/marts/",
+        "kind": "official",
+        "license_status": Source.LicenseStatus.OPEN,
+        "license_scope": (
+            "Attributed U.S. government retail release workbooks; estimate and revision "
+            "labels retained"
+        ),
+        "redistribution_allowed": True,
+        "public_display_allowed": True,
+        "derived_display_allowed": True,
+        "historical_storage_allowed": True,
+        "ai_use_allowed": True,
+        "terms_url": "https://www.census.gov/about/policies/open-gov/open-data.html",
+        "attribution": "U.S. Census Bureau",
+        "required_notice": (
+            "Source: U.S. Census Bureau Monthly Retail Trade release workbooks. "
+            "Advance, preliminary and revised estimates remain explicitly labelled."
         ),
     },
     "cftc": {
@@ -627,9 +669,49 @@ SERIES_CATALOG = {
     "WPSFD4": ("Producer Price Index: Final Demand", "index", "monthly"),
     "BEA-A191RL": ("Real GDP Growth, SAAR", "%", "quarterly"),
     "BEA-DPCERL": ("Real Personal Consumption Expenditures Growth, SAAR", "%", "quarterly"),
+    "BEA-GDP-NOMINAL-SAAR": ("Nominal GDP, SAAR", "USD billions", "quarterly"),
+    "BEA-GDI-NOMINAL-SAAR": ("Nominal GDI, SAAR", "USD billions", "quarterly"),
+    "BEA-GDI-REAL-GROWTH-SAAR": ("Real GDI Growth, SAAR", "%", "quarterly"),
+    "BEA-PCE-GOODS-GROWTH": ("Real PCE Goods Growth, SAAR", "%", "quarterly"),
+    "BEA-PCE-SERVICES-GROWTH": ("Real PCE Services Growth, SAAR", "%", "quarterly"),
+    "BEA-GPDI-GROWTH": ("Real Gross Private Domestic Investment Growth, SAAR", "%", "quarterly"),
+    "BEA-FIXED-INVESTMENT-GROWTH": ("Real Fixed Investment Growth, SAAR", "%", "quarterly"),
+    "BEA-EXPORTS-GROWTH": ("Real Exports Growth, SAAR", "%", "quarterly"),
+    "BEA-IMPORTS-GROWTH": ("Real Imports Growth, SAAR", "%", "quarterly"),
+    "BEA-GOVERNMENT-GROWTH": ("Real Government Spending and Investment Growth, SAAR", "%", "quarterly"),
+    "BEA-PCE-CONTRIBUTION": (
+        "PCE Contribution to Real GDP Growth",
+        "percentage points",
+        "quarterly",
+    ),
+    "BEA-GPDI-CONTRIBUTION": (
+        "Gross Private Domestic Investment Contribution to Real GDP Growth",
+        "percentage points",
+        "quarterly",
+    ),
+    "BEA-NET-EXPORTS-CONTRIBUTION": (
+        "Net Exports Contribution to Real GDP Growth",
+        "percentage points",
+        "quarterly",
+    ),
+    "BEA-GOVERNMENT-CONTRIBUTION": (
+        "Government Contribution to Real GDP Growth",
+        "percentage points",
+        "quarterly",
+    ),
     "CENSUS-MRTS-44X72-SM-SA": (
         "Retail Trade and Food Services Sales, Seasonally Adjusted",
         "USD millions",
+        "monthly",
+    ),
+    "CENSUS-MRTS-44X72-SM-SA-MOM": (
+        "Retail Trade and Food Services Sales, Month-over-Month",
+        "%",
+        "monthly",
+    ),
+    "CENSUS-MRTS-44X72-SM-SA-YOY": (
+        "Retail Trade and Food Services Sales, Year-over-Year",
+        "%",
         "monthly",
     ),
     "SUBLPDMBS_XWB_N.Q": (

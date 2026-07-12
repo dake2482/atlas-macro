@@ -257,28 +257,84 @@ DATA_REQUIREMENTS = [
     {
         "key": "bea-gdp-pce",
         "page_key": "gdp",
-        "metric_name": "GDP 分项、PCE 与历史修订",
-        "status": NEEDS_SOURCE,
-        "source_name": "U.S. Bureau of Economic Analysis API",
-        "source_url": "https://apps.bea.gov/api/",
+        "metric_name": "GDP、GDI、PCE 与分项的最新修订口径",
+        "status": LIVE,
+        "source_name": "U.S. Bureau of Economic Analysis GDP release workbooks",
+        "source_url": "https://www.bea.gov/data/gdp/gross-domestic-product",
         "reason": (
-            "NIPA 1.1.1 GDP/PCE 适配器、修订日和单位口径已完成；"
-            "生产环境配置免费 BEA_API_KEY 后自动转为实时发布。"
+            "已直接解析 BEA 官方 GDP vintage-history 与 Historical Comparisons XLSX，"
+            "发布最新官方 vintage，保留当前估算轮次、发布日和原文件哈希。"
+        ),
+        "priority": 1,
+    },
+    {
+        "key": "bea-gdp-contributions",
+        "page_key": "gdp",
+        "metric_name": "PCE、投资、净出口与政府对 GDP 增长的贡献",
+        "status": LIVE,
+        "source_name": "U.S. Bureau of Economic Analysis GDP Historical Comparisons",
+        "source_url": "https://www.bea.gov/data/gdp/gross-domestic-product",
+        "reason": (
+            "直接解析官方工作簿的 Contributions to Percent Change 区块，"
+            "将百分点贡献与分项增速分开存储，不由增速倒推。"
+        ),
+        "priority": 1,
+    },
+    {
+        "key": "bea-gdp-vintage-trail",
+        "page_key": "gdp",
+        "metric_name": "GDP Advance→Second→Third 估算修订轨迹",
+        "status": NEEDS_SOURCE,
+        "source_name": "U.S. Bureau of Economic Analysis GDP/GDI Vintage History",
+        "source_url": "https://apps.bea.gov/national/xls/gdp-gdi-vintage-history.xlsx",
+        "reason": (
+            "源工作簿已可获取，但当前 Observation 契约每季度只发布最新 vintage。"
+            "需增加独立的 vintage 维度和路由，才能完整查询每轮修订；未实现前不声称已保留轨迹。"
         ),
         "priority": 2,
     },
     {
         "key": "census-retail",
         "page_key": "consumer",
-        "metric_name": "零售销售与人口调查序列",
-        "status": NEEDS_SOURCE,
-        "source_name": "U.S. Census Bureau API",
-        "source_url": "https://www.census.gov/data/developers.html",
+        "metric_name": "零售与餐饮服务销售（水平/环比/同比）",
+        "status": LIVE,
+        "source_name": "U.S. Census Bureau MARTS release workbooks",
+        "source_url": "https://www2.census.gov/retail/releases/historical/marts/",
         "reason": (
-            "MRTS 44X72 零售与餐饮服务季调销售适配器已完成；"
-            "生产环境配置免费 CENSUS_API_KEY 后发布。API 仅提供 latest vintage。"
+            "已从 Census 官方 MARTS 发布目录选取最新 XLSX，发布季调销售水平、"
+            "环比和同比，并保留 Advance/Preliminary/Revised 状态与工作簿哈希。"
         ),
-        "priority": 3,
+        "priority": 1,
+    },
+    {
+        "key": "bea-personal-income-outlays",
+        "page_key": "consumer",
+        "metric_name": "实际 PCE 环比、可支配个人收入与个人储蓄率",
+        "status": NEEDS_SOURCE,
+        "source_name": "U.S. Bureau of Economic Analysis Personal Income and Outlays",
+        "source_url": "https://www.bea.gov/data/income-saving/personal-income",
+        "reason": (
+            "需新增 BEA 月度 Personal Income and Outlays 发布工作簿适配器，"
+            "保留发布日、修订状态和原文件指纹；未接入前不用季度 PCE 增速代替月度值。"
+        ),
+        "priority": 1,
+    },
+    {
+        "key": "consumer-confidence",
+        "page_key": "consumer",
+        "metric_name": "消费者信心指数与调查分项",
+        "status": PURCHASE_REQUIRED,
+        "vendor": "The Conference Board / University of Michigan Surveys of Consumers",
+        "product": "Consumer-confidence history and public website-display rights",
+        "reason": (
+            "这些调查指数不是美国政府开放数据；官网或新闻中可见的最新数值"
+            "不等于可建库并向公众再发布历史序列。"
+        ),
+        "proxy_description": (
+            "可用 Census 零售、BEA 实际 PCE 和储蓄率描述实际消费行为，"
+            "但不命名为消费者信心。"
+        ),
+        "priority": 2,
     },
     {
         "key": "macro-consensus-private-surveys",

@@ -6,7 +6,7 @@ from research.official_data import refresh_macro_official_data
 
 
 class Command(BaseCommand):
-    help = "Refresh credential-gated BEA GDP/PCE and Census MRTS series."
+    help = "Refresh official BEA GDP/PCE and Census MARTS data with keyless release fallbacks."
 
     def handle(self, *args, **options):
         summary = refresh_macro_official_data()

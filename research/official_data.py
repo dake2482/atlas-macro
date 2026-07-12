@@ -24,7 +24,7 @@ from .credit_official import FederalReserveSLOOSProvider, TreasuryHQMProvider
 from .fed_h10 import FederalReserveH10Provider
 from .fed_h41 import FederalReserveH41Provider
 from .fed_prates import FederalReservePRATESProvider
-from .macro_official import BEANIPAProvider, CensusMRTSProvider
+from .macro_releases import BEAGDPReleaseProvider, CensusMARTSReleaseProvider
 from .models import (
     DashboardSnapshot,
     IngestionRun,
@@ -70,6 +70,32 @@ FRESHNESS_DAYS = {
     "annual": 400,
 }
 
+CORE_PUBLICATION_KEYS = frozenset(
+    {
+        "liquidity",
+        "transmission-chain",
+        "operations",
+        "fed-funds",
+        "rates",
+        "yield-curve",
+        "real-rates",
+        "rrp-tga",
+        "global-dollar",
+        "subsurface",
+        "auctions",
+        "economy",
+        "employment",
+        "inflation",
+    }
+)
+H41_PUBLICATION_KEYS = frozenset({"liquidity", "fed-balance-sheet", "reserves"})
+PRATES_PUBLICATION_KEYS = frozenset(
+    {"transmission-chain", "fed-funds", "subsurface"}
+)
+H10_PUBLICATION_KEYS = frozenset({"assets-fx"})
+CREDIT_PUBLICATION_KEYS = frozenset({"credit", "credit-spreads", "credit-stress"})
+MACRO_PUBLICATION_KEYS = frozenset({"gdp", "consumer"})
+
 
 def _has_publishable_run(runs: Iterable[IngestionRun]) -> bool:
     """Publish only when the whole refresh group is complete and non-empty."""
@@ -107,8 +133,25 @@ def _real_observations(series_key: str):
         .filter(public_display_license_q())
         .select_related("series", "source")
         .distinct()
-        .order_by("-value_date")
+        .order_by("-value_date", "-fetched_at", "-id")
     )
+
+
+def _latest_observations_by_value_date(
+    series_key: str, *, limit: int
+) -> list[Observation]:
+    """Return one deterministic latest-source observation per economic date."""
+
+    observations: list[Observation] = []
+    seen_dates = set()
+    for observation in _real_observations(series_key).iterator():
+        if observation.value_date in seen_dates:
+            continue
+        observations.append(observation)
+        seen_dates.add(observation.value_date)
+        if len(observations) >= limit:
+            break
+    return observations
 
 
 def _metric(
@@ -119,7 +162,7 @@ def _metric(
     suffix: str = "",
     scale: Decimal = Decimal("1"),
 ) -> dict[str, Any] | None:
-    observations = list(_real_observations(series_key)[:2])
+    observations = _latest_observations_by_value_date(series_key, limit=2)
     if not observations:
         return None
     latest = observations[0]
@@ -261,7 +304,7 @@ def _history_rows(series: dict[str, str], *, limit: int = 120) -> list[dict[str,
 
     by_date: dict[str, dict[str, Any]] = {}
     for series_key, label in series.items():
-        observations = list(_real_observations(series_key)[:limit])
+        observations = _latest_observations_by_value_date(series_key, limit=limit)
         for observation in reversed(observations):
             day = observation.value_date.date().isoformat()
             row = by_date.setdefault(day, {"date": day, "_source_keys": []})
@@ -280,7 +323,7 @@ def _earliest_fresh_until(rows: Iterable[dict[str, Any]]) -> str | None:
 
 
 def _sofr_market_metrics() -> list[dict[str, Any]]:
-    observations = list(_real_observations("SOFR")[:2])
+    observations = _latest_observations_by_value_date("SOFR", limit=2)
     if not observations:
         return []
     latest = observations[0]
@@ -385,7 +428,9 @@ def _sofr_market_metrics() -> list[dict[str, Any]]:
 
 def _sofr_market_history(*, limit: int = 120) -> list[dict[str, Any]]:
     rows = []
-    for observation in reversed(list(_real_observations("SOFR")[:limit])):
+    for observation in reversed(
+        _latest_observations_by_value_date("SOFR", limit=limit)
+    ):
         row: dict[str, Any] = {
             "date": observation.value_date.date().isoformat(),
             "SOFR": float(observation.value),
@@ -538,6 +583,25 @@ def _store_prates_observations(result, source, run) -> int:
 
 def _store_h10_observations(result, source, run) -> int:
     return _store_board_archive_observations(result, source, run)
+
+
+def _store_release_workbook_observations(result, source, run) -> int:
+    """Persist normalized release rows plus immutable HTML/XLSX fingerprints."""
+
+    row_count = store_series_observations(result, source, run)
+    for artifact in result.metadata.get("artifacts", []):
+        url = str(artifact.get("url") or "")
+        digest = str(artifact.get("sha256") or "")
+        if not url or not digest:
+            continue
+        RawArtifact.objects.create(
+            run=run,
+            uri=f"{url}#sha256={digest}",
+            sha256=digest,
+            content_type=str(artifact.get("content_type") or "application/octet-stream"),
+            size_bytes=int(artifact.get("size") or 0),
+        )
+    return row_count
 
 
 def _publish_dashboard(
@@ -703,10 +767,13 @@ def _publish_dashboard(
     )
 
 
-def publish_official_dashboards() -> list[DashboardSnapshot]:
-    """Atomically publish dashboards backed only by approved official sources."""
+def publish_official_dashboards(
+    *, keys: Iterable[str] | None = None
+) -> list[DashboardSnapshot]:
+    """Atomically publish only the dashboards affected by a completed source batch."""
 
     batch_id = uuid.uuid4()
+    selected_keys = set(keys) if keys is not None else None
     nominal_curve = _curve_rows(
         "ust", ("1m", "2m", "3m", "4m", "6m", "1y", "2y", "3y", "5y", "7y", "10y", "20y", "30y")
     )
@@ -1051,24 +1118,35 @@ def publish_official_dashboards() -> list[DashboardSnapshot]:
         {
             "key": "economy",
             "title": "经济数据",
-            "summary": "就业与通胀指标直接来自 BLS；GDP/PCE 将于 BEA 密钥配置后加入。",
+            "summary": "本总览只聚合同一 BLS 刷新批次的就业与通胀指标；GDP/PCE 在独立页面按 BEA 批次发布。",
             "metrics": _existing(
                 _metric("LNS14000000", "失业率", suffix="%"),
                 _metric("CES0000000001", "非农就业", decimals=0, suffix="K"),
                 _metric("CUSR0000SA0", "CPI 指数"),
                 _metric("CUSR0000SA0L1E", "核心 CPI 指数"),
-                _metric("BEA-A191RL", "实际 GDP 增速", suffix="%"),
-                _metric("BEA-DPCERL", "实际 PCE 增速", suffix="%"),
             ),
             "chart_data": _history_rows({"LNS14000000": "失业率"}, limit=36),
         },
         {
             "key": "gdp",
             "title": "GDP 与增长",
-            "summary": "实际 GDP 与实际 PCE 增速来自 BEA NIPA 1.1.1，季度值为季调年化环比，保留 API production time 和 LastRevised。",
+            "summary": "实际 GDP、GDI、PCE、分项增速与对 GDP 的贡献均来自 BEA 官方发布工作簿；增速为季调年化环比，贡献单位为百分点。",
             "metrics": _existing(
                 _metric("BEA-A191RL", "实际 GDP 增速", suffix="%"),
                 _metric("BEA-DPCERL", "实际 PCE 增速", suffix="%"),
+                _metric("BEA-GDP-NOMINAL-SAAR", "名义 GDP", decimals=1, suffix=" USD bn"),
+                _metric("BEA-GDI-REAL-GROWTH-SAAR", "实际 GDI 增速", suffix="%"),
+                _metric("BEA-PCE-GOODS-GROWTH", "商品消费增速", suffix="%"),
+                _metric("BEA-PCE-SERVICES-GROWTH", "服务消费增速", suffix="%"),
+                _metric("BEA-GPDI-GROWTH", "私人国内投资增速", suffix="%"),
+                _metric("BEA-PCE-CONTRIBUTION", "消费贡献", suffix="pp"),
+                _metric("BEA-GPDI-CONTRIBUTION", "投资贡献", suffix="pp"),
+                _metric(
+                    "BEA-NET-EXPORTS-CONTRIBUTION",
+                    "净出口贡献",
+                    suffix="pp",
+                ),
+                _metric("BEA-GOVERNMENT-CONTRIBUTION", "政府贡献", suffix="pp"),
             ),
             "chart_data": _history_rows(
                 {"BEA-A191RL": "实际 GDP", "BEA-DPCERL": "实际 PCE"},
@@ -1111,14 +1189,24 @@ def publish_official_dashboards() -> list[DashboardSnapshot]:
         {
             "key": "consumer",
             "title": "消费与零售",
-            "summary": "零售与餐饮服务销售来自 Census MRTS，单位为百万美元、季调值；该 API 只提供当前修订口径，不把 fetched_at 冒充 vintage。",
+            "summary": "零售与餐饮服务销售来自 Census MARTS 官方发布工作簿；季调水平、环比和同比保留 Advance/Preliminary/Revised 标签。",
             "metrics": _existing(
                 _metric(
                     "CENSUS-MRTS-44X72-SM-SA",
                     "零售与餐饮服务",
                     decimals=0,
                     suffix=" USD mn",
-                )
+                ),
+                _metric(
+                    "CENSUS-MRTS-44X72-SM-SA-MOM",
+                    "零售环比",
+                    suffix="%",
+                ),
+                _metric(
+                    "CENSUS-MRTS-44X72-SM-SA-YOY",
+                    "零售同比",
+                    suffix="%",
+                ),
             ),
             "chart_data": _history_rows(
                 {"CENSUS-MRTS-44X72-SM-SA": "零售与餐饮服务"},
@@ -1128,6 +1216,8 @@ def publish_official_dashboards() -> list[DashboardSnapshot]:
     ]
     with transaction.atomic():
         for definition in definitions:
+            if selected_keys is not None and definition["key"] not in selected_keys:
+                continue
             snapshot = _publish_dashboard(batch_id=batch_id, **definition)
             if snapshot:
                 dashboards.append(snapshot)
@@ -1202,7 +1292,11 @@ def refresh_official_data(*, current_year: int | None = None) -> dict[str, Any]:
     finally:
         for provider, _ in providers:
             provider.close()
-    dashboards = publish_official_dashboards() if _has_publishable_run(runs) else []
+    dashboards = (
+        publish_official_dashboards(keys=CORE_PUBLICATION_KEYS)
+        if _has_publishable_run(runs)
+        else []
+    )
     return {
         "runs": [
             {
@@ -1227,7 +1321,11 @@ def refresh_h41_data() -> dict[str, Any]:
         run = record_provider_result(result, persist=_store_h41_observations)
     finally:
         provider.close()
-    dashboards = publish_official_dashboards() if _has_publishable_run([run]) else []
+    dashboards = (
+        publish_official_dashboards(keys=H41_PUBLICATION_KEYS)
+        if _has_publishable_run([run])
+        else []
+    )
     return {
         "runs": [
             {
@@ -1252,7 +1350,11 @@ def refresh_prates_data() -> dict[str, Any]:
         run = record_provider_result(result, persist=_store_prates_observations)
     finally:
         provider.close()
-    dashboards = publish_official_dashboards() if _has_publishable_run([run]) else []
+    dashboards = (
+        publish_official_dashboards(keys=PRATES_PUBLICATION_KEYS)
+        if _has_publishable_run([run])
+        else []
+    )
     return {
         "runs": [
             {
@@ -1277,7 +1379,11 @@ def refresh_h10_data() -> dict[str, Any]:
         run = record_provider_result(result, persist=_store_h10_observations)
     finally:
         provider.close()
-    dashboards = publish_official_dashboards() if _has_publishable_run([run]) else []
+    dashboards = (
+        publish_official_dashboards(keys=H10_PUBLICATION_KEYS)
+        if _has_publishable_run([run])
+        else []
+    )
     return {
         "runs": [
             {
@@ -1308,7 +1414,11 @@ def refresh_credit_official_data() -> dict[str, Any]:
     finally:
         for provider, _ in providers:
             provider.close()
-    dashboards = publish_official_dashboards() if _has_publishable_run(runs) else []
+    dashboards = (
+        publish_official_dashboards(keys=CREDIT_PUBLICATION_KEYS)
+        if _has_publishable_run(runs)
+        else []
+    )
     return {
         "runs": [
             {
@@ -1325,26 +1435,36 @@ def refresh_credit_official_data() -> dict[str, Any]:
 
 
 def refresh_macro_official_data(*, current_year: int | None = None) -> dict[str, Any]:
-    """Refresh credential-gated BEA GDP/PCE and Census retail sales."""
+    """Refresh the complete keyless BEA GDP and Census retail release batch."""
 
-    year = current_year or timezone.now().year
+    _ = current_year  # Backward-compatible command/task signature.
     providers = [
-        (BEANIPAProvider(), "gdp_pce", {"years": range(max(year - 2, 2000), year + 1)}),
         (
-            CensusMRTSProvider(),
+            BEAGDPReleaseProvider(),
+            "gdp_pce",
+            {},
+            _store_release_workbook_observations,
+        ),
+        (
+            CensusMARTSReleaseProvider(),
             "monthly_retail_sales",
-            {"time": f"from {max(year - 2, 2000)}-01"},
+            {},
+            _store_release_workbook_observations,
         ),
     ]
     runs: list[IngestionRun] = []
     try:
-        for provider, method_name, kwargs in providers:
+        for provider, method_name, kwargs, persist in providers:
             result = getattr(provider, method_name)(**kwargs)
-            runs.append(record_provider_result(result, persist=store_series_observations))
+            runs.append(record_provider_result(result, persist=persist))
     finally:
-        for provider, _, _ in providers:
+        for provider, _, _, _ in providers:
             provider.close()
-    dashboards = publish_official_dashboards() if _has_publishable_run(runs) else []
+    dashboards = (
+        publish_official_dashboards(keys=MACRO_PUBLICATION_KEYS)
+        if _has_publishable_run(runs)
+        else []
+    )
     return {
         "runs": [
             {

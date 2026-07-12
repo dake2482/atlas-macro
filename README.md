@@ -123,7 +123,7 @@ Important settings are:
 | `CELERY_BROKER_URL` / `CELERY_RESULT_BACKEND` | Redis endpoints for tasks |
 | `SITE_URL` / `SITE_NAME` | Canonical URL and independent product identity |
 | `BLS_REGISTRATION_KEY` | Optional higher BLS public API quota |
-| `BEA_API_KEY` / `CENSUS_API_KEY` | Free official API credentials for pending adapters |
+| `BEA_API_KEY` / `CENSUS_API_KEY` | Reserved for explicit historical backfills; public GDP and retail snapshots always use complete first-party release-workbook batches |
 | `SEC_USER_AGENT` | Required descriptive identity for SEC requests |
 | `MARKET_DATA_PROVIDER` | Redistribution-approved provider; default `none` |
 | `MARKET_DATA_API_KEY` | Credential for a redistribution-approved provider |

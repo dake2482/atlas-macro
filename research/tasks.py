@@ -94,7 +94,7 @@ def refresh_credit_official_sources() -> dict[str, Any]:
 
 @shared_task(name="research.tasks.refresh_macro_official_sources")
 def refresh_macro_official_sources() -> dict[str, Any]:
-    """Refresh credential-gated BEA and Census macro series."""
+    """Refresh BEA and Census macro series, using keyless official releases."""
 
     return refresh_macro_official_data()
 
