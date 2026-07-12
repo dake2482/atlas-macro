@@ -590,7 +590,7 @@ DATA_REQUIREMENTS = [
         "metric_name": "今日判断、三项证据、触发器与证伪闭环",
         "status": NEEDS_SOURCE,
         "source_name": "Atlas Macro reviewed analysis over complete official/licensed batches",
-        "reason": "真实研判必须引用可追溯 Observation/MetricSnapshot；演示日报已停止公开。",
+        "reason": "真实研判必须引用可追溯 Observation/MetricSnapshot；离线种子内容已停止公开。",
         "priority": 1,
     },
     {
