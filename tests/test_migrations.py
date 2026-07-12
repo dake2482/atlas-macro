@@ -5,7 +5,7 @@ from importlib import import_module
 
 import pytest
 from django.apps import apps
-from django.db import migrations
+from django.db import migrations, models
 from django.utils import timezone
 
 from research.models import Source, SourceLicense, Thesis
@@ -77,8 +77,11 @@ def test_source_license_migration_keeps_only_latest_created_decision_current():
 
 
 def test_source_license_schema_operations_are_ordered_safely():
-    migration = import_module("research.migrations.0009_sourcelicense_is_current_and_more")
-    operations = migration.Migration.operations
+    data_migration = import_module("research.migrations.0009_sourcelicense_is_current_and_more")
+    constraint_migration = import_module(
+        "research.migrations.0010_sourcelicense_current_constraint"
+    )
+    operations = data_migration.Migration.operations
 
     is_current_index = next(
         index
@@ -95,13 +98,17 @@ def test_source_license_schema_operations_are_ordered_safely():
         for index, operation in enumerate(operations)
         if isinstance(operation, migrations.RunPython)
     )
-    constraint_index = next(
-        index
-        for index, operation in enumerate(operations)
+    constraint = next(
+        operation
+        for operation in constraint_migration.Migration.operations
         if isinstance(operation, migrations.AddConstraint)
         and operation.constraint.name == "one_current_license_per_source"
     )
 
-    assert is_current_index < cleanup_index < constraint_index
-    assert required_notice_index < constraint_index
+    assert is_current_index < cleanup_index
+    assert required_notice_index < cleanup_index
+    assert constraint.constraint.condition == models.Q(is_current=True)
+    assert constraint_migration.Migration.dependencies == [
+        ("research", "0009_sourcelicense_is_current_and_more")
+    ]
     assert SourceLicense._meta.ordering == ["-created_at", "-pk"]

@@ -40,12 +40,4 @@ class Migration(migrations.Migration):
             field=models.TextField(blank=True),
         ),
         migrations.RunPython(keep_latest_license_current, restore_all_licenses_current),
-        migrations.AddConstraint(
-            model_name="sourcelicense",
-            constraint=models.UniqueConstraint(
-                condition=models.Q(("is_current", True)),
-                fields=("source",),
-                name="one_current_license_per_source",
-            ),
-        ),
     ]
