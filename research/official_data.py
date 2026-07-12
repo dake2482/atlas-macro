@@ -83,8 +83,11 @@ BLS_SERIES = (
     "JTS000000000000000LDL",
     "JTS000000000000000LDR",
     "CUSR0000SA0",
+    "CUUR0000SA0",
     "CUSR0000SA0L1E",
+    "CUUR0000SA0L1E",
     "WPSFD4",
+    "WPUFD4",
 )
 
 FRESHNESS_DAYS = {
@@ -110,7 +113,6 @@ CORE_PUBLICATION_KEYS = frozenset(
         "subsurface",
         "auctions",
         "economy",
-        "inflation",
     }
 )
 H41_PUBLICATION_KEYS = frozenset({"liquidity", "fed-balance-sheet", "reserves"})
@@ -133,6 +135,9 @@ MACRO_PUBLICATION_GROUPS = {
 EMPLOYMENT_PUBLICATION_GROUPS = {
     "employment": frozenset({"bls", "dol-eta-ui"}),
 }
+INFLATION_PUBLICATION_GROUPS = {
+    "inflation": frozenset({"bls"}),
+}
 EMPLOYMENT_REQUIRED_METRIC_KEYS = frozenset(
     {
         "nonfarm-payroll-change",
@@ -146,6 +151,22 @@ EMPLOYMENT_REQUIRED_METRIC_KEYS = frozenset(
         INITIAL_4WK.lower(),
         CONTINUED_SA.lower(),
         IUR_SA.lower(),
+    }
+)
+INFLATION_REQUIRED_METRIC_KEYS = frozenset(
+    {
+        "headline-cpi-mom",
+        "headline-cpi-yoy",
+        "headline-cpi-3m-annualized",
+        "headline-cpi-6m-annualized",
+        "core-cpi-mom",
+        "core-cpi-yoy",
+        "core-cpi-3m-annualized",
+        "core-cpi-6m-annualized",
+        "final-demand-ppi-mom",
+        "final-demand-ppi-yoy",
+        "final-demand-ppi-3m-annualized",
+        "final-demand-ppi-6m-annualized",
     }
 )
 MACRO_REQUIRED_SERIES = {
@@ -167,6 +188,18 @@ MACRO_REQUIRED_SERIES = {
             }
         ),
         "dol-eta-ui": DOL_REQUIRED_SERIES,
+    },
+    "inflation": {
+        "bls": frozenset(
+            {
+                "CUSR0000SA0",
+                "CUUR0000SA0",
+                "CUSR0000SA0L1E",
+                "CUUR0000SA0L1E",
+                "WPSFD4",
+                "WPUFD4",
+            }
+        ),
     },
     "gdp": {
         "bea-release": frozenset(
@@ -761,6 +794,25 @@ def _employment_derived_payload(
             "input_value_dates": sorted(
                 {item.value_date.isoformat() for item in input_list}
             ),
+            "input_lineage": [
+                {
+                    "series_key": item.series.key,
+                    "source_key": item.source.key,
+                    "source_name": item.source.name,
+                    "license_scope": item.source.license_scope,
+                    "value_date": item.value_date.isoformat(),
+                    "as_of": item.as_of.isoformat(),
+                    "fetched_at": item.fetched_at.isoformat(),
+                    "batch_id": str(item.batch_id),
+                    "quality_status": item.quality_status,
+                    "fallback_source": (
+                        item.fallback_source.key
+                        if item.fallback_source_id
+                        else None
+                    ),
+                }
+                for item in input_list
+            ],
             "preliminary": bool((current.metadata or {}).get("preliminary")),
         },
     }
@@ -1124,6 +1176,511 @@ def _employment_page_is_buildable() -> bool:
         "initial-claims",
         "continued-claims",
     }
+
+
+def _month_offset(period: date, months_back: int) -> date:
+    """Return the first day of an exact prior calendar month."""
+
+    month_index = period.year * 12 + period.month - 1 - months_back
+    return date(month_index // 12, month_index % 12 + 1, 1)
+
+
+def _inflation_observation_map(
+    series_key: str,
+    *,
+    batch_id: uuid.UUID | str | None,
+    limit: int = 84,
+) -> dict[date, Observation]:
+    """Keep every inflation formula input inside one explicit BLS batch."""
+
+    if batch_id is None:
+        return {}
+    observations = _real_observations(series_key).filter(batch_id=batch_id)[:limit]
+    return {
+        observation.value_date.date().replace(day=1): observation
+        for observation in observations
+    }
+
+
+def _inflation_rate(
+    observations: dict[date, Observation],
+    *,
+    period: date,
+    months: int,
+    annualized: bool = False,
+    require_contiguous: bool = True,
+) -> tuple[Decimal, list[Observation]] | None:
+    """Calculate an exact-month index change without nearest-date fallback."""
+
+    offsets = range(months, -1, -1) if require_contiguous else (months, 0)
+    points = [observations.get(_month_offset(period, offset)) for offset in offsets]
+    if any(point is None or point.value <= 0 for point in points):
+        return None
+    inputs = [point for point in points if point is not None]
+    ratio = inputs[-1].value / inputs[0].value
+    if annualized:
+        if months <= 0 or 12 % months:
+            raise ValueError("annualized inflation horizon must divide 12")
+        ratio = ratio ** (12 // months)
+    return (ratio - Decimal("1")) * Decimal("100"), inputs
+
+
+def _derived_inflation_quality(
+    current: Observation, inputs: Iterable[Observation]
+) -> tuple[str, datetime]:
+    """A derived rate is current-vintage estimated unless an input is degraded."""
+
+    input_list = list(inputs)
+    statuses = {item.quality_status for item in input_list}
+    fresh_until = _fresh_until(current)
+    if Observation.Quality.ERROR in statuses:
+        return Observation.Quality.ERROR, fresh_until
+    if Observation.Quality.STALE in statuses or timezone.now() > fresh_until:
+        return Observation.Quality.STALE, fresh_until
+    if Observation.Quality.FALLBACK in statuses:
+        return Observation.Quality.FALLBACK, fresh_until
+    return Observation.Quality.ESTIMATED, fresh_until
+
+
+def _inflation_payload(
+    *,
+    key: str,
+    label: str,
+    value: Decimal,
+    current: Observation,
+    inputs: Iterable[Observation],
+    formula: str,
+    seasonal_basis: str,
+    change: Decimal | None = None,
+) -> dict[str, Any]:
+    input_list = list(inputs)
+    quality_status, fresh_until = _derived_inflation_quality(current, input_list)
+    input_source_keys = sorted(_observation_source_keys(*input_list))
+    input_batch_ids = sorted({str(item.batch_id) for item in input_list})
+    return {
+        "key": key,
+        "label": label,
+        "value": float(value),
+        "display_value": f"{value:+,.1f}%",
+        "change": round(float(change), 2) if change is not None else None,
+        "change_unit": "pp",
+        "unit": "%",
+        "quality_status": quality_status,
+        "source": "Atlas Macro 计算：" + formula,
+        "source_key": "internal",
+        "source_keys": sorted({*input_source_keys, "internal"}),
+        "as_of": current.as_of.isoformat(),
+        "value_date": current.value_date.isoformat(),
+        "fetched_at": max(item.fetched_at for item in input_list).isoformat(),
+        "fresh_until": fresh_until.isoformat(),
+        "batch_id": ",".join(input_batch_ids),
+        "metadata": {
+            "formula": formula,
+            "input_series": sorted({item.series.key for item in input_list}),
+            "source_keys": input_source_keys,
+            "input_batch_ids": input_batch_ids,
+            "input_value_dates": sorted(
+                {item.value_date.isoformat() for item in input_list}
+            ),
+            "input_lineage": [
+                {
+                    "series_key": item.series.key,
+                    "source_key": item.source.key,
+                    "source_name": item.source.name,
+                    "license_scope": item.source.license_scope,
+                    "value_date": item.value_date.isoformat(),
+                    "as_of": item.as_of.isoformat(),
+                    "fetched_at": item.fetched_at.isoformat(),
+                    "batch_id": str(item.batch_id),
+                    "quality_status": item.quality_status,
+                    "fallback_source": (
+                        item.fallback_source.key
+                        if item.fallback_source_id
+                        else None
+                    ),
+                }
+                for item in input_list
+            ],
+            "preliminary": any(
+                bool((item.metadata or {}).get("preliminary"))
+                for item in input_list
+            ),
+            "seasonal_basis": seasonal_basis,
+            "calculation_owner": "Atlas Macro",
+        },
+    }
+
+
+def _inflation_lineage(payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        **payload["metadata"],
+        "series_key": payload["key"],
+        "source_key": "internal",
+        "source_name": "Atlas Macro Derived Data",
+        "value_date": payload["value_date"],
+        "as_of": payload["as_of"],
+        "fetched_at": payload["fetched_at"],
+        "fresh_until": payload["fresh_until"],
+        "batch_id": payload["batch_id"],
+        "quality_status": payload["quality_status"],
+        "license_scope": "Original calculation from attributed BLS inputs",
+        "fallback_source": None,
+    }
+
+
+def _inflation_series_data(
+    *,
+    key_prefix: str,
+    label: str,
+    seasonally_adjusted_series: str,
+    not_seasonally_adjusted_series: str,
+    batch_id: uuid.UUID | str | None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Build SA momentum and official NSA 12-month rates for one price index."""
+
+    sa = _inflation_observation_map(
+        seasonally_adjusted_series, batch_id=batch_id
+    )
+    nsa = _inflation_observation_map(
+        not_seasonally_adjusted_series, batch_id=batch_id
+    )
+    if not sa or not nsa or max(sa) != max(nsa):
+        return [], []
+
+    rate_specs = (
+        (
+            "mom",
+            f"{label} 环比",
+            sa,
+            1,
+            False,
+            True,
+            "seasonally_adjusted",
+            (
+                f"100 * ({seasonally_adjusted_series}_t / "
+                f"{seasonally_adjusted_series}_t-1 - 1)"
+            ),
+        ),
+        (
+            "3m-annualized",
+            f"{label} 3M 年化",
+            sa,
+            3,
+            True,
+            True,
+            "seasonally_adjusted",
+            (
+                f"100 * (({seasonally_adjusted_series}_t / "
+                f"{seasonally_adjusted_series}_t-3)^4 - 1)"
+            ),
+        ),
+        (
+            "6m-annualized",
+            f"{label} 6M 年化",
+            sa,
+            6,
+            True,
+            True,
+            "seasonally_adjusted",
+            (
+                f"100 * (({seasonally_adjusted_series}_t / "
+                f"{seasonally_adjusted_series}_t-6)^2 - 1)"
+            ),
+        ),
+        (
+            "yoy",
+            f"{label} 同比",
+            nsa,
+            12,
+            False,
+            False,
+            "not_seasonally_adjusted",
+            (
+                f"100 * ({not_seasonally_adjusted_series}_t / "
+                f"{not_seasonally_adjusted_series}_t-12 - 1)"
+            ),
+        ),
+    )
+    payloads: dict[tuple[date, str], dict[str, Any]] = {}
+    values: dict[tuple[date, str], Decimal] = {}
+    rows: list[dict[str, Any]] = []
+    for period in sorted(set(sa) | set(nsa)):
+        row: dict[str, Any] = {
+            "date": period.isoformat(),
+            "_source_keys": ["bls", "internal"],
+            "_lineage": {},
+        }
+        for (
+            rate_key,
+            rate_label,
+            observations,
+            months,
+            annualized,
+            require_contiguous,
+            seasonal_basis,
+            formula,
+        ) in rate_specs:
+            result = _inflation_rate(
+                observations,
+                period=period,
+                months=months,
+                annualized=annualized,
+                require_contiguous=require_contiguous,
+            )
+            current = observations.get(period)
+            if result is None or current is None:
+                continue
+            value, inputs = result
+            payload = _inflation_payload(
+                key=f"{key_prefix}-{rate_key}",
+                label=rate_label,
+                value=value,
+                current=current,
+                inputs=inputs,
+                formula=formula,
+                seasonal_basis=seasonal_basis,
+            )
+            row[rate_label] = float(value)
+            row["_lineage"][rate_label] = _inflation_lineage(payload)
+            payloads[(period, rate_key)] = payload
+            values[(period, rate_key)] = value
+        if row["_lineage"]:
+            rows.append(row)
+
+    latest_period = max(sa)
+    metrics: list[dict[str, Any]] = []
+    for rate_key in ("mom", "yoy", "3m-annualized", "6m-annualized"):
+        payload = payloads.get((latest_period, rate_key))
+        if payload is None:
+            continue
+        previous_value = values.get((_month_offset(latest_period, 1), rate_key))
+        if previous_value is not None:
+            payload["change"] = round(
+                payload["value"] - float(previous_value), 2
+            )
+        metrics.append(payload)
+    return metrics, rows
+
+
+def _select_inflation_chart_rows(
+    rows: Iterable[dict[str, Any]], fields: Iterable[str]
+) -> list[dict[str, Any]]:
+    selected: list[dict[str, Any]] = []
+    field_list = list(fields)
+    for row in rows:
+        lineage = row.get("_lineage") or {}
+        values = {field: row[field] for field in field_list if field in row}
+        if not values:
+            continue
+        selected.append(
+            {
+                "date": row["date"],
+                **values,
+                "_source_keys": list(row.get("_source_keys") or []),
+                "_lineage": {
+                    field: lineage[field]
+                    for field in values
+                    if field in lineage
+                },
+            }
+        )
+    return selected
+
+
+def _inflation_chart(
+    *,
+    key: str,
+    title: str,
+    description: str,
+    rows: Iterable[dict[str, Any]],
+    fields: Iterable[str],
+    tab: str,
+) -> dict[str, Any] | None:
+    chart_rows = _select_inflation_chart_rows(rows, fields)
+    if not chart_rows:
+        return None
+    latest_lineages = []
+    for field in fields:
+        lineage = next(
+            (
+                row["_lineage"][field]
+                for row in reversed(chart_rows)
+                if field in (row.get("_lineage") or {})
+            ),
+            None,
+        )
+        if lineage is not None:
+            latest_lineages.append(lineage)
+    if not latest_lineages:
+        return None
+    statuses = {item["quality_status"] for item in latest_lineages}
+    if Observation.Quality.ERROR in statuses:
+        quality_status = Observation.Quality.ERROR
+    elif Observation.Quality.STALE in statuses:
+        quality_status = Observation.Quality.STALE
+    elif Observation.Quality.FALLBACK in statuses:
+        quality_status = Observation.Quality.FALLBACK
+    else:
+        quality_status = Observation.Quality.ESTIMATED
+    return {
+        "key": key,
+        "title": title,
+        "description": description,
+        "kind": "line",
+        "data": chart_rows,
+        "source_keys": sorted(
+            {
+                source_key
+                for item in latest_lineages
+                for source_key in item.get("source_keys", [])
+            }
+            | {"internal"}
+        ),
+        "as_of": min(item["as_of"] for item in latest_lineages),
+        "fetched_at": max(item["fetched_at"] for item in latest_lineages),
+        "fresh_until": min(item["fresh_until"] for item in latest_lineages),
+        "quality_status": quality_status,
+        "batch_ids": sorted(
+            {
+                batch_id
+                for item in latest_lineages
+                for batch_id in item.get("input_batch_ids", [])
+            }
+        ),
+        "frequency": "monthly",
+        "time_axis": "date",
+        "tab": tab,
+    }
+
+
+def _inflation_page_data(
+    *, batch_id: uuid.UUID | str | None
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    headline_metrics, headline_rows = _inflation_series_data(
+        key_prefix="headline-cpi",
+        label="CPI",
+        seasonally_adjusted_series="CUSR0000SA0",
+        not_seasonally_adjusted_series="CUUR0000SA0",
+        batch_id=batch_id,
+    )
+    core_metrics, core_rows = _inflation_series_data(
+        key_prefix="core-cpi",
+        label="核心 CPI",
+        seasonally_adjusted_series="CUSR0000SA0L1E",
+        not_seasonally_adjusted_series="CUUR0000SA0L1E",
+        batch_id=batch_id,
+    )
+    producer_metrics, producer_rows = _inflation_series_data(
+        key_prefix="final-demand-ppi",
+        label="最终需求 PPI",
+        seasonally_adjusted_series="WPSFD4",
+        not_seasonally_adjusted_series="WPUFD4",
+        batch_id=batch_id,
+    )
+    charts = _existing(
+        _inflation_chart(
+            key="headline-cpi-rates",
+            title="总体 CPI 通胀率与短周期动能",
+            description=(
+                "环比与 3M/6M 几何年化使用 BLS 季调指数；"
+                "12 个月同比使用未季调指数，单位：%。"
+            ),
+            rows=headline_rows,
+            fields=["CPI 环比", "CPI 同比", "CPI 3M 年化", "CPI 6M 年化"],
+            tab="headline",
+        ),
+        _inflation_chart(
+            key="core-cpi-rates",
+            title="核心 CPI 通胀率与短周期动能",
+            description=(
+                "剔除食品和能源；环比与动能用季调指数，同比用未季调指数。"
+            ),
+            rows=core_rows,
+            fields=[
+                "核心 CPI 环比",
+                "核心 CPI 同比",
+                "核心 CPI 3M 年化",
+                "核心 CPI 6M 年化",
+            ],
+            tab="core",
+        ),
+        _inflation_chart(
+            key="final-demand-ppi-rates",
+            title="最终需求 PPI 通胀率与短周期动能",
+            description=(
+                "环比与动能用季调指数，同比用未季调指数；最近四个月可修订。"
+            ),
+            rows=producer_rows,
+            fields=[
+                "最终需求 PPI 环比",
+                "最终需求 PPI 同比",
+                "最终需求 PPI 3M 年化",
+                "最终需求 PPI 6M 年化",
+            ],
+            tab="producer",
+        ),
+    )
+    sections = [
+        {
+            "title": "口径、公式与修订",
+            "body": (
+                "环比与 3M/6M 年化只使用季调指数；同比只使用未季调指数。"
+                "3M/6M 按复合增长率年化，缺失精确自然月时保留图表空档，不做"
+                "最近日期替代。CPI 季调因子可年度回修；PPI 最近四个月可能修订。"
+            ),
+            "full_width": True,
+        },
+        {
+            "title": "尚未接入的通胀层",
+            "body": (
+                "核心 PCE、住房与服务分拆、5Y/10Y 盈亏平衡通胀和完整发布 vintage "
+                "尚未进入本页原子快照；其来源状态与后续接入建议见下方数据覆盖台账。"
+            ),
+            "full_width": True,
+        },
+    ]
+    return [*headline_metrics, *core_metrics, *producer_metrics], charts, sections
+
+
+def _inflation_page_is_buildable(*, batch_id: uuid.UUID | str | None) -> bool:
+    metrics, charts, _ = _inflation_page_data(batch_id=batch_id)
+    metric_keys = {str(item.get("key") or "") for item in metrics}
+    chart_by_key = {str(item.get("key") or ""): item for item in charts}
+    expected_chart_keys = {
+        "headline-cpi-rates",
+        "core-cpi-rates",
+        "final-demand-ppi-rates",
+    }
+    if (
+        not INFLATION_REQUIRED_METRIC_KEYS <= metric_keys
+        or set(chart_by_key) != expected_chart_keys
+    ):
+        return False
+    required_latest_fields = {
+        "headline-cpi-rates": {
+            "CPI 环比",
+            "CPI 同比",
+            "CPI 3M 年化",
+            "CPI 6M 年化",
+        },
+        "core-cpi-rates": {
+            "核心 CPI 环比",
+            "核心 CPI 同比",
+            "核心 CPI 3M 年化",
+            "核心 CPI 6M 年化",
+        },
+        "final-demand-ppi-rates": {
+            "最终需求 PPI 环比",
+            "最终需求 PPI 同比",
+            "最终需求 PPI 3M 年化",
+            "最终需求 PPI 6M 年化",
+        },
+    }
+    for chart_key, required_fields in required_latest_fields.items():
+        rows = chart_by_key[chart_key].get("data") or []
+        if not rows or not required_fields <= set(rows[-1]):
+            return False
+    return True
 
 
 def _gdp_vintage_chart_and_section() -> tuple[
@@ -1788,6 +2345,7 @@ def _publish_dashboard(
                 not in {
                     "batch_id",
                     "batch_ids",
+                    "input_batch_ids",
                     "component_batch_id",
                     "component_batches",
                     "fetched_at",
@@ -1874,6 +2432,15 @@ def _publish_dashboard(
                     "input_value_dates": (item.get("metadata") or {}).get(
                         "input_value_dates", []
                     ),
+                    "input_lineage": (item.get("metadata") or {}).get(
+                        "input_lineage", []
+                    ),
+                    "seasonal_basis": (item.get("metadata") or {}).get(
+                        "seasonal_basis"
+                    ),
+                    "preliminary": bool(
+                        (item.get("metadata") or {}).get("preliminary")
+                    ),
                     "public_snapshot": True,
                 },
             },
@@ -1891,13 +2458,35 @@ def _publish_dashboard(
     )
 
 
+def _latest_successful_source_batch(source_key: str) -> uuid.UUID | None:
+    run = (
+        IngestionRun.objects.filter(
+            source__key=source_key,
+            status=IngestionRun.Status.SUCCESS,
+            row_count__gt=0,
+        )
+        .order_by("-completed_at", "-id")
+        .first()
+    )
+    return run.batch_id if run is not None else None
+
+
 def publish_official_dashboards(
-    *, keys: Iterable[str] | None = None
+    *,
+    keys: Iterable[str] | None = None,
+    source_batches: dict[str, uuid.UUID | str] | None = None,
 ) -> list[DashboardSnapshot]:
     """Atomically publish only the dashboards affected by a completed source batch."""
 
     batch_id = uuid.uuid4()
     selected_keys = set(keys) if keys is not None else None
+    normalized_source_batches = dict(source_batches or {})
+    if source_batches is None and (
+        selected_keys is None or "inflation" in selected_keys
+    ):
+        latest_bls_batch = _latest_successful_source_batch("bls")
+        if latest_bls_batch is not None:
+            normalized_source_batches["bls"] = latest_bls_batch
     nominal_curve = _curve_rows(
         "ust", ("1m", "2m", "3m", "4m", "6m", "1y", "2y", "3y", "5y", "7y", "10y", "20y", "30y")
     )
@@ -1910,6 +2499,9 @@ def publish_official_dashboards(
     employment_metrics: list[dict[str, Any]] = []
     employment_charts: list[dict[str, Any]] = []
     employment_sections: list[dict[str, Any]] = []
+    inflation_metrics: list[dict[str, Any]] = []
+    inflation_charts: list[dict[str, Any]] = []
+    inflation_sections: list[dict[str, Any]] = []
     gdp_vintage_chart: dict[str, Any] | None = None
     gdp_vintage_section: dict[str, Any] | None = None
     if selected_keys is None or "gdp" in selected_keys:
@@ -2042,6 +2634,14 @@ def publish_official_dashboards(
             employment_charts,
             employment_sections,
         ) = _employment_page_data()
+    if selected_keys is None or "inflation" in selected_keys:
+        (
+            inflation_metrics,
+            inflation_charts,
+            inflation_sections,
+        ) = _inflation_page_data(
+            batch_id=normalized_source_batches.get("bls")
+        )
     dashboards: list[DashboardSnapshot] = []
     definitions = [
         {
@@ -2447,20 +3047,16 @@ def publish_official_dashboards(
         {
             "key": "inflation",
             "title": "通胀",
-            "summary": "本页先发布 BLS 官方指数水平；同比/环比将在季调与基期校验后发布。",
-            "metrics": _existing(
-                _metric("CUSR0000SA0", "CPI 指数"),
-                _metric("CUSR0000SA0L1E", "核心 CPI 指数"),
-                _metric("WPSFD4", "最终需求 PPI"),
+            "summary": (
+                "总体 CPI、核心 CPI 与最终需求 PPI 的环比和短期动能来自"
+                "BLS 季调指数，同比来自对应未季调指数。所有变化率按精确"
+                "自然月透明计算并绑定同一 BLS 抓取批次；PCE、分项、市场"
+                "预期与完整 vintage 缺口在数据台账中单列。"
             ),
-            "chart_data": _history_rows(
-                {
-                    "CUSR0000SA0": "CPI",
-                    "CUSR0000SA0L1E": "核心 CPI",
-                    "WPSFD4": "PPI",
-                },
-                limit=36,
-            ),
+            "metrics": inflation_metrics,
+            "charts": inflation_charts,
+            "sections": inflation_sections,
+            "required_metric_keys": INFLATION_REQUIRED_METRIC_KEYS,
         },
         {
             "key": "consumer",
@@ -2608,6 +3204,38 @@ def refresh_official_data(*, current_year: int | None = None) -> dict[str, Any]:
         dashboards.extend(
             publish_official_dashboards(keys=employment_publishable)
         )
+    inflation_completed = _publishable_keys_for_source_groups(
+        runs, INFLATION_PUBLICATION_GROUPS
+    )
+    inflation_publishable = _keys_with_current_required_batches(
+        inflation_completed, runs
+    )
+    inflation_bls_runs = [run for run in runs if run.source.key == "bls"]
+    inflation_batch_id = (
+        inflation_bls_runs[0].batch_id
+        if len(inflation_bls_runs) == 1
+        else None
+    )
+    if inflation_publishable and not _inflation_page_is_buildable(
+        batch_id=inflation_batch_id
+    ):
+        inflation_publishable = set()
+    stale_inflation_keys = set(INFLATION_PUBLICATION_GROUPS) - set(
+        inflation_publishable
+    )
+    _mark_latest_dashboards_stale(
+        stale_inflation_keys,
+        runs,
+        groups=INFLATION_PUBLICATION_GROUPS,
+    )
+    if inflation_publishable and inflation_batch_id is not None:
+        dashboards.extend(
+            publish_official_dashboards(
+                keys=inflation_publishable,
+                source_batches={"bls": inflation_batch_id},
+            )
+        )
+    stale_dashboard_keys = stale_employment_keys | stale_inflation_keys
     return {
         "runs": [
             {
@@ -2620,7 +3248,7 @@ def refresh_official_data(*, current_year: int | None = None) -> dict[str, Any]:
             for run in runs
         ],
         "dashboard_keys": [dashboard.key for dashboard in dashboards],
-        "stale_dashboard_keys": sorted(stale_employment_keys),
+        "stale_dashboard_keys": sorted(stale_dashboard_keys),
     }
 
 

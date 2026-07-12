@@ -364,14 +364,54 @@ PAGE_CONFIGS = {
     "inflation": {
         "title": "通胀",
         "eyebrow": "Inflation Stack",
-        "description": "CPI、PCE、PPI、住房与市场通胀预期分层展示。",
-        "metrics": [
-            metric("CPI", "+3.0%", "同比 -0.2pp", source="BLS"),
-            metric("核心 CPI", "+3.3%", "同比 -0.1pp"),
-            metric("核心 PCE", "+2.8%", "持平", source="BEA"),
-            metric("10Y BEI", "2.30%", "+1bp", source="FRED"),
+        "description": (
+            "使用 BLS 季调与未季调配对指数展示总体 CPI、核心 CPI 与最终需求"
+            "PPI 的环比、同比及 3M/6M 年化动能；PCE、通胀分项、市场预期和"
+            "历史 vintage 缺口在数据台账中单列。"
+        ),
+        "period_options": [
+            {"value": "1y", "label": "1 年", "months": 12},
+            {"value": "3y", "label": "3 年", "months": 36},
+            {"value": "5y", "label": "5 年", "months": 60},
         ],
-        "analysis": "商品通胀受控，住房与服务仍粘性。通胀回落路径存在，但速度不足以支持快速宽松。",
+        "default_period": "3y",
+        "tab_options": [
+            {"value": "overview", "label": "总览", "chart_keys": []},
+            {
+                "value": "headline",
+                "label": "总体 CPI",
+                "chart_keys": ["headline-cpi-rates"],
+            },
+            {
+                "value": "core",
+                "label": "核心 CPI",
+                "chart_keys": ["core-cpi-rates"],
+            },
+            {
+                "value": "producer",
+                "label": "生产者价格",
+                "chart_keys": ["final-demand-ppi-rates"],
+            },
+        ],
+        "default_tab": "overview",
+        "metrics": [
+            metric("CPI 环比"),
+            metric("CPI 同比"),
+            metric("CPI 3M 年化"),
+            metric("CPI 6M 年化"),
+            metric("核心 CPI 环比"),
+            metric("核心 CPI 同比"),
+            metric("核心 CPI 3M 年化"),
+            metric("核心 CPI 6M 年化"),
+            metric("最终需求 PPI 环比"),
+            metric("最终需求 PPI 同比"),
+            metric("最终需求 PPI 3M 年化"),
+            metric("最终需求 PPI 6M 年化"),
+        ],
+        "analysis": (
+            "当前只对通过同批完整性检查的 BLS 实现通胀层作可复算展示；"
+            "未接入层保持空缺，不用指数水平或演示数值替代。"
+        ),
     },
     "consumer": {
         "title": "消费",

@@ -315,6 +315,85 @@ DATA_REQUIREMENTS = [
         "priority": 2,
     },
     {
+        "key": "bls-inflation-official",
+        "page_key": "inflation",
+        "metric_name": (
+            "CPI、核心 CPI 与最终需求 PPI 的环比、同比及 3M/6M 年化"
+        ),
+        "status": LIVE,
+        "source_name": "U.S. Bureau of Labor Statistics Public Data API",
+        "source_url": "https://www.bls.gov/developers/",
+        "reason": (
+            "环比和短期动能使用季调指数，同比使用对应未季调指数；"
+            "全部按精确自然月透明派生并绑定同一 BLS 抓取批次，保留"
+            "输入序列、许可、preliminary 与 fallback 血缘。"
+        ),
+        "priority": 1,
+    },
+    {
+        "key": "bea-pce-inflation",
+        "page_key": "inflation",
+        "metric_name": "PCE 与核心 PCE 价格指数通胀率",
+        "status": NEEDS_SOURCE,
+        "source_name": "U.S. Bureau of Economic Analysis Personal Income and Outlays",
+        "source_url": "https://www.bea.gov/data/income-saving/personal-income",
+        "reason": (
+            "官方免费来源已知，但当前 PIO 适配器只入库实际 PCE 环比、"
+            "实际可支配收入和储蓄率，尚未解析 PCE/核心 PCE 价格指数。"
+            "专用适配器及同批发布门完成前不展示 PCE 通胀数值。"
+        ),
+        "proxy_description": "不以 CPI、实际 PCE 增速或演示值替代 PCE 价格通胀。",
+        "priority": 2,
+    },
+    {
+        "key": "bls-inflation-components",
+        "page_key": "inflation",
+        "metric_name": "住房、商品与服务通胀分项",
+        "status": NEEDS_SOURCE,
+        "source_name": "U.S. Bureau of Labor Statistics CPI detailed indexes",
+        "source_url": "https://www.bls.gov/cpi/data.htm",
+        "reason": (
+            "官方分项来源已知，但分项序列清单、季调/未季调配对、历史"
+            "回填和口径定义尚未冻结；不得用 headline-core 残差冒充服务"
+            "通胀，也不在定义完成前称为“超级核心”。"
+        ),
+        "priority": 2,
+    },
+    {
+        "key": "inflation-market-expectations",
+        "page_key": "inflation",
+        "metric_name": "5Y/10Y 盈亏平衡通胀与远期通胀预期",
+        "status": NEEDS_SOURCE,
+        "source_name": "U.S. Treasury nominal and real yield curves",
+        "source_url": (
+            "https://home.treasury.gov/resource-center/data-chart-center/interest-rates/"
+        ),
+        "reason": (
+            "实际利率页已能透明计算最新名义 Treasury 减 TIPS，但通胀页"
+            "尚无同日历史配对和独立发布门；接入后应明确标记为财政部"
+            "曲线派生代理，而非实时可交易的 BEI。"
+        ),
+        "proxy_description": (
+            "先接入同日 5Y/10Y Treasury−TIPS 历史代理；5Y5Y 远期口径"
+            "另行验证 FRED/授权市场源。"
+        ),
+        "priority": 3,
+    },
+    {
+        "key": "inflation-vintage-trail",
+        "page_key": "inflation",
+        "metric_name": "CPI/PPI 发布 vintage 与历次修订路径",
+        "status": NEEDS_SOURCE,
+        "vendor": "BLS release archive / ALFRED where applicable / internal archive",
+        "product": "Release-vintage observations with revision-round identifiers",
+        "reason": (
+            "当前通用 Observation 会以本次官方值更新同一经济月份；"
+            "批次、preliminary 标记和当前响应证据不能替代可查询的完整"
+            "发布修订轨迹，因此本页只声明最新官方 vintage。"
+        ),
+        "priority": 3,
+    },
+    {
         "key": "bea-gdp-pce",
         "page_key": "gdp",
         "metric_name": "GDP、GDI、PCE 与分项的最新修订口径",

@@ -11,8 +11,8 @@ current_milestone:
   title: 发布官方通胀变化率与短期动能
   status: IN_PROGRESS
 health: GREEN
-next_action: Audit the public inflation-page contract and validate BLS rate formulas before implementation.
-updated_at: '2026-07-12T23:24:28+08:00'
+next_action: Implement six-series BLS inflation derivations and the independent same-batch publication gate.
+updated_at: '2026-07-12T23:58:00+08:00'
 validation_commands:
   - .venv/bin/ruff check .
   - .venv/bin/pytest -q

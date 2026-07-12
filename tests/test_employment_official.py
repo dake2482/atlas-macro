@@ -250,8 +250,11 @@ def _employment_runs():
             "JTS000000000000000LDL": Decimal("1800"),
             "JTS000000000000000LDR": Decimal("1.1"),
             "CUSR0000SA0": Decimal("320"),
+            "CUUR0000SA0": Decimal("321"),
             "CUSR0000SA0L1E": Decimal("325"),
+            "CUUR0000SA0L1E": Decimal("326"),
             "WPSFD4": Decimal("260"),
+            "WPUFD4": Decimal("261"),
         }
         for series_id, value in values.items():
             monthly_records.append(

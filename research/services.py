@@ -791,8 +791,23 @@ SERIES_CATALOG = {
         "weekly",
     ),
     "CUSR0000SA0": ("Consumer Price Index for All Urban Consumers", "index", "monthly"),
+    "CUUR0000SA0": (
+        "Consumer Price Index for All Urban Consumers, Not Seasonally Adjusted",
+        "index",
+        "monthly",
+    ),
     "CUSR0000SA0L1E": ("Core CPI, All Items Less Food and Energy", "index", "monthly"),
+    "CUUR0000SA0L1E": (
+        "Core CPI, All Items Less Food and Energy, Not Seasonally Adjusted",
+        "index",
+        "monthly",
+    ),
     "WPSFD4": ("Producer Price Index: Final Demand", "index", "monthly"),
+    "WPUFD4": (
+        "Producer Price Index: Final Demand, Not Seasonally Adjusted",
+        "index",
+        "monthly",
+    ),
     "BEA-A191RL": ("Real GDP Growth, SAAR", "%", "quarterly"),
     "BEA-DPCERL": ("Real Personal Consumption Expenditures Growth, SAAR", "%", "quarterly"),
     "BEA-GDP-NOMINAL-SAAR": ("Nominal GDP, SAAR", "USD billions", "quarterly"),
