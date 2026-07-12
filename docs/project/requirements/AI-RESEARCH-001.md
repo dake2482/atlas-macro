@@ -3,7 +3,7 @@ schema_version: 1
 id: AI-RESEARCH-001
 project_id: AI-RESEARCH
 title: 接入统一项目控制面
-status: REVIEW
+status: DONE
 priority: P3
 executor: codex
 task_id: codex-governance-convergence-20260712
@@ -11,13 +11,14 @@ branch: main
 worktree: local
 dependencies:
 - PORTFOLIO-005
-updated_at: '2026-07-12T20:35:00+08:00'
-next_action: Review and commit the onboarding files, then run `portfolio closeout AI-RESEARCH`.
+updated_at: '2026-07-12T19:04:14+08:00'
+next_action: Decide separately whether this local-only project needs a canonical remote.
 evidence:
 - The existing Git repository is clean at onboarding start and has no configured remote.
 - Ruff, the complete pytest suite, and Django system checks passed on 2026-07-12.
 - 'onboarding review: canonical validation and strict portfolio integration passed'
 - The closeout gate correctly blocked completion because two governance paths remain uncommitted.
+- Governance files were committed, and `portfolio closeout AI-RESEARCH` passed on 2026-07-12 with Ruff, the complete pytest suite, Django checks, and the local-only Git boundary verified.
 ---
 
 # 目标
@@ -31,7 +32,7 @@ evidence:
 - [x] `docs/project/project.yaml`、需求和决策文件存在。
 - [x] 项目声明的 lint、测试和 Django 检查通过。
 - [x] `portfolio check --strict` 通过且生成状态页最新。
-- [ ] 治理文件形成明确 commit，且 `portfolio closeout AI-RESEARCH` 通过。
+- [x] 治理文件形成明确 commit，且 `portfolio closeout AI-RESEARCH` 通过。
 
 ## Verification plan
 

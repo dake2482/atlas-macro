@@ -3,10 +3,10 @@
 # AI-RESEARCH status
 
 - Purpose: Build a clean-room macro-research and AI supply-chain intelligence platform with traceable public sources, explicit data-quality labels, and original presentation.
-- Health: `YELLOW`
-- Milestone: `AI-RESEARCH-001` — 接入统一项目控制面 (`REVIEW`)
-- Next action: Review and commit the onboarding files, then run `portfolio closeout AI-RESEARCH`.
-- Updated: `2026-07-12T20:35:00+08:00`
+- Health: `GREEN`
+- Milestone: `AI-RESEARCH-001` — 接入统一项目控制面 (`DONE`)
+- Next action: Decide separately whether this local-only project needs a canonical remote.
+- Updated: `2026-07-12T19:04:14+08:00`
 - Git boundary: branch `main`; run `portfolio closeout AI-RESEARCH` for live delivery state.
 - Execution metadata: Codex 0/0 active/total; ZCode 0/0 active/total
 
@@ -14,7 +14,7 @@
 
 | Requirement | State | Priority | Executor | Task | Branch / worktree | Next action |
 |---|---|---|---|---|---|---|
-| AI-RESEARCH-001 | REVIEW | P3 | codex | codex-governance-convergence-20260712 | main / local | Review and commit the onboarding files, then run `portfolio closeout AI-RESEARCH`. |
+| - | - | - | - | - | - | No active requirement |
 
 ## Blockers
 
@@ -22,4 +22,4 @@
 
 ## Latest verification evidence
 
-- onboarding review: canonical validation and strict portfolio integration passed
+- Governance files were committed, and `portfolio closeout AI-RESEARCH` passed on 2026-07-12 with Ruff, the complete pytest suite, Django checks, and the local-only Git boundary verified.
