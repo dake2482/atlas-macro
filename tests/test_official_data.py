@@ -933,6 +933,55 @@ def test_newer_revoked_chart_snapshot_falls_back_to_previous_safe_snapshot(clien
 
 
 @pytest.mark.django_db
+def test_latest_published_mixed_frequency_snapshot_wins_even_with_older_as_of(client):
+    allowed = _licensed_source("mixed-frequency-snapshot-source")
+    now = timezone.now()
+    DashboardSnapshot.objects.create(
+        key="rates",
+        title="Older monthly-only snapshot",
+        as_of=now,
+        source=allowed,
+        is_published=True,
+        data={
+            "demo": False,
+            "source_keys": [allowed.key],
+            "metrics": [
+                {
+                    "label": "Old monthly metric",
+                    "display_value": "OLD-MONTHLY-SNAPSHOT",
+                    "source_key": allowed.key,
+                }
+            ],
+            "chart_data": [],
+        },
+    )
+    DashboardSnapshot.objects.create(
+        key="rates",
+        title="Latest mixed-frequency snapshot",
+        as_of=now - timedelta(days=90),
+        source=allowed,
+        is_published=True,
+        data={
+            "demo": False,
+            "source_keys": [allowed.key],
+            "metrics": [
+                {
+                    "label": "Latest mixed-frequency metric",
+                    "display_value": "LATEST-MIXED-FREQUENCY-SNAPSHOT",
+                    "source_key": allowed.key,
+                }
+            ],
+            "chart_data": [],
+        },
+    )
+
+    body = client.get("/rates/").content.decode()
+
+    assert "LATEST-MIXED-FREQUENCY-SNAPSHOT" in body
+    assert "OLD-MONTHLY-SNAPSHOT" not in body
+
+
+@pytest.mark.django_db
 def test_legacy_chart_data_footer_uses_chart_lineage_not_all_page_sources(client):
     shell = _licensed_source("legacy-chart-shell")
     chart_source = _licensed_source("legacy-chart-only")

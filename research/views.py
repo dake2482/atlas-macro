@@ -460,7 +460,11 @@ def dashboard_page(request, page_key: str):
         .filter(Q(data__demo=False) | ~Q(data__has_key="demo"))
         .exclude(source__key="demo-market")
         .select_related("source")
-        .order_by("-as_of", "-created_at")
+        # A mixed-frequency snapshot uses its oldest component for ``as_of``.
+        # Publication time therefore defines snapshot recency; sorting by
+        # ``as_of`` can incorrectly resurrect an older monthly-only snapshot
+        # after a quarterly source is added to the latest complete batch.
+        .order_by("-created_at", "-as_of")
     )
     snapshot = None
     snapshot_source_keys: set[str] = set()
