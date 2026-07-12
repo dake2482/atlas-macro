@@ -8,15 +8,17 @@ be persisted as ingestion metadata instead of crashing a Celery worker.
 from __future__ import annotations
 
 import os
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal, InvalidOperation
 from email.utils import parsedate_to_datetime
 from pathlib import PurePosixPath
 from typing import Any, Protocol, runtime_checkable
 from urllib.parse import urlparse
 from xml.etree import ElementTree
+from zoneinfo import ZoneInfo
 
 import httpx
 
@@ -209,12 +211,102 @@ class FREDProvider(HTTPProvider):
 
 
 class NYFedMarketsProvider(HTTPProvider):
-    """New York Fed reference rates published for unrestricted public use."""
+    """Adapter for reference rates and Desk operations from the NY Fed.
+
+    Amounts in the Desk APIs are denominated in dollars.  The normalized
+    observation contract used by Atlas stores them in USD millions while
+    retaining the source operation fields in ``metadata``.  Use is subject to
+    the New York Fed Terms of Use and requires attribution when displayed.
+    """
 
     key = "ny-fed-markets"
     base_url = "https://markets.newyorkfed.org"
+    attribution = "Federal Reserve Bank of New York"
+    terms_url = "https://www.newyorkfed.org/privacy/termsofuse"
+    market_timezone = ZoneInfo("America/New_York")
 
     RATE_GROUPS = {"SOFR": "secured", "EFFR": "unsecured"}
+    SOMA_SERIES = {
+        "total": "SOMA-TOTAL",
+        "bills": "SOMA-BILLS",
+        "notesbonds": "SOMA-NOTES-BONDS",
+        "tips": "SOMA-TIPS",
+        "frn": "SOMA-FRN",
+        "tipsInflationCompensation": "SOMA-TIPS-INFLATION-COMPENSATION",
+        "mbs": "SOMA-MBS",
+        "cmbs": "SOMA-CMBS",
+        "agencies": "SOMA-AGENCIES",
+    }
+    FX_COUNTERPARTY_CODES = {
+        "Bank of Canada": "BOC",
+        "Bank of England": "BOE",
+        "Bank of Japan": "BOJ",
+        "European Central Bank": "ECB",
+        "Swiss National Bank": "SNB",
+    }
+
+    @staticmethod
+    def _usd_millions(value: Any) -> Decimal | None:
+        amount = _decimal_or_none(value)
+        return amount / Decimal("1000000") if amount is not None else None
+
+    @classmethod
+    def _counterparty_code(cls, counterparty: str) -> str:
+        known = cls.FX_COUNTERPARTY_CODES.get(counterparty)
+        if known:
+            return known
+        return re.sub(r"[^A-Z0-9]+", "-", counterparty.upper()).strip("-") or "UNKNOWN"
+
+    @staticmethod
+    def _operation_metadata(item: Mapping[str, Any]) -> dict[str, Any]:
+        """Keep source fields JSON-safe and make the API typo explicit."""
+
+        keys = (
+            "operationId",
+            "auctionStatus",
+            "operationDate",
+            "settlementDate",
+            "maturityDate",
+            "operationType",
+            "operationMethod",
+            "settlementType",
+            "termCalenderDays",
+            "term",
+            "releaseTime",
+            "closeTime",
+            "note",
+            "lastUpdated",
+            "totalAmtSubmitted",
+            "totalAmtAccepted",
+            "participatingCpty",
+            "acceptedCpty",
+            "details",
+            "propositions",
+        )
+        metadata = {key: item.get(key) for key in keys if item.get(key) is not None}
+        if "termCalenderDays" in metadata:
+            metadata["term_calendar_days"] = metadata["termCalenderDays"]
+        return metadata
+
+    def _desk_result(
+        self,
+        *,
+        dataset: str,
+        records: list[dict[str, Any]],
+        endpoint: str,
+        **metadata: Any,
+    ) -> ProviderResult:
+        return ProviderResult(
+            provider=self.key,
+            dataset=dataset,
+            records=records,
+            metadata={
+                "attribution": self.attribution,
+                "terms_url": self.terms_url,
+                "endpoint": endpoint,
+                **metadata,
+            },
+        )
 
     def reference_rate(self, rate_type: str, *, limit: int = 120) -> ProviderResult:
         rate_type = rate_type.upper()
@@ -262,6 +354,401 @@ class NYFedMarketsProvider(HTTPProvider):
 
     def effr(self, *, limit: int = 120) -> ProviderResult:
         return self.reference_rate("EFFR", limit=limit)
+
+    def reverse_repo_results(self, *, limit: int = 120) -> ProviderResult:
+        """Normalize fixed-rate overnight reverse-repo operation results.
+
+        The API's ``latest`` route means *today*, not latest available.  The
+        ``last`` route therefore remains reliable on weekends and holidays.
+        """
+
+        limit = max(1, min(int(limit), 10000))
+        dataset = "repo:reverse-repo-fixed-results"
+        endpoint = f"/api/rp/reverserepo/fixed/results/last/{limit}.json"
+        payload, failure = self._get_json(dataset, endpoint)
+        if failure:
+            return failure
+        operations = (payload or {}).get("repo", {}).get("operations", [])
+        if not isinstance(operations, list):
+            return ProviderResult.failure(self.key, dataset, "invalid repo.operations payload")
+
+        by_date: dict[str, list[Mapping[str, Any]]] = {}
+        for item in operations:
+            if not isinstance(item, Mapping) or not item.get("operationDate"):
+                continue
+            by_date.setdefault(str(item["operationDate"]), []).append(item)
+
+        records: list[dict[str, Any]] = []
+        for operation_date, daily_operations in by_date.items():
+            accepted = sum(
+                (self._usd_millions(item.get("totalAmtAccepted")) or Decimal("0"))
+                for item in daily_operations
+            )
+            source_operations = [self._operation_metadata(item) for item in daily_operations]
+            note_text = " ".join(str(item.get("note") or "") for item in daily_operations)
+            regular_operations = [
+                item
+                for item in daily_operations
+                if "small value exercise" not in str(item.get("note") or "").lower()
+            ]
+            primary = (regular_operations or daily_operations)[0]
+            metadata = {
+                **self._operation_metadata(primary),
+                "unit": "USD millions",
+                "operation_count": len(daily_operations),
+                "operations": source_operations,
+                "has_small_value_exercise": "small value exercise" in note_text.lower(),
+            }
+            records.append(
+                {
+                    "series_id": "ONRRP",
+                    "date": operation_date,
+                    "value": accepted,
+                    "metadata": metadata,
+                }
+            )
+
+            details = primary.get("details") or []
+            treasury = next(
+                (
+                    detail
+                    for detail in details
+                    if isinstance(detail, Mapping) and detail.get("securityType") == "Treasury"
+                ),
+                {},
+            )
+            rate_value = (
+                treasury.get("percentAwardRate")
+                if treasury.get("percentAwardRate") is not None
+                else treasury.get("percentOfferingRate")
+            )
+            rate = _decimal_or_none(rate_value)
+            if rate is not None:
+                records.append(
+                    {
+                        "series_id": "ONRRP-RATE",
+                        "date": operation_date,
+                        "value": rate,
+                        "metadata": {**metadata, "unit": "%"},
+                    }
+                )
+            participants = _decimal_or_none(
+                primary.get("acceptedCpty")
+                if primary.get("acceptedCpty") is not None
+                else primary.get("participatingCpty")
+            )
+            if participants is not None:
+                records.append(
+                    {
+                        "series_id": "ONRRP-PARTICIPANTS",
+                        "date": operation_date,
+                        "value": participants,
+                        "metadata": {**metadata, "unit": "counterparties"},
+                    }
+                )
+
+            # Counterparty-type propositions are historical-only in recent
+            # releases.  Missing arrays are deliberately not converted to zero.
+            proposition_totals: dict[str, Decimal] = {}
+            for item in daily_operations:
+                for proposition in item.get("propositions") or []:
+                    if not isinstance(proposition, Mapping):
+                        continue
+                    counterparty_type = str(proposition.get("counterpartyType") or "").upper()
+                    amount = self._usd_millions(proposition.get("amtAccepted"))
+                    if not counterparty_type or amount is None:
+                        continue
+                    proposition_totals[counterparty_type] = (
+                        proposition_totals.get(counterparty_type, Decimal("0")) + amount
+                    )
+            for counterparty_type, amount in proposition_totals.items():
+                records.append(
+                    {
+                        "series_id": f"ONRRP-{counterparty_type}",
+                        "date": operation_date,
+                        "value": amount,
+                        "metadata": {**metadata, "unit": "USD millions"},
+                    }
+                )
+        return self._desk_result(
+            dataset=dataset,
+            records=records,
+            endpoint=endpoint,
+            amount_unit="USD millions",
+            counterparty_breakdown="present only when propositions is returned",
+        )
+
+    def standing_repo_results(self, *, limit: int = 240) -> ProviderResult:
+        """Normalize current full-allotment standing-repo results by day.
+
+        Since December 11, 2025 the Desk normally runs morning and afternoon
+        full-allotment operations.  Both windows are summed into one daily
+        observation; the individual source records remain in metadata.
+        """
+
+        limit = max(1, min(int(limit), 10000))
+        dataset = "repo:standing-repo-full-allotment-results"
+        endpoint = f"/api/rp/repo/allotment/results/last/{limit}.json"
+        payload, failure = self._get_json(dataset, endpoint)
+        if failure:
+            return failure
+        operations = (payload or {}).get("repo", {}).get("operations", [])
+        if not isinstance(operations, list):
+            return ProviderResult.failure(self.key, dataset, "invalid repo.operations payload")
+
+        by_date: dict[str, list[Mapping[str, Any]]] = {}
+        for item in operations:
+            if not isinstance(item, Mapping) or not item.get("operationDate"):
+                continue
+            by_date.setdefault(str(item["operationDate"]), []).append(item)
+
+        security_series = {
+            "Treasury": "SRP-TREASURY",
+            "Agency": "SRP-AGENCY",
+            "Mortgage-Backed": "SRP-MBS",
+        }
+        records: list[dict[str, Any]] = []
+        for operation_date, daily_operations in by_date.items():
+            total = sum(
+                (self._usd_millions(item.get("totalAmtAccepted")) or Decimal("0"))
+                for item in daily_operations
+            )
+            source_operations = [self._operation_metadata(item) for item in daily_operations]
+            note_text = " ".join(str(item.get("note") or "") for item in daily_operations)
+            metadata = {
+                "unit": "USD millions",
+                "operation_count": len(daily_operations),
+                "operations": source_operations,
+                "has_small_value_exercise": "small value exercise" in note_text.lower(),
+            }
+            records.append(
+                {
+                    "series_id": "SRP",
+                    "date": operation_date,
+                    "value": total,
+                    "metadata": metadata,
+                }
+            )
+
+            collateral_totals = {name: Decimal("0") for name in security_series}
+            rates: list[Decimal] = []
+            for item in daily_operations:
+                for detail in item.get("details") or []:
+                    if not isinstance(detail, Mapping):
+                        continue
+                    security_type = str(detail.get("securityType") or "")
+                    if security_type in collateral_totals:
+                        collateral_totals[security_type] += self._usd_millions(
+                            detail.get("amtAccepted")
+                        ) or Decimal("0")
+                    rate = _decimal_or_none(
+                        detail.get("percentOfferingRate")
+                        if detail.get("percentOfferingRate") is not None
+                        else detail.get("minimumBidRate")
+                    )
+                    if rate is not None:
+                        rates.append(rate)
+            for security_type, series_id in security_series.items():
+                records.append(
+                    {
+                        "series_id": series_id,
+                        "date": operation_date,
+                        "value": collateral_totals[security_type],
+                        "metadata": {**metadata, "security_type": security_type},
+                    }
+                )
+            if rates:
+                records.append(
+                    {
+                        "series_id": "SRP-RATE",
+                        "date": operation_date,
+                        "value": rates[0],
+                        "metadata": {
+                            **metadata,
+                            "unit": "%",
+                            "reported_rates": [str(rate) for rate in sorted(set(rates))],
+                        },
+                    }
+                )
+        return self._desk_result(
+            dataset=dataset,
+            records=records,
+            endpoint=endpoint,
+            amount_unit="USD millions",
+            aggregation="sum of all operation windows by operationDate",
+        )
+
+    def soma_summary(self, *, limit: int | None = None) -> ProviderResult:
+        """Normalize weekly SOMA domestic-security summary history."""
+
+        dataset = "soma:summary"
+        endpoint = "/api/soma/summary.json"
+        payload, failure = self._get_json(dataset, endpoint)
+        if failure:
+            return failure
+        summaries = (payload or {}).get("soma", {}).get("summary", [])
+        if not isinstance(summaries, list):
+            return ProviderResult.failure(self.key, dataset, "invalid soma.summary payload")
+        if limit is not None:
+            summaries = summaries[-max(1, min(int(limit), 10000)) :]
+
+        records: list[dict[str, Any]] = []
+        for item in summaries:
+            if not isinstance(item, Mapping) or not item.get("asOfDate"):
+                continue
+            for source_field, series_id in self.SOMA_SERIES.items():
+                value = self._usd_millions(item.get(source_field))
+                if value is None:
+                    continue
+                records.append(
+                    {
+                        "series_id": series_id,
+                        "date": item["asOfDate"],
+                        "value": value,
+                        "metadata": {
+                            "unit": "USD millions",
+                            "source_field": source_field,
+                            "publication_frequency": "weekly",
+                        },
+                    }
+                )
+        return self._desk_result(
+            dataset=dataset,
+            records=records,
+            endpoint=endpoint,
+            amount_unit="USD millions",
+        )
+
+    def usd_fx_swaps(
+        self,
+        *,
+        limit: int = 500,
+        as_of: date | str | None = None,
+    ) -> ProviderResult:
+        """Normalize U.S.-dollar central-bank liquidity swap operations.
+
+        In addition to settlement-date drawdowns, emit an outstanding balance
+        for ``as_of`` using ``settlementDate <= as_of < maturityDate``.  Small
+        value exercises remain visible in a separate outstanding series.
+        """
+
+        limit = max(1, min(int(limit), 10000))
+        dataset = "fx-swaps:usdollar"
+        endpoint = f"/api/fxs/usdollar/last/{limit}.json"
+        if as_of is None:
+            as_of_date = datetime.now(self.market_timezone).date()
+        elif isinstance(as_of, datetime):
+            as_of_date = as_of.date()
+        elif isinstance(as_of, date):
+            as_of_date = as_of
+        else:
+            try:
+                as_of_date = date.fromisoformat(str(as_of))
+            except ValueError as exc:
+                return ProviderResult.failure(self.key, dataset, f"invalid as_of date: {exc}")
+
+        payload, failure = self._get_json(dataset, endpoint)
+        if failure:
+            return failure
+        operations = (payload or {}).get("fxSwaps", {}).get("operations", [])
+        if not isinstance(operations, list):
+            return ProviderResult.failure(self.key, dataset, "invalid fxSwaps.operations payload")
+
+        parsed: list[dict[str, Any]] = []
+        for item in operations:
+            if not isinstance(item, Mapping):
+                continue
+            amount = self._usd_millions(item.get("amount"))
+            settlement = item.get("settlementDate")
+            maturity = item.get("maturityDate")
+            counterparty = str(item.get("counterparty") or "")
+            if amount is None or not settlement or not maturity or not counterparty:
+                continue
+            try:
+                settlement_date = date.fromisoformat(str(settlement))
+                maturity_date = date.fromisoformat(str(maturity))
+            except ValueError:
+                continue
+            parsed.append(
+                {
+                    "amount": amount,
+                    "counterparty": counterparty,
+                    "counterparty_code": self._counterparty_code(counterparty),
+                    "settlement_date": settlement_date,
+                    "maturity_date": maturity_date,
+                    "is_small_value": str(item.get("isSmallValue") or "").upper() == "Y",
+                    "source": dict(item),
+                }
+            )
+
+        records: list[dict[str, Any]] = []
+        by_settlement: dict[date, list[dict[str, Any]]] = {}
+        for item in parsed:
+            by_settlement.setdefault(item["settlement_date"], []).append(item)
+        for settlement_date, daily_operations in by_settlement.items():
+            records.append(
+                {
+                    "series_id": "FXSWAP-USD-DRAWDOWN",
+                    "date": settlement_date.isoformat(),
+                    "value": sum((item["amount"] for item in daily_operations), Decimal("0")),
+                    "metadata": {
+                        "unit": "USD millions",
+                        "operations": [item["source"] for item in daily_operations],
+                    },
+                }
+            )
+
+        active = [
+            item for item in parsed if item["settlement_date"] <= as_of_date < item["maturity_date"]
+        ]
+        common_metadata = {
+            "unit": "USD millions",
+            "as_of": as_of_date.isoformat(),
+            "formula": "settlementDate <= as_of < maturityDate",
+            "history_limit": limit,
+            "active_operations": [item["source"] for item in active],
+        }
+        records.append(
+            {
+                "series_id": "FXSWAP-USD-OUTSTANDING",
+                "date": as_of_date.isoformat(),
+                "value": sum((item["amount"] for item in active), Decimal("0")),
+                "metadata": common_metadata,
+            }
+        )
+        small_value = [item for item in active if item["is_small_value"]]
+        records.append(
+            {
+                "series_id": "FXSWAP-USD-OUTSTANDING-SMALL-VALUE",
+                "date": as_of_date.isoformat(),
+                "value": sum((item["amount"] for item in small_value), Decimal("0")),
+                "metadata": {**common_metadata, "small_value_only": True},
+            }
+        )
+        by_counterparty: dict[str, list[dict[str, Any]]] = {}
+        for item in active:
+            by_counterparty.setdefault(item["counterparty_code"], []).append(item)
+        for code, counterparty_operations in by_counterparty.items():
+            records.append(
+                {
+                    "series_id": f"FXSWAP-USD-{code}-OUTSTANDING",
+                    "date": as_of_date.isoformat(),
+                    "value": sum(
+                        (item["amount"] for item in counterparty_operations), Decimal("0")
+                    ),
+                    "metadata": {
+                        **common_metadata,
+                        "counterparty": counterparty_operations[0]["counterparty"],
+                    },
+                }
+            )
+        return self._desk_result(
+            dataset=dataset,
+            records=records,
+            endpoint=endpoint,
+            amount_unit="USD millions",
+            outstanding_as_of=as_of_date.isoformat(),
+        )
 
 
 class TreasuryRatesProvider(HTTPProvider):
@@ -514,9 +1001,7 @@ class CFTCProvider(HTTPProvider):
             "$limit": min(int(limit), 50000),
         }
         if start_date:
-            params["$where"] = (
-                f"report_date_as_yyyy_mm_dd >= '{start_date}T00:00:00.000'"
-            )
+            params["$where"] = f"report_date_as_yyyy_mm_dd >= '{start_date}T00:00:00.000'"
         payload, failure = self._get_json(dataset, f"/resource/{dataset_id}.json", params=params)
         if failure:
             return failure
@@ -682,6 +1167,9 @@ class GitHubProvider(HTTPProvider):
             "pushed_at": payload.get("pushed_at"),
             "homepage": payload.get("html_url", f"https://github.com/{repo}"),
             "topics": payload.get("topics", []),
+            "archived": bool(payload.get("archived", False)),
+            "is_fork": bool(payload.get("fork", False)),
+            "license": (payload.get("license") or {}).get("spdx_id", ""),
         }
         return ProviderResult(
             provider=self.key,

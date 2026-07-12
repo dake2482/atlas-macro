@@ -194,4 +194,3 @@ def test_market_map_filters_nodes_and_companies(client):
     assert "MAPNODE-ALPHA Composed Match" in body or "MAPCO-ALPHA Searchable Company" in body
     assert "MAPNODE-BETA Wrong Layer" not in body
     assert "MAPCO-BETA Wrong Layer" not in body
-

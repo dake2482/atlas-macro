@@ -45,8 +45,7 @@ DATA_REQUIREMENTS = [
             "和 Russell 的成分、权重与派生展示是单独授权产品。"
         ),
         "proxy_description": (
-            "改为自建的美国上市股票池广度并明确命名，不得称为 S&P 500 "
-            "或 Nasdaq-100 广度。"
+            "改为自建的美国上市股票池广度并明确命名，不得称为 S&P 500 或 Nasdaq-100 广度。"
         ),
         "priority": 2,
     },
@@ -160,12 +159,10 @@ DATA_REQUIREMENTS = [
         "vendor": "CME BrokerTec / LSEG-Tradeweb / Bloomberg Enterprise",
         "product": "U.S. Treasury when-issued or on-the-run market data with display rights",
         "reason": (
-            "TreasuryDirect 只能提供拍卖结果；真实 Tail 需要拍卖截止前的"
-            " when-issued 市场收益率。"
+            "TreasuryDirect 只能提供拍卖结果；真实 Tail 需要拍卖截止前的 when-issued 市场收益率。"
         ),
         "proxy_description": (
-            "拍卖高收益率减前一营业日 Treasury 官方收益率，标明为 EOD 近似、"
-            "不是 WI Tail。"
+            "拍卖高收益率减前一营业日 Treasury 官方收益率，标明为 EOD 近似、不是 WI Tail。"
         ),
         "priority": 2,
     },
@@ -181,19 +178,21 @@ DATA_REQUIREMENTS = [
             " CME 许可用途；网页可查数值不代表可再发布。"
         ),
         "proxy_description": (
-            "使用 EIA、USDA、CFTC 等官方现货/库存/持仓数据，但不得冒充 CME "
-            "价格、结算或期限结构。"
+            "使用 EIA、USDA、CFTC 等官方现货/库存/持仓数据，但不得冒充 CME 价格、结算或期限结构。"
         ),
         "priority": 1,
     },
     {
         "key": "fed-balance-sheet",
         "page_key": "fed-balance-sheet",
-        "metric_name": "美联储总资产、准备金、RRP",
+        "metric_name": "美联储总资产、美债、MBS 与准备金",
         "status": LIVE,
         "source_name": "Federal Reserve H.4.1",
         "source_url": "https://www.federalreserve.gov/releases/h41/",
-        "reason": "直接使用联储官方发布，避免把 FRED 聚合接口误当成通用再分发许可。",
+        "reason": (
+            "已流式解析 Federal Reserve H.4.1 DDP 固定 ZIP，保留 Board "
+            "series ID、观察状态、原始文件 SHA-256 与每周修订。"
+        ),
         "priority": 1,
     },
     {
@@ -203,6 +202,16 @@ DATA_REQUIREMENTS = [
         "status": LIVE,
         "source_name": "U.S. Treasury FiscalData Daily Treasury Statement",
         "source_url": "https://fiscaldata.treasury.gov/datasets/daily-treasury-statement/operating-cash-balance",
+        "priority": 1,
+    },
+    {
+        "key": "nyfed-onrrp",
+        "page_key": "rrp-tga",
+        "metric_name": "ON RRP 接受额、利率与交易对手数",
+        "status": LIVE,
+        "source_name": "Federal Reserve Bank of New York Markets API",
+        "source_url": "https://markets.newyorkfed.org/static/docs/markets-api.html",
+        "reason": "使用 last 最近有效结果而非周末可能为空的 latest；缺失的交易对手分类不补 0。",
         "priority": 1,
     },
     {
@@ -223,6 +232,19 @@ DATA_REQUIREMENTS = [
         "priority": 1,
     },
     {
+        "key": "central-bank-liquidity-swaps",
+        "page_key": "global-dollar",
+        "metric_name": "央行美元流动性互换在途余额",
+        "status": LIVE,
+        "source_name": "Federal Reserve Bank of New York FX Swaps API",
+        "source_url": "https://markets.newyorkfed.org/static/docs/markets-api.html",
+        "reason": (
+            "按 settlementDate ≤ as_of < maturityDate 计算在途余额，"
+            "small-value 技术测试单列且不进入压力解读。"
+        ),
+        "priority": 2,
+    },
+    {
         "key": "bls-labor-inflation",
         "page_key": "economy",
         "metric_name": "就业、失业率、CPI 与 PPI",
@@ -238,7 +260,10 @@ DATA_REQUIREMENTS = [
         "status": NEEDS_SOURCE,
         "source_name": "U.S. Bureau of Economic Analysis API",
         "source_url": "https://apps.bea.gov/api/",
-        "reason": "官方 API 需免费注册密钥，待配置 BEA_API_KEY 后接入。",
+        "reason": (
+            "NIPA 1.1.1 GDP/PCE 适配器、修订日和单位口径已完成；"
+            "生产环境配置免费 BEA_API_KEY 后自动转为实时发布。"
+        ),
         "priority": 2,
     },
     {
@@ -248,7 +273,10 @@ DATA_REQUIREMENTS = [
         "status": NEEDS_SOURCE,
         "source_name": "U.S. Census Bureau API",
         "source_url": "https://www.census.gov/data/developers.html",
-        "reason": "需固化数据集、变量及修订口径。",
+        "reason": (
+            "MRTS 44X72 零售与餐饮服务季调销售适配器已完成；"
+            "生产环境配置免费 CENSUS_API_KEY 后发布。API 仅提供 latest vintage。"
+        ),
         "priority": 3,
     },
     {
@@ -300,8 +328,7 @@ DATA_REQUIREMENTS = [
             "均不自动授予 Atlas 存储和公开展示历史点位的权利。"
         ),
         "proxy_description": (
-            "可用 Treasury 官方收益率自行计算债券实现波动率并明确标注为自有代理，"
-            "不得命名为 MOVE。"
+            "可用 Treasury 官方收益率自行计算债券实现波动率并明确标注为自有代理，不得命名为 MOVE。"
         ),
         "priority": 1,
     },
@@ -321,6 +348,42 @@ DATA_REQUIREMENTS = [
             "压力指标；必须标注为代理，不能称为 ICE BofA OAS。"
         ),
         "priority": 1,
+    },
+    {
+        "key": "credit-hqm-proxy",
+        "page_key": "credit-spreads",
+        "metric_name": "Treasury HQM 高质量企业债月均 Par Yield 曲线",
+        "status": PROXY,
+        "source_name": "U.S. Treasury HQM Corporate Bond Yield Curve",
+        "source_url": (
+            "https://home.treasury.gov/data/treasury-coupon-issues-and-corporate-bond-"
+            "yield-curve/corporate-bond-yield-curve"
+        ),
+        "reason": "已接入 2Y/5Y/10Y/30Y 月均 par yield；这是高质量企业债收益率代理，不是 OAS、不含国债利差。",
+        "proxy_description": "仅用于观察高质量企业融资水平；ICE BofA 分评级 OAS 仍须采购。",
+        "priority": 2,
+    },
+    {
+        "key": "credit-sloos",
+        "page_key": "credit-stress",
+        "metric_name": "SLOOS 贷款标准与需求",
+        "status": LIVE,
+        "source_name": "Federal Reserve Senior Loan Officer Opinion Survey DDP",
+        "source_url": "https://www.federalreserve.gov/data/sloos.htm",
+        "reason": "直接解析 Board DDP 季度 SDMX，显示净收紧标准与贷款需求，保留调查口径和季度日期。",
+        "priority": 1,
+    },
+    {
+        "key": "credit-nfci-license",
+        "page_key": "credit-stress",
+        "metric_name": "Chicago Fed NFCI / ANFCI",
+        "status": LICENSE_REVIEW,
+        "source_name": "Federal Reserve Bank of Chicago NFCI",
+        "source_url": "https://www.chicagofed.org/research/data/nfci/current-data",
+        "vendor": "Federal Reserve Bank of Chicago permissions",
+        "product": "Written permission for commercial public republication",
+        "reason": "官方 CSV 技术可用，但现行 Legal Notices 仅明确允许署名的非商业复制；公开商业网站展示前需书面许可。",
+        "priority": 2,
     },
     {
         "key": "cdx-cds",
@@ -433,6 +496,19 @@ DATA_REQUIREMENTS = [
             "和自有摘要；Google News 只作发现入口，不抓取或托管媒体正文。"
         ),
         "priority": 2,
+    },
+    {
+        "key": "official-government-news",
+        "page_key": "news",
+        "metric_name": "SEC、U.S. Treasury 与 BLS 官方发布元数据",
+        "status": LIVE,
+        "source_name": "SEC Press Releases, Treasury GovDelivery and BLS official feeds",
+        "source_url": "https://www.sec.gov/news/pressreleases.rss",
+        "reason": (
+            "只保存标题、时间、固定来源、HTTPS 白名单原文链接和类别；"
+            "忽略 feed description/content/summary，不托管正文。"
+        ),
+        "priority": 1,
     },
     {
         "key": "sellside-research",
@@ -575,12 +651,13 @@ DATA_REQUIREMENTS = [
         "key": "github-project-radar",
         "page_key": "applications",
         "metric_name": "GitHub stars、forks、issues 与周增量",
-        "status": NEEDS_SOURCE,
+        "status": LIVE,
         "source_name": "GitHub REST API",
         "source_url": "https://docs.github.com/en/rest",
         "reason": (
-            "API 可用，但当前合成仓库清单必须先替换为经审核的真实项目种子库；"
-            "同时需保存每日快照、处理 rename/fork/archive，并遵守 attribution 和速率限制。"
+            "已接入 45 个经审核真实仓库的低频公开元数据并保存每日快照；"
+            "依据 2026-04-27 生效的 GitHub API Terms，仅用于署名研究展示，不做高吞吐、"
+            "转售、垃圾信息或个人数据销售。仓库描述和内容仍归属各权利人及项目许可。"
         ),
         "priority": 2,
     },
@@ -644,33 +721,51 @@ DATA_REQUIREMENTS = [
         "priority": 1,
     },
     {
+        "key": "liquidity-official-core",
+        "page_key": "liquidity",
+        "metric_name": "联储总资产、准备金、ON RRP、TGA 与净流动性",
+        "status": LIVE,
+        "source_name": "Federal Reserve H.4.1, NY Fed Markets API and Treasury FiscalData",
+        "reason": "净流动性以 USD millions 统一口径透明计算 WALCL − ON RRP − TGA。",
+        "priority": 1,
+    },
+    {
+        "key": "liquidity-lpi-composite",
+        "page_key": "liquidity",
+        "metric_name": "LPI 综合总分与六层分数",
+        "status": NEEDS_SOURCE,
+        "source_name": "Atlas Macro reviewed methodology over complete official/licensed inputs",
+        "reason": "离岸基差、中介能力、信用与资产反应层未齐备前不发布伪精确综合分。",
+        "priority": 1,
+    },
+    {
         "key": "nyfed-market-operations",
         "page_key": "operations",
         "metric_name": "Repo/RRP 操作、SRF 与 SOMA 明细",
-        "status": NEEDS_SOURCE,
+        "status": LIVE,
         "source_name": "Federal Reserve Bank of New York Markets API",
         "source_url": "https://markets.newyorkfed.org/static/docs/markets-api.html",
-        "reason": "官方端点已确认，尚待规范化操作类型、结算日、金额和修订。",
+        "reason": "已按操作日汇总 ON RRP 与常备回购，合并早午两场；SOMA 按周保留证券分项。",
         "priority": 1,
     },
     {
         "key": "fed-reserve-balances",
         "page_key": "reserves",
         "metric_name": "准备金余额、占银行资产比例与充裕度",
-        "status": NEEDS_SOURCE,
+        "status": LIVE,
         "source_name": "Federal Reserve H.4.1 Data Download Program",
         "source_url": "https://www.federalreserve.gov/datadownload/Choose.aspx?rel=H41",
-        "reason": "需直接规范化 WRESBAL 与银行资产分母，不能继续使用演示序列。",
+        "reason": "已直接规范化 H.4.1 Board series RESH4R_N.WW；银行资产占比及充裕度阈值仍待单独方法。",
         "priority": 1,
     },
     {
         "key": "sofr-distribution-volume",
         "page_key": "subsurface",
         "metric_name": "SOFR 分位、成交量和尾部融资压力",
-        "status": NEEDS_SOURCE,
+        "status": LIVE,
         "source_name": "Federal Reserve Bank of New York Markets API",
         "source_url": "https://markets.newyorkfed.org/static/docs/markets-api.html",
-        "reason": "基础记录已入库，尚待分位差、Z-score、SRF 激活和历史图的专页快照。",
+        "reason": "已发布 SOFR 99P、99P−SOFR、成交量和历史图，并合并现行常备回购每日两场操作。",
         "priority": 1,
     },
     {

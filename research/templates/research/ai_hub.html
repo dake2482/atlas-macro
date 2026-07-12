@@ -3,13 +3,10 @@
 {% block content %}
 <div class="content-wrap page-grid">
   {% include "research/includes/page_header.html" with eyebrow="AI industry intelligence" page_title="AI 产业观察" page_description="把算力、基础设施、模型与应用放进同一资本地图，用可追溯关系连接产业叙事与公司基本面。" as_of=as_of source=source %}
+  {% if required_notices %}<aside class="callout mb-4 text-[10px] leading-5" aria-label="数据授权声明">{% for notice in required_notices %}<p{% if not forloop.first %} class="mt-2"{% endif %}>{{ notice }}</p>{% endfor %}</aside>{% endif %}
   <section class="grid gap-3 md:grid-cols-2 xl:grid-cols-5" aria-label="覆盖范围">
     {% for stat in stats %}{% include "research/includes/metric_card.html" with metric=stat %}{% empty %}
-      <article class="metric-card"><p class="metric-label">产业节点</p><p class="metric-value">45</p><p class="metric-delta muted">九层产业链</p></article>
-      <article class="metric-card"><p class="metric-label">覆盖公司</p><p class="metric-value">219</p><p class="metric-delta muted">全球上市公司</p></article>
-      <article class="metric-card"><p class="metric-label">大模型</p><p class="metric-value">12</p><p class="metric-delta muted">能力 / 价格 / 时间线</p></article>
-      <article class="metric-card"><p class="metric-label">Coding Agents</p><p class="metric-value">11</p><p class="metric-delta muted">产品与基准</p></article>
-      <article class="metric-card"><p class="metric-label">应用项目</p><p class="metric-value">45</p><p class="metric-delta muted">GitHub 动量</p></article>
+      <p class="panel col-span-full p-5 text-[11px] muted">尚无通过来源审核的 AI 产业覆盖数据。</p>
     {% endfor %}
   </section>
   <div class="mt-4 grid gap-4 lg:grid-cols-2 xl:grid-cols-3">

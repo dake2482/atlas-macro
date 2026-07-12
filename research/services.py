@@ -6,11 +6,12 @@ import hashlib
 import json
 from collections import defaultdict
 from collections.abc import Callable, Iterable, Mapping
-from datetime import UTC, date, datetime, time
+from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 from typing import Any
 
 from django.db import transaction
+from django.db.models import Q
 from django.utils import timezone
 from django.utils.dateparse import parse_date, parse_datetime
 
@@ -18,6 +19,7 @@ from .models import (
     CFTCPosition,
     FedDocument,
     GitHubProject,
+    GitHubProjectSnapshot,
     IngestionRun,
     Instrument,
     Observation,
@@ -58,6 +60,15 @@ SOURCE_CATALOG: dict[str, dict[str, Any]] = {
         "ai_use_allowed": True,
         "terms_url": "https://www.newyorkfed.org/privacy/termsofuse",
         "attribution": "Federal Reserve Bank of New York",
+        "required_notice": (
+            f"© {date.today().year} Federal Reserve Bank of New York. Content from the New "
+            "York Fed subject to the Terms of Use at newyorkfed.org. The SOFR and EFFR data "
+            "are subject to those Terms. The New York Fed is not responsible for publication "
+            "of these data by Atlas Macro, does not sanction or endorse this republication, "
+            "and has no liability for its use. Atlas Macro is not affiliated with the New York "
+            "Fed. SOFR data use transaction data supplied under licence by DTCC Solutions LLC; "
+            "DTCC Solutions, its affiliates and upstream providers have no liability for this material."
+        ),
     },
     "us-treasury-rates": {
         "name": "U.S. Treasury Daily Interest Rates",
@@ -98,6 +109,46 @@ SOURCE_CATALOG: dict[str, dict[str, Any]] = {
         "ai_use_allowed": True,
         "terms_url": "https://www.bls.gov/developers/termsOfService.htm",
         "attribution": "U.S. Bureau of Labor Statistics",
+        "required_notice": (
+            "Source: U.S. Bureau of Labor Statistics. Access time is shown on each component. "
+            "Atlas Macro is not endorsed or certified by BLS."
+        ),
+    },
+    "bea": {
+        "name": "U.S. Bureau of Economic Analysis Data API",
+        "homepage": "https://apps.bea.gov/api/",
+        "kind": "official",
+        "license_status": Source.LicenseStatus.OPEN,
+        "license_scope": "Attributed official BEA data; non-endorsement notice required",
+        "redistribution_allowed": True,
+        "public_display_allowed": True,
+        "derived_display_allowed": True,
+        "historical_storage_allowed": True,
+        "ai_use_allowed": True,
+        "terms_url": "https://apps.bea.gov/API/_pdf/bea_api_tos.pdf",
+        "attribution": "U.S. Bureau of Economic Analysis",
+        "required_notice": (
+            "This product uses the Bureau of Economic Analysis (BEA) Data API but is not "
+            "endorsed or certified by BEA."
+        ),
+    },
+    "census": {
+        "name": "U.S. Census Bureau Data API",
+        "homepage": "https://www.census.gov/data/developers.html",
+        "kind": "official",
+        "license_status": Source.LicenseStatus.OPEN,
+        "license_scope": "Official Census API data under CC0 catalogue metadata",
+        "redistribution_allowed": True,
+        "public_display_allowed": True,
+        "derived_display_allowed": True,
+        "historical_storage_allowed": True,
+        "ai_use_allowed": True,
+        "terms_url": "https://www.census.gov/data/developers/about/terms-of-service.html",
+        "attribution": "U.S. Census Bureau",
+        "required_notice": (
+            "This product uses the Census Bureau Data API but is not endorsed or certified "
+            "by the Census Bureau."
+        ),
     },
     "cftc": {
         "name": "CFTC Public Reporting Environment",
@@ -117,20 +168,75 @@ SOURCE_CATALOG: dict[str, dict[str, Any]] = {
         "homepage": "https://www.federalreserve.gov/",
         "kind": "official",
         "license_status": Source.LicenseStatus.OPEN,
-        "license_scope": "Attributed official document metadata and public releases",
+        "license_scope": (
+            "Attributed Board-authored public-domain releases, document metadata and DDP data; "
+            "Federal Reserve seals and third-party material excluded"
+        ),
         "redistribution_allowed": True,
         "public_display_allowed": True,
         "derived_display_allowed": True,
         "historical_storage_allowed": True,
         "ai_use_allowed": True,
+        "terms_url": "https://www.federalreserve.gov/disclaimer.htm",
         "attribution": "Board of Governors of the Federal Reserve System",
+    },
+    "federal-reserve-sloos": {
+        "name": "Federal Reserve Senior Loan Officer Opinion Survey",
+        "homepage": "https://www.federalreserve.gov/data/sloos.htm",
+        "kind": "official",
+        "license_status": Source.LicenseStatus.OPEN,
+        "license_scope": "Attributed Board-authored public-domain DDP survey data",
+        "redistribution_allowed": True,
+        "public_display_allowed": True,
+        "derived_display_allowed": True,
+        "historical_storage_allowed": True,
+        "ai_use_allowed": True,
+        "terms_url": "https://www.federalreserve.gov/disclaimer.htm",
+        "attribution": "Board of Governors of the Federal Reserve System",
+    },
+    "us-treasury-hqm": {
+        "name": "U.S. Treasury HQM Corporate Bond Yield Curve",
+        "homepage": (
+            "https://home.treasury.gov/data/treasury-coupon-issues-and-corporate-bond-"
+            "yield-curve/corporate-bond-yield-curve"
+        ),
+        "kind": "official",
+        "license_status": Source.LicenseStatus.OPEN,
+        "license_scope": "Attributed U.S. government HQM curve data; not an OAS or CDS quote",
+        "redistribution_allowed": True,
+        "public_display_allowed": True,
+        "derived_display_allowed": True,
+        "historical_storage_allowed": True,
+        "ai_use_allowed": True,
+        "terms_url": (
+            "https://www.govinfo.gov/content/pkg/USCODE-2024-title17/html/"
+            "USCODE-2024-title17-chap1-sec105.htm"
+        ),
+        "attribution": "U.S. Department of the Treasury",
+    },
+    "chicago-fed-nfci": {
+        "name": "Chicago Fed National Financial Conditions Index",
+        "homepage": "https://www.chicagofed.org/research/data/nfci/current-data",
+        "kind": "official",
+        "license_status": Source.LicenseStatus.REVIEW,
+        "license_scope": "Internal licence review only; commercial republication not confirmed",
+        "redistribution_allowed": False,
+        "public_display_allowed": False,
+        "derived_display_allowed": False,
+        "historical_storage_allowed": False,
+        "ai_use_allowed": False,
+        "terms_url": "https://www.chicagofed.org/utilities/legal-notices",
+        "attribution": "Federal Reserve Bank of Chicago",
     },
     "sec": {
         "name": "SEC EDGAR",
         "homepage": "https://www.sec.gov/edgar",
         "kind": "official",
         "license_status": Source.LicenseStatus.OPEN,
-        "license_scope": "Public filings; issuer material retains its own rights",
+        "license_scope": (
+            "Public filings and SEC-authored website metadata with attribution; issuer and "
+            "third-party material retains its own rights"
+        ),
         "redistribution_allowed": True,
         "public_display_allowed": True,
         "derived_display_allowed": True,
@@ -138,18 +244,40 @@ SOURCE_CATALOG: dict[str, dict[str, Any]] = {
         "ai_use_allowed": True,
         "attribution": "U.S. Securities and Exchange Commission",
     },
+    "us-treasury-news": {
+        "name": "U.S. Treasury Official Press Releases",
+        "homepage": "https://home.treasury.gov/news/press-releases",
+        "kind": "official",
+        "license_status": Source.LicenseStatus.OPEN,
+        "license_scope": "U.S. government release metadata and canonical links only",
+        "redistribution_allowed": True,
+        "public_display_allowed": True,
+        "derived_display_allowed": True,
+        "historical_storage_allowed": True,
+        "ai_use_allowed": True,
+        "terms_url": "https://home.treasury.gov/footer/privacy-act/privacy-policy",
+        "attribution": "U.S. Department of the Treasury",
+    },
     "github": {
         "name": "GitHub REST API",
         "homepage": "https://docs.github.com/en/rest",
         "kind": "public-api",
-        "license_status": Source.LicenseStatus.REVIEW,
-        "license_scope": "Metadata only; repository licenses apply separately",
-        "redistribution_allowed": False,
+        "license_status": Source.LicenseStatus.OPEN,
+        "license_scope": (
+            "Low-throughput, attributed REST API repository metadata for a research display; "
+            "no resale, spam, personal-data sale or repository-content republication"
+        ),
+        "redistribution_allowed": True,
         "public_display_allowed": True,
         "derived_display_allowed": True,
         "historical_storage_allowed": True,
         "ai_use_allowed": False,
+        "terms_url": "https://docs.github.com/en/site-policy/github-terms/github-terms-of-service",
         "attribution": "GitHub",
+        "required_notice": (
+            "Repository metadata supplied by the GitHub REST API under GitHub's Terms of "
+            "Service; descriptions and repository content remain subject to their owners' licences."
+        ),
     },
     "okx": {
         "name": "OKX Public Market Data",
@@ -208,8 +336,24 @@ def ensure_source(key: str, **overrides: Any) -> Source:
         "redistribution_allowed",
         "attribution",
     }
-    source_defaults = {field: value for field, value in defaults.items() if field in source_field_names}
+    source_defaults = {
+        field: value for field, value in defaults.items() if field in source_field_names
+    }
     source, created = Source.objects.get_or_create(key=key, defaults=source_defaults)
+    current_decision = None if created else source.licenses.filter(is_current=True).first()
+    if current_decision and (
+        current_decision.status
+        in {Source.LicenseStatus.LICENSED, Source.LicenseStatus.RESTRICTED}
+        or current_decision.reviewed_at is not None
+        or (
+            bool(current_decision.reviewed_by)
+            and current_decision.reviewed_by != "clean-room seed policy"
+        )
+    ):
+        # A reviewed admin decision is authoritative. In particular, a later
+        # ingestion must never reactivate a source whose publication rights
+        # were revoked or restricted in the licence ledger.
+        return source
     # Correct unsafe seed defaults while preserving a later explicit licensed contract.
     if not created and source.license_status != Source.LicenseStatus.LICENSED:
         for field in (
@@ -225,12 +369,14 @@ def ensure_source(key: str, **overrides: Any) -> Source:
                 setattr(source, field, source_defaults[field])
         source.save()
     if source.license_status == Source.LicenseStatus.LICENSED and source.licenses.filter(
-        status=Source.LicenseStatus.LICENSED
+        status=Source.LicenseStatus.LICENSED,
+        is_current=True,
     ).exists():
         return source
     licence_defaults = {
         "status": defaults.get("license_status", Source.LicenseStatus.REVIEW),
         "scope": defaults.get("license_scope", "Terms review required before publication"),
+        "required_notice": defaults.get("required_notice", ""),
         "terms_url": defaults.get("terms_url", defaults.get("homepage", "")),
         "redistribution_allowed": defaults.get("redistribution_allowed", False),
         "public_display_allowed": defaults.get("public_display_allowed", False),
@@ -239,13 +385,78 @@ def ensure_source(key: str, **overrides: Any) -> Source:
         "ai_use_allowed": defaults.get("ai_use_allowed", False),
         "territories": defaults.get("territories", "Worldwide public web"),
     }
-    if not source.licenses.filter(**licence_defaults).exists():
-        SourceLicense.objects.create(
-            source=source,
-            **licence_defaults,
-            notes="Created automatically on first ingestion; review in Django Admin.",
-        )
+    matching = source.licenses.filter(**licence_defaults).order_by("-created_at").first()
+    if matching is None or not matching.is_current:
+        with transaction.atomic():
+            Source.objects.select_for_update().get(pk=source.pk)
+            source.licenses.filter(is_current=True).update(is_current=False)
+            if matching is None:
+                SourceLicense.objects.create(
+                    source=source,
+                    is_current=True,
+                    **licence_defaults,
+                    notes="Created automatically on first ingestion; review in Django Admin.",
+                )
+            else:
+                matching.is_current = True
+                matching.save(update_fields=["is_current", "updated_at"])
     return source
+
+
+def public_display_license_q(prefix: str = "source__licenses") -> Q:
+    """Return the current, effective public-display licence predicate."""
+
+    today = timezone.localdate()
+    return (
+        Q(**{f"{prefix}__is_current": True})
+        & Q(
+            **{
+                f"{prefix}__status__in": (
+                    Source.LicenseStatus.OPEN,
+                    Source.LicenseStatus.LICENSED,
+                )
+            }
+        )
+        & Q(**{f"{prefix}__public_display_allowed": True})
+        & (Q(**{f"{prefix}__valid_from__isnull": True}) | Q(**{f"{prefix}__valid_from__lte": today}))
+        & (Q(**{f"{prefix}__valid_until__isnull": True}) | Q(**{f"{prefix}__valid_until__gte": today}))
+    )
+
+
+def publicly_displayable_source_keys(keys: Iterable[str]) -> bool:
+    """Return True only when every source has one current effective licence."""
+
+    required = {str(key) for key in keys if key}
+    if not required:
+        return False
+    allowed = set(
+        Source.objects.filter(key__in=required)
+        .filter(public_display_license_q("licenses"))
+        .values_list("key", flat=True)
+    )
+    return allowed == required
+
+
+def public_source_notices(keys: Iterable[str]) -> list[str]:
+    """Return required notices for the current effective source licences."""
+
+    required = {str(key) for key in keys if key}
+    if not required:
+        return []
+    notices = (
+        SourceLicense.objects.filter(
+            source__key__in=required,
+            is_current=True,
+            status__in=(Source.LicenseStatus.OPEN, Source.LicenseStatus.LICENSED),
+            public_display_allowed=True,
+        )
+        .filter(Q(valid_from__isnull=True) | Q(valid_from__lte=timezone.localdate()))
+        .filter(Q(valid_until__isnull=True) | Q(valid_until__gte=timezone.localdate()))
+        .exclude(required_notice="")
+        .order_by("source__key")
+        .values_list("required_notice", flat=True)
+    )
+    return list(dict.fromkeys(notices))
 
 
 def begin_ingestion(
@@ -328,11 +539,22 @@ def record_provider_result(
             status=IngestionRun.Status.FAILED,
             error=f"{type(exc).__name__}: {exc}",
         )
+    partial_quality = bool(result.metadata.get("missing_series")) or (
+        result.metadata.get("quality_status") == "partial"
+    )
+    status = (
+        IngestionRun.Status.PARTIAL
+        if row_count == 0 or partial_quality
+        else IngestionRun.Status.SUCCESS
+    )
+    metadata = dict(result.metadata)
+    if row_count == 0:
+        metadata.setdefault("quality_reason", "provider returned no persistable rows")
     return finish_ingestion(
         run,
-        status=IngestionRun.Status.SUCCESS,
+        status=status,
         row_count=row_count,
-        metadata=result.metadata,
+        metadata=metadata,
     )
 
 
@@ -359,6 +581,85 @@ SERIES_CATALOG = {
     "CUSR0000SA0": ("Consumer Price Index for All Urban Consumers", "index", "monthly"),
     "CUSR0000SA0L1E": ("Core CPI, All Items Less Food and Energy", "index", "monthly"),
     "WPSFD4": ("Producer Price Index: Final Demand", "index", "monthly"),
+    "BEA-A191RL": ("Real GDP Growth, SAAR", "%", "quarterly"),
+    "BEA-DPCERL": ("Real Personal Consumption Expenditures Growth, SAAR", "%", "quarterly"),
+    "CENSUS-MRTS-44X72-SM-SA": (
+        "Retail Trade and Food Services Sales, Seasonally Adjusted",
+        "USD millions",
+        "monthly",
+    ),
+    "SUBLPDMBS_XWB_N.Q": (
+        "Business-loan Lending Standards",
+        "net percentage",
+        "quarterly",
+    ),
+    "SUBLPDMBD_XWB_N.Q": (
+        "Business-loan Demand",
+        "net percentage",
+        "quarterly",
+    ),
+    "SUBLPDMHS_XWB_N.Q": (
+        "Household-loan Lending Standards",
+        "net percentage",
+        "quarterly",
+    ),
+    "SUBLPDMHD_XWB_N.Q": (
+        "Household-loan Demand",
+        "net percentage",
+        "quarterly",
+    ),
+    "SUBLPDCILS_N.Q": (
+        "C&I Lending Standards, Large and Middle-market Firms",
+        "net percentage",
+        "quarterly",
+    ),
+    "SUBLPDCISS_N.Q": (
+        "C&I Lending Standards, Small Firms",
+        "net percentage",
+        "quarterly",
+    ),
+    "HQM-PAR-2Y": ("Treasury HQM 2-year Par Yield", "%", "monthly"),
+    "HQM-PAR-5Y": ("Treasury HQM 5-year Par Yield", "%", "monthly"),
+    "HQM-PAR-10Y": ("Treasury HQM 10-year Par Yield", "%", "monthly"),
+    "HQM-PAR-30Y": ("Treasury HQM 30-year Par Yield", "%", "monthly"),
+    "ONRRP": ("Overnight Reverse Repo Accepted Amount", "USD millions", "daily"),
+    "ONRRP-RATE": ("Overnight Reverse Repo Offering Rate", "%", "daily"),
+    "ONRRP-PARTICIPANTS": ("Overnight Reverse Repo Counterparties", "count", "daily"),
+    "SRP": ("Standing Repo Accepted Amount", "USD millions", "daily"),
+    "SRP-TREASURY": ("Standing Repo Treasury Collateral", "USD millions", "daily"),
+    "SRP-AGENCY": ("Standing Repo Agency Collateral", "USD millions", "daily"),
+    "SRP-MBS": ("Standing Repo MBS Collateral", "USD millions", "daily"),
+    "SRP-RATE": ("Standing Repo Offering Rate", "%", "daily"),
+    "SOMA-TOTAL": ("SOMA Domestic Securities Total", "USD millions", "weekly"),
+    "SOMA-BILLS": ("SOMA Treasury Bills", "USD millions", "weekly"),
+    "SOMA-NOTES-BONDS": ("SOMA Treasury Notes and Bonds", "USD millions", "weekly"),
+    "SOMA-TIPS": ("SOMA TIPS", "USD millions", "weekly"),
+    "SOMA-FRN": ("SOMA Floating Rate Notes", "USD millions", "weekly"),
+    "SOMA-TIPS-INFLATION-COMPENSATION": (
+        "SOMA TIPS Inflation Compensation",
+        "USD millions",
+        "weekly",
+    ),
+    "SOMA-MBS": ("SOMA Agency MBS", "USD millions", "weekly"),
+    "SOMA-CMBS": ("SOMA Agency CMBS", "USD millions", "weekly"),
+    "SOMA-AGENCIES": ("SOMA Agency Debt", "USD millions", "weekly"),
+    "FXSWAP-USD-DRAWDOWN": ("USD Liquidity Swap Drawdowns", "USD millions", "daily"),
+    "FXSWAP-USD-OUTSTANDING": (
+        "USD Liquidity Swaps Outstanding",
+        "USD millions",
+        "daily",
+    ),
+    "FXSWAP-USD-OUTSTANDING-SMALL-VALUE": (
+        "USD Liquidity Swap Small Value Exercises",
+        "USD millions",
+        "daily",
+    ),
+    "WALCL": ("Federal Reserve Total Assets", "USD millions", "weekly"),
+    "WSHOTSL": ("Federal Reserve Treasury Securities Held Outright", "USD millions", "weekly"),
+    "WSHOMCB": ("Federal Reserve Mortgage-Backed Securities", "USD millions", "weekly"),
+    "WRBWFRBL": ("Reserve Balances with Federal Reserve Banks", "USD millions", "weekly"),
+    "WDTGAL": ("Treasury General Account at Federal Reserve Banks", "USD millions", "weekly"),
+    "SWPT": ("Central Bank Liquidity Swaps on H.4.1", "USD millions", "weekly"),
 }
 
 
@@ -369,7 +670,9 @@ def store_series_observations(result: ProviderResult, source: Source, run: Inges
     for record in result.records:
         if record.get("series_id") and record.get("date") and record.get("value") is not None:
             grouped[str(record["series_id"])].append(record)
-    now = timezone.now()
+    fetched_at = result.fetched_at
+    if timezone.is_naive(fetched_at):
+        fetched_at = timezone.make_aware(fetched_at, UTC)
     count = 0
     for series_id, records in grouped.items():
         name, unit, frequency = SERIES_CATALOG.get(
@@ -404,7 +707,7 @@ def store_series_observations(result: ProviderResult, source: Source, run: Inges
                 defaults={
                     "value": record["value"],
                     "as_of": value_date,
-                    "fetched_at": now,
+                    "fetched_at": fetched_at,
                     "batch_id": run.batch_id,
                     "quality_status": Observation.Quality.FRESH,
                     "metadata": metadata,
@@ -488,22 +791,51 @@ def _safe_decimal(value: Any) -> Decimal | None:
         return None
 
 
-def store_github_repository(result: ProviderResult, _: Source, __: IngestionRun) -> int:
+def store_github_repository(result: ProviderResult, source: Source, run: IngestionRun) -> int:
     count = 0
     for record in result.records:
         pushed_at = parse_datetime(record.get("pushed_at") or "")
-        GitHubProject.objects.update_or_create(
+        project, _ = GitHubProject.objects.update_or_create(
             repo=record["repo"],
             defaults={
-                "category": (record.get("topics") or ["AI 应用"])[0],
+                "category": record.get("category") or (record.get("topics") or ["AI 应用"])[0],
                 "description": record.get("description", ""),
                 "stars": record.get("stars", 0),
                 "forks": record.get("forks", 0),
                 "open_issues": record.get("open_issues", 0),
                 "pushed_at": pushed_at,
                 "homepage": record.get("homepage") or f"https://github.com/{record['repo']}",
+                "source": source,
+                "data_as_of": result.fetched_at,
+                "quality_status": Observation.Quality.FRESH,
+                "archived": bool(record.get("archived", False)),
+                "is_fork": bool(record.get("is_fork", False)),
+                "license_spdx": record.get("license", "") or "",
             },
         )
+        snapshot_date = result.fetched_at.date()
+        GitHubProjectSnapshot.objects.update_or_create(
+            project=project,
+            snapshot_date=snapshot_date,
+            defaults={
+                "stars": record.get("stars", 0),
+                "forks": record.get("forks", 0),
+                "open_issues": record.get("open_issues", 0),
+                "pushed_at": pushed_at,
+                "fetched_at": result.fetched_at,
+                "batch_id": run.batch_id,
+                "source": source,
+            },
+        )
+        baseline = (
+            project.snapshots.filter(snapshot_date__lte=snapshot_date - timedelta(days=7))
+            .order_by("-snapshot_date")
+            .first()
+        )
+        stars_7d = max(0, project.stars - baseline.stars) if baseline else 0
+        project.stars_7d = stars_7d
+        project.momentum_score = Decimal(stars_7d)
+        project.save(update_fields=["stars_7d", "momentum_score", "updated_at"])
         count += 1
     return count
 
@@ -537,19 +869,30 @@ def store_fed_documents(result: ProviderResult, _: Source, __: IngestionRun) -> 
         published_at = parse_datetime(record.get("published_at") or "")
         if not published_at:
             continue
-        FedDocument.objects.update_or_create(
+        create_defaults = {
+            "document_type": record["document_type"],
+            "title": record["title"],
+            "speaker": "",
+            "summary": record.get("summary", ""),
+            "key_points": [],
+            "published_at": published_at,
+            "hawkish_score": 0,
+            "original_url": record["original_url"],
+        }
+        document, created = FedDocument.objects.get_or_create(
             slug=record["slug"],
-            defaults={
+            defaults=create_defaults,
+        )
+        if not created:
+            upstream_fields = {
                 "document_type": record["document_type"],
                 "title": record["title"],
-                "speaker": "",
-                "summary": record.get("summary", ""),
-                "key_points": [],
                 "published_at": published_at,
-                "hawkish_score": 0,
                 "original_url": record["original_url"],
-            },
-        )
+            }
+            for field, value in upstream_fields.items():
+                setattr(document, field, value)
+            document.save(update_fields=[*upstream_fields, "updated_at"])
         count += 1
     return count
 

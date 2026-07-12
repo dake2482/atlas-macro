@@ -175,7 +175,9 @@ function rowsToSeries(raw) {
     };
   }
   const labels = raw.map((row, index) => row.label ?? row.date ?? row.name ?? index + 1);
-  const keys = [...new Set(raw.flatMap((row) => Object.keys(row || {})))].filter((key) => !["label", "date", "name"].includes(key));
+  const keys = [...new Set(raw.flatMap((row) => Object.keys(row || {})))].filter(
+    (key) => !["label", "date", "name"].includes(key) && !key.startsWith("_"),
+  );
   return {
     labels,
     series: keys.map((key) => ({ name: key, data: raw.map((row) => Number(row[key]) || 0) })),

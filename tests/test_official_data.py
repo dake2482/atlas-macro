@@ -1,20 +1,30 @@
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import httpx
 import pytest
+from django.utils import timezone
 
-from research.models import Observation, SeriesDefinition, Source, SourceLicense
-from research.official_data import publish_official_dashboards
+from research.models import (
+    DashboardSnapshot,
+    IngestionRun,
+    Observation,
+    SeriesDefinition,
+    Source,
+    SourceLicense,
+)
+from research.official_data import _fresh_until, publish_official_dashboards
 from research.providers import (
     BLSProvider,
     CFTCProvider,
     NYFedMarketsProvider,
+    ProviderResult,
     TreasuryRatesProvider,
 )
+from research.services import record_provider_result, store_series_observations
 
 
 def _client(handler):
@@ -48,6 +58,276 @@ def test_ny_fed_provider_normalizes_reference_rate_metadata():
     assert result.records[0]["metadata"]["percentPercentile99"] == 3.65
 
 
+def test_ny_fed_provider_normalizes_reverse_repo_results_without_inventing_propositions():
+    def handler(request):
+        assert request.url.path.endswith("/api/rp/reverserepo/fixed/results/last/2.json")
+        return httpx.Response(
+            200,
+            json={
+                "repo": {
+                    "operations": [
+                        {
+                            "operationId": "RP 071026 26",
+                            "auctionStatus": "Results",
+                            "operationDate": "2026-07-10",
+                            "settlementDate": "2026-07-10",
+                            "maturityDate": "2026-07-13",
+                            "operationType": "Reverse Repo",
+                            "operationMethod": "Fixed Rate",
+                            "termCalenderDays": 3,
+                            "participatingCpty": 3,
+                            "acceptedCpty": 3,
+                            "totalAmtSubmitted": 545000000,
+                            "totalAmtAccepted": 545000000,
+                            "details": [
+                                {
+                                    "securityType": "Treasury",
+                                    "amtAccepted": 545000000,
+                                    "percentOfferingRate": 3.50,
+                                    "percentAwardRate": 3.50,
+                                }
+                            ],
+                        }
+                    ]
+                }
+            },
+        )
+
+    result = NYFedMarketsProvider(client=_client(handler)).reverse_repo_results(limit=2)
+    records = {item["series_id"]: item for item in result.records}
+
+    assert result.ok
+    assert records["ONRRP"]["value"] == Decimal("545")
+    assert records["ONRRP-RATE"]["value"] == Decimal("3.5")
+    assert records["ONRRP-PARTICIPANTS"]["value"] == Decimal("3")
+    assert records["ONRRP"]["metadata"]["term_calendar_days"] == 3
+    assert not any(item["series_id"].startswith("ONRRP-MMF") for item in result.records)
+    assert result.metadata["terms_url"].endswith("/privacy/termsofuse")
+
+
+def test_ny_fed_provider_aggregates_both_daily_standing_repo_windows():
+    operations = [
+        {
+            "operationId": "RP 070726 25",
+            "operationDate": "2026-07-07",
+            "operationType": "Repo",
+            "operationMethod": "Full Allotment",
+            "releaseTime": "08:15",
+            "totalAmtAccepted": 0,
+            "details": [
+                {
+                    "securityType": security_type,
+                    "amtAccepted": 0,
+                    "percentOfferingRate": 3.75,
+                }
+                for security_type in ("Treasury", "Agency", "Mortgage-Backed")
+            ],
+        },
+        {
+            "operationId": "RP 070726 27",
+            "operationDate": "2026-07-07",
+            "operationType": "Repo",
+            "operationMethod": "Full Allotment",
+            "releaseTime": "13:30",
+            "totalAmtAccepted": 3000000,
+            "details": [
+                {
+                    "securityType": security_type,
+                    "amtAccepted": 1000000,
+                    "percentOfferingRate": 3.75,
+                }
+                for security_type in ("Treasury", "Agency", "Mortgage-Backed")
+            ],
+        },
+    ]
+
+    def handler(request):
+        assert request.url.path.endswith("/api/rp/repo/allotment/results/last/4.json")
+        return httpx.Response(200, json={"repo": {"operations": operations}})
+
+    result = NYFedMarketsProvider(client=_client(handler)).standing_repo_results(limit=4)
+    records = {item["series_id"]: item for item in result.records}
+
+    assert result.ok
+    assert records["SRP"]["value"] == Decimal("3")
+    assert records["SRP"]["metadata"]["operation_count"] == 2
+    assert records["SRP-TREASURY"]["value"] == Decimal("1")
+    assert records["SRP-AGENCY"]["value"] == Decimal("1")
+    assert records["SRP-MBS"]["value"] == Decimal("1")
+    assert records["SRP-RATE"]["value"] == Decimal("3.75")
+
+
+def test_ny_fed_provider_normalizes_soma_summary_components_in_usd_millions():
+    payload = {
+        "soma": {
+            "summary": [
+                {
+                    "asOfDate": "2026-07-08",
+                    "mbs": "1940863715777.00",
+                    "cmbs": "7533878406.10",
+                    "tips": "282633819500",
+                    "frn": "",
+                    "tipsInflationCompensation": "109065609408.32",
+                    "notesbonds": "3593418008900",
+                    "bills": "499248926700",
+                    "agencies": "2347000000",
+                    "total": "6344428175083.10",
+                }
+            ]
+        }
+    }
+
+    def handler(request):
+        assert request.url.path.endswith("/api/soma/summary.json")
+        return httpx.Response(200, json=payload)
+
+    result = NYFedMarketsProvider(client=_client(handler)).soma_summary()
+    records = {item["series_id"]: item for item in result.records}
+
+    assert result.ok
+    assert records["SOMA-TOTAL"]["value"] == Decimal("6344428.1750831")
+    assert records["SOMA-BILLS"]["value"] == Decimal("499248.9267")
+    assert "SOMA-FRN" not in records
+    assert records["SOMA-TOTAL"]["metadata"]["publication_frequency"] == "weekly"
+
+
+def test_ny_fed_provider_calculates_active_usd_fx_swaps_and_separates_small_value():
+    operations = [
+        {
+            "operationType": "U.S. Dollar Liquidity Swap",
+            "counterparty": "European Central Bank",
+            "currency": "USD",
+            "tradeDate": "2026-07-08",
+            "settlementDate": "2026-07-09",
+            "maturityDate": "2026-07-16",
+            "termInDays": 7,
+            "amount": 128000000,
+            "interestRate": 3.88,
+            "isSmallValue": "",
+        },
+        {
+            "operationType": "U.S. Dollar Liquidity Swap",
+            "counterparty": "Bank of England",
+            "currency": "USD",
+            "tradeDate": "2026-07-08",
+            "settlementDate": "2026-07-09",
+            "maturityDate": "2026-07-16",
+            "termInDays": 7,
+            "amount": 5000000,
+            "interestRate": 3.88,
+            "isSmallValue": "",
+        },
+        {
+            "operationType": "U.S. Dollar Liquidity Swap",
+            "counterparty": "Bank of Japan",
+            "currency": "USD",
+            "tradeDate": "2026-07-07",
+            "settlementDate": "2026-07-09",
+            "maturityDate": "2026-07-16",
+            "termInDays": 7,
+            "amount": 2000000,
+            "interestRate": 3.88,
+            "isSmallValue": "",
+        },
+        {
+            "operationType": "U.S. Dollar Liquidity Swap",
+            "counterparty": "Swiss National Bank",
+            "currency": "USD",
+            "tradeDate": "2026-07-09",
+            "settlementDate": "2026-07-10",
+            "maturityDate": "2026-07-17",
+            "termInDays": 7,
+            "amount": 50000,
+            "interestRate": 3.88,
+            "isSmallValue": "Y",
+        },
+        {
+            "operationType": "U.S. Dollar Liquidity Swap",
+            "counterparty": "European Central Bank",
+            "currency": "USD",
+            "tradeDate": "2026-07-01",
+            "settlementDate": "2026-07-02",
+            "maturityDate": "2026-07-09",
+            "termInDays": 7,
+            "amount": 170000000,
+            "interestRate": 3.88,
+            "isSmallValue": "",
+        },
+    ]
+
+    def handler(request):
+        assert request.url.path.endswith("/api/fxs/usdollar/last/5.json")
+        return httpx.Response(200, json={"fxSwaps": {"operations": operations}})
+
+    result = NYFedMarketsProvider(client=_client(handler)).usd_fx_swaps(limit=5, as_of="2026-07-12")
+    records = {item["series_id"]: item for item in result.records}
+
+    assert result.ok
+    assert records["FXSWAP-USD-OUTSTANDING"]["value"] == Decimal("135.05")
+    assert records["FXSWAP-USD-OUTSTANDING-SMALL-VALUE"]["value"] == Decimal("0.05")
+    assert records["FXSWAP-USD-ECB-OUTSTANDING"]["value"] == Decimal("128")
+    assert records["FXSWAP-USD-BOE-OUTSTANDING"]["value"] == Decimal("5")
+    assert records["FXSWAP-USD-BOJ-OUTSTANDING"]["value"] == Decimal("2")
+    assert records["FXSWAP-USD-SNB-OUTSTANDING"]["value"] == Decimal("0.05")
+    assert records["FXSWAP-USD-OUTSTANDING"]["metadata"]["formula"] == (
+        "settlementDate <= as_of < maturityDate"
+    )
+
+
+@pytest.mark.django_db
+def test_ny_fed_desk_observations_publish_operations_and_global_dollar_pages():
+    fetched_at = datetime(2026, 7, 12, 1, tzinfo=UTC)
+    result = ProviderResult(
+        provider="ny-fed-markets",
+        dataset="desk-integration-fixture",
+        fetched_at=fetched_at,
+        records=[
+            {"series_id": "ONRRP", "date": "2026-07-10", "value": Decimal("545")},
+            {
+                "series_id": "ONRRP-RATE",
+                "date": "2026-07-10",
+                "value": Decimal("3.50"),
+            },
+            {
+                "series_id": "ONRRP-PARTICIPANTS",
+                "date": "2026-07-10",
+                "value": Decimal("3"),
+            },
+            {"series_id": "SRP", "date": "2026-07-10", "value": Decimal("0")},
+            {
+                "series_id": "SRP-RATE",
+                "date": "2026-07-10",
+                "value": Decimal("3.75"),
+            },
+            {
+                "series_id": "SOMA-TOTAL",
+                "date": "2026-07-08",
+                "value": Decimal("6344428"),
+            },
+            {
+                "series_id": "FXSWAP-USD-OUTSTANDING",
+                "date": "2026-07-12",
+                "value": Decimal("135"),
+            },
+            {
+                "series_id": "FXSWAP-USD-OUTSTANDING-SMALL-VALUE",
+                "date": "2026-07-12",
+                "value": Decimal("0"),
+            },
+        ],
+    )
+    record_provider_result(result, persist=store_series_observations)
+
+    dashboards = {item.key: item for item in publish_official_dashboards()}
+
+    assert {"operations", "rrp-tga", "global-dollar"} <= dashboards.keys()
+    operations = {item["key"]: item for item in dashboards["operations"].data["metrics"]}
+    assert operations["onrrp"]["display_value"] == "0.545 USD bn"
+    assert operations["soma-total"]["display_value"] == "6.34 USD tn"
+    global_dollar = {item["key"]: item for item in dashboards["global-dollar"].data["metrics"]}
+    assert global_dollar["fxswap-usd-outstanding"]["display_value"] == "135 USD mn"
+
+
 def test_treasury_provider_normalizes_nominal_curve_xml():
     payload = """<?xml version="1.0"?>
     <feed xmlns="http://www.w3.org/2005/Atom"
@@ -59,9 +339,7 @@ def test_treasury_provider_normalizes_nominal_curve_xml():
       </m:properties></content></entry>
     </feed>"""
 
-    provider = TreasuryRatesProvider(
-        client=_client(lambda _: httpx.Response(200, text=payload))
-    )
+    provider = TreasuryRatesProvider(client=_client(lambda _: httpx.Response(200, text=payload)))
     result = provider.yield_curve(year=2026)
 
     assert result.ok
@@ -183,4 +461,258 @@ def test_public_dashboard_publisher_requires_approved_source_licence():
 
     assert fed_funds.data["demo"] is False
     assert {item["label"] for item in fed_funds.data["metrics"]} >= {"SOFR", "EFFR"}
-    assert all("Approved Official Fixture" in item["source"] for item in fed_funds.data["metrics"][:2])
+    assert all(
+        "Approved Official Fixture" in item["source"] for item in fed_funds.data["metrics"][:2]
+    )
+
+
+@pytest.mark.django_db
+def test_empty_real_snapshot_never_inherits_registry_demo_metrics(client):
+    source = Source.objects.create(
+        key="empty-real-snapshot",
+        name="Empty real snapshot fixture",
+        license_status=Source.LicenseStatus.OPEN,
+        redistribution_allowed=True,
+    )
+    now = datetime.now(UTC)
+    DashboardSnapshot.objects.create(
+        key="rates",
+        title="Rates empty fixture",
+        as_of=now,
+        source=source,
+        is_published=True,
+        data={"demo": False, "metrics": [], "chart_data": [], "sections": []},
+    )
+
+    content = client.get("/rates/").content.decode()
+
+    assert "5,482.31" not in content
+    assert "42,48,45" not in content
+    assert "清洁室演示快照" not in content
+
+
+@pytest.mark.django_db
+def test_ai_hub_does_not_claim_seed_coverage_when_public_sets_are_empty(client, seeded_platform):
+    content = client.get("/ai-industry/").content.decode()
+
+    assert '<p class="metric-value">45</p>' not in content
+    assert '<p class="metric-value">219</p>' not in content
+    assert "待接入" in content
+
+
+def _licensed_source(
+    key: str,
+    *,
+    current_status: str = Source.LicenseStatus.OPEN,
+    public_display_allowed: bool = True,
+    valid_until=None,
+    include_historical_open: bool = False,
+) -> Source:
+    source = Source.objects.create(
+        key=key,
+        name=f"{key} fixture",
+        license_status=current_status,
+        redistribution_allowed=public_display_allowed,
+    )
+    if include_historical_open:
+        SourceLicense.objects.create(
+            source=source,
+            is_current=False,
+            status=Source.LicenseStatus.OPEN,
+            scope="Historical public-display decision",
+            public_display_allowed=True,
+            redistribution_allowed=True,
+        )
+    SourceLicense.objects.create(
+        source=source,
+        is_current=True,
+        status=current_status,
+        scope="Current fixture decision",
+        public_display_allowed=public_display_allowed,
+        redistribution_allowed=public_display_allowed,
+        valid_until=valid_until,
+    )
+    return source
+
+
+@pytest.mark.django_db
+def test_unchanged_official_value_does_not_publish_duplicate_dashboard_snapshots():
+    value_date = timezone.localdate().isoformat()
+    first_fetched_at = timezone.now() - timedelta(hours=1)
+    first_run = record_provider_result(
+        ProviderResult(
+            provider="ny-fed-markets",
+            dataset="dedup-fixture:first",
+            fetched_at=first_fetched_at,
+            records=[{"series_id": "SOFR", "date": value_date, "value": "3.53"}],
+        ),
+        persist=store_series_observations,
+    )
+    first_publication = publish_official_dashboards()
+    snapshot_count = DashboardSnapshot.objects.count()
+
+    second_run = record_provider_result(
+        ProviderResult(
+            provider="ny-fed-markets",
+            dataset="dedup-fixture:second",
+            fetched_at=timezone.now(),
+            records=[{"series_id": "SOFR", "date": value_date, "value": "3.53"}],
+        ),
+        persist=store_series_observations,
+    )
+    second_publication = publish_official_dashboards()
+
+    assert first_run.batch_id != second_run.batch_id
+    assert first_run.status == IngestionRun.Status.SUCCESS
+    assert second_run.status == IngestionRun.Status.SUCCESS
+    assert first_publication
+    assert second_publication == []
+    assert DashboardSnapshot.objects.count() == snapshot_count
+
+
+@pytest.mark.django_db
+def test_provider_result_with_zero_rows_is_partial_not_success():
+    run = record_provider_result(
+        ProviderResult(provider="internal", dataset="zero-row-fixture", records=[])
+    )
+
+    assert run.status == IngestionRun.Status.PARTIAL
+    assert run.row_count == 0
+    assert run.metadata["quality_reason"] == "provider returned no persistable rows"
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        {"quality_status": "partial"},
+        {"missing_series": ["EXPECTED-SERIES"]},
+    ],
+)
+def test_provider_partial_quality_metadata_maps_to_partial_run(metadata):
+    run = record_provider_result(
+        ProviderResult(
+            provider="internal",
+            dataset="partial-metadata-fixture",
+            records=[{"value": 1}],
+            metadata=metadata,
+        )
+    )
+
+    assert run.status == IngestionRun.Status.PARTIAL
+    assert run.row_count == 1
+
+
+@pytest.mark.django_db
+def test_monthly_and_quarterly_freshness_start_from_period_end():
+    source = _licensed_source("freshness-period-end")
+    monthly_series = SeriesDefinition.objects.create(
+        key="monthly-period-start",
+        name="Monthly period start",
+        unit="index",
+        frequency="monthly",
+        source=source,
+    )
+    quarterly_series = SeriesDefinition.objects.create(
+        key="quarterly-period-start",
+        name="Quarterly period start",
+        unit="%",
+        frequency="quarterly",
+        source=source,
+    )
+    monthly_value_date = datetime(2026, 6, 1, tzinfo=UTC)
+    quarterly_value_date = datetime(2026, 4, 1, tzinfo=UTC)
+    monthly = Observation.objects.create(
+        series=monthly_series,
+        value="100",
+        value_date=monthly_value_date,
+        as_of=monthly_value_date,
+        fetched_at=monthly_value_date,
+        source=source,
+    )
+    quarterly = Observation.objects.create(
+        series=quarterly_series,
+        value="2.1",
+        value_date=quarterly_value_date,
+        as_of=quarterly_value_date,
+        fetched_at=quarterly_value_date,
+        source=source,
+    )
+
+    assert _fresh_until(monthly) == datetime(2026, 8, 14, tzinfo=UTC)
+    assert _fresh_until(quarterly) == datetime(2026, 10, 28, tzinfo=UTC)
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("decision", ["restricted", "expired"])
+def test_current_restricted_or_expired_licence_suppresses_old_dashboard(client, decision):
+    expired_at = timezone.localdate() - timedelta(days=1) if decision == "expired" else None
+    status = (
+        Source.LicenseStatus.RESTRICTED
+        if decision == "restricted"
+        else Source.LicenseStatus.OPEN
+    )
+    source = _licensed_source(
+        f"dashboard-{decision}",
+        current_status=status,
+        public_display_allowed=decision == "expired",
+        valid_until=expired_at,
+        include_historical_open=True,
+    )
+    DashboardSnapshot.objects.create(
+        key="rates",
+        title="Old licensed dashboard",
+        as_of=timezone.now() - timedelta(days=2),
+        source=source,
+        is_published=True,
+        data={
+            "demo": False,
+            "source_keys": [source.key],
+            "metrics": [
+                {
+                    "label": "Revoked metric",
+                    "display_value": "MUST-NOT-RENDER",
+                    "source_key": source.key,
+                }
+            ],
+        },
+    )
+
+    response = client.get("/rates/")
+
+    assert response.status_code == 200
+    assert "MUST-NOT-RENDER" not in response.content.decode()
+
+
+@pytest.mark.django_db
+def test_top_level_source_keys_cannot_hide_revoked_metric_source(client):
+    allowed = _licensed_source("allowed-top-level")
+    revoked = _licensed_source(
+        "revoked-metric-source",
+        current_status=Source.LicenseStatus.RESTRICTED,
+        public_display_allowed=False,
+        include_historical_open=True,
+    )
+    DashboardSnapshot.objects.create(
+        key="rates",
+        title="Mixed-source dashboard",
+        as_of=timezone.now(),
+        source=allowed,
+        is_published=True,
+        data={
+            "demo": False,
+            "source_keys": [allowed.key],
+            "metrics": [
+                {
+                    "label": "Mixed licence metric",
+                    "display_value": "REVOKED-SOURCE-MUST-NOT-RENDER",
+                    "source_key": revoked.key,
+                }
+            ],
+        },
+    )
+
+    response = client.get("/rates/")
+
+    assert response.status_code == 200
+    assert "REVOKED-SOURCE-MUST-NOT-RENDER" not in response.content.decode()

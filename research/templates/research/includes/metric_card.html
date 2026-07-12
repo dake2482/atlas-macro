@@ -9,6 +9,7 @@
   {% if metric.change != None %}
     <p class="metric-delta {% if metric.change > 0 %}positive{% elif metric.change < 0 %}negative{% else %}muted{% endif %}">
       {% if metric.change > 0 %}+{% endif %}{{ metric.change }}
+      {% if metric.change_unit %}<span>{{ metric.change_unit }}</span>{% endif %}
       <span class="ml-1 text-[var(--faint)]">较前值</span>
     </p>
   {% else %}
@@ -17,7 +18,10 @@
   {% if metric.as_of or metric.source %}
     <div class="source-line absolute bottom-3 left-4 right-4 pr-8">
       {% if metric.source %}<span>{% if metric.source.name %}{{ metric.source.name }}{% else %}{{ metric.source }}{% endif %}</span>{% endif %}
-      {% if metric.as_of %}<time datetime="{{ metric.as_of|date:'c'|default:metric.as_of }}">{{ metric.as_of|date:"m-d H:i"|default:metric.as_of }}</time>{% endif %}
+      <span class="text-right">
+        {% if metric.as_of %}<time class="block" datetime="{{ metric.as_of|date:'c'|default:metric.as_of }}">数值 {{ metric.as_of|date:"m-d H:i"|default:metric.as_of }}</time>{% endif %}
+        {% if metric.fetched_at %}<time class="block" datetime="{{ metric.fetched_at|date:'c'|default:metric.fetched_at }}">抓取 {{ metric.fetched_at|date:"m-d H:i"|default:metric.fetched_at }}</time>{% endif %}
+      </span>
     </div>
   {% endif %}
 </article>

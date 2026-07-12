@@ -9,6 +9,21 @@ class SourceAdmin(admin.ModelAdmin):
     search_fields = ("name", "key")
 
 
+@admin.register(models.SourceLicense)
+class SourceLicenseAdmin(admin.ModelAdmin):
+    list_display = (
+        "source",
+        "status",
+        "is_current",
+        "public_display_allowed",
+        "valid_from",
+        "valid_until",
+        "reviewed_at",
+    )
+    list_filter = ("is_current", "status", "public_display_allowed")
+    search_fields = ("source__name", "source__key", "scope")
+
+
 @admin.register(models.IngestionRun)
 class IngestionRunAdmin(admin.ModelAdmin):
     list_display = ("dataset", "source", "status", "row_count", "started_at", "completed_at")
@@ -25,8 +40,17 @@ class ObservationAdmin(admin.ModelAdmin):
 
 @admin.register(models.Thesis)
 class ThesisAdmin(admin.ModelAdmin):
-    list_display = ("date", "regime", "confidence", "status", "hit_rate", "simulated_return")
-    list_filter = ("status", "confidence", "regime")
+    list_display = (
+        "date",
+        "regime",
+        "confidence",
+        "status",
+        "is_published",
+        "published_at",
+        "hit_rate",
+        "simulated_return",
+    )
+    list_filter = ("is_published", "status", "confidence", "regime")
     search_fields = ("summary", "regime")
 
 
@@ -53,7 +77,6 @@ class SupplyChainNodeAdmin(admin.ModelAdmin):
 
 
 for model in [
-    models.SourceLicense,
     models.DataRequirement,
     models.RawArtifact,
     models.Instrument,
@@ -76,6 +99,7 @@ for model in [
     models.ModelProfile,
     models.CodingAgentProfile,
     models.GitHubProject,
+    models.GitHubProjectSnapshot,
     models.GlossaryTerm,
     models.OptionContract,
     models.CFTCPosition,

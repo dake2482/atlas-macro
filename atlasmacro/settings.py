@@ -101,6 +101,9 @@ SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 X_FRAME_OPTIONS = "DENY"
 SITE_NAME = os.getenv("SITE_NAME", "Atlas Macro")
 SITE_URL = os.getenv("SITE_URL", "http://localhost:8000").rstrip("/")
+SEC_CIKS = os.getenv("SEC_CIKS", "")
+GITHUB_REPOSITORIES = os.getenv("GITHUB_REPOSITORIES", "")
+NEWS_RSS_FEEDS = os.getenv("NEWS_RSS_FEEDS", "")
 
 if not DEBUG:
     SECURE_SSL_REDIRECT = os.getenv("DJANGO_SECURE_SSL_REDIRECT", "1") == "1"
@@ -122,6 +125,18 @@ CELERY_BEAT_SCHEDULE = {
     "refresh-official-every-2h": {
         "task": "research.tasks.refresh_official_sources",
         "schedule": crontab(hour="*/2", minute=22),
+    },
+    "refresh-h41-weekly": {
+        "task": "research.tasks.refresh_h41_sources",
+        "schedule": crontab(day_of_week="fri", hour=6, minute=0),
+    },
+    "refresh-credit-official-daily": {
+        "task": "research.tasks.refresh_credit_official_sources",
+        "schedule": crontab(hour=11, minute=10),
+    },
+    "refresh-macro-official-daily": {
+        "task": "research.tasks.refresh_macro_official_sources",
+        "schedule": crontab(hour=12, minute=10),
     },
     "refresh-market-daily": {
         "task": "research.tasks.refresh_market_sources",

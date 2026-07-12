@@ -9,8 +9,20 @@ from celery import shared_task
 from django.conf import settings
 from django.utils import timezone
 
+from .github_catalog import GITHUB_PROJECT_SEEDS
 from .models import DashboardSnapshot, GeneratedAnalysis, IngestionRun
-from .official_data import refresh_official_data
+from .official_data import (
+    refresh_credit_official_data,
+    refresh_h41_data,
+    refresh_macro_official_data,
+    refresh_official_data,
+)
+from .official_news import (
+    BLSReleaseProvider,
+    SECPressReleaseProvider,
+    TreasuryPressReleaseProvider,
+    store_official_news,
+)
 from .providers import CFTCProvider, GitHubProvider, ProviderResult, SECProvider
 from .services import (
     record_provider_result,
@@ -47,6 +59,27 @@ def refresh_official_sources() -> dict[str, Any]:
     """Refresh direct, public-display-safe official sources and dashboards."""
 
     return refresh_official_data()
+
+
+@shared_task(name="research.tasks.refresh_h41_sources")
+def refresh_h41_sources() -> dict[str, Any]:
+    """Refresh the weekly Federal Reserve H.4.1 DDP archive."""
+
+    return refresh_h41_data()
+
+
+@shared_task(name="research.tasks.refresh_credit_official_sources")
+def refresh_credit_official_sources() -> dict[str, Any]:
+    """Refresh Treasury HQM and Federal Reserve SLOOS official proxies."""
+
+    return refresh_credit_official_data()
+
+
+@shared_task(name="research.tasks.refresh_macro_official_sources")
+def refresh_macro_official_sources() -> dict[str, Any]:
+    """Refresh credential-gated BEA and Census macro series."""
+
+    return refresh_macro_official_data()
 
 
 @shared_task(name="research.tasks.refresh_crypto_sources")
@@ -87,20 +120,18 @@ def refresh_filing_sources() -> dict[str, Any]:
 
 @shared_task(name="research.tasks.refresh_github_sources")
 def refresh_github_sources() -> dict[str, Any]:
-    repositories = _setting_list("GITHUB_REPOSITORIES")
-    if not repositories:
-        return summarize_runs(
-            [_skip("github", "repositories", "GITHUB_REPOSITORIES is not configured")]
-        )
+    configured_repositories = _setting_list("GITHUB_REPOSITORIES")
+    seed_categories = dict(GITHUB_PROJECT_SEEDS)
+    repositories = configured_repositories or list(seed_categories)
     provider = GitHubProvider()
     runs = []
     try:
         for repo in repositories:
-            runs.append(
-                record_provider_result(
-                    provider.repository(repo), persist=store_github_repository
-                )
-            )
+            result = provider.repository(repo)
+            if result.ok:
+                for record in result.records:
+                    record["category"] = seed_categories.get(repo, "Configured repository")
+            runs.append(record_provider_result(result, persist=store_github_repository))
     finally:
         provider.close()
     return summarize_runs(runs)
@@ -108,15 +139,34 @@ def refresh_github_sources() -> dict[str, Any]:
 
 @shared_task(name="research.tasks.refresh_news_sources")
 def refresh_news_sources() -> dict[str, Any]:
-    """Record scheduler health until explicit, licensed RSS feeds are configured."""
+    """Refresh metadata-only government feeds from an explicit source whitelist."""
 
-    feeds = _setting_list("NEWS_RSS_FEEDS")
-    reason = (
-        "RSS adapter is intentionally disabled until feed-specific licenses are reviewed"
-        if feeds
-        else "NEWS_RSS_FEEDS is not configured"
-    )
-    return summarize_runs([_skip("news-rss", "news", reason)])
+    providers = [
+        (SECPressReleaseProvider(), (("press_releases", {}),)),
+        (TreasuryPressReleaseProvider(), (("press_releases", {}),)),
+        (
+            BLSReleaseProvider(),
+            tuple(
+                ("releases", {"feed_name": feed_name})
+                for feed_name in (
+                    "employment-situation",
+                    "job-openings",
+                    "consumer-prices",
+                    "producer-prices",
+                )
+            ),
+        ),
+    ]
+    runs = []
+    try:
+        for provider, calls in providers:
+            for method_name, kwargs in calls:
+                result = getattr(provider, method_name)(**kwargs)
+                runs.append(record_provider_result(result, persist=store_official_news))
+    finally:
+        for provider, _ in providers:
+            provider.close()
+    return summarize_runs(runs)
 
 
 @shared_task(name="research.tasks.refresh_market_sources")

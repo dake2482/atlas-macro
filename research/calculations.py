@@ -248,9 +248,9 @@ def black_scholes_greeks(
     gamma = discount_q * pdf / (s * sigma * sqrt_t)
     vanna = -discount_q * pdf * d2 / sigma
 
-    common_charm = -discount_q * pdf * (
-        2.0 * (r - q) * t - d2 * sigma * sqrt_t
-    ) / (2.0 * t * sigma * sqrt_t)
+    common_charm = (
+        -discount_q * pdf * (2.0 * (r - q) * t - d2 * sigma * sqrt_t) / (2.0 * t * sigma * sqrt_t)
+    )
     if kind == "call":
         charm = q * discount_q * _normal_cdf(d1) + common_charm
     else:
@@ -374,9 +374,7 @@ def _contract_value(contract: Any, key: str, default: Any = None) -> Any:
     return getattr(contract, key, default)
 
 
-def calculate_max_pain(
-    contracts: Iterable[Any], *, contract_multiplier: float = 100.0
-) -> float:
+def calculate_max_pain(contracts: Iterable[Any], *, contract_multiplier: float = 100.0) -> float:
     """Return the settlement strike minimizing aggregate option-holder payoff.
 
     Contracts may be dictionaries or model-like objects with ``strike``,
@@ -407,4 +405,3 @@ def calculate_max_pain(
 
 
 max_pain = calculate_max_pain
-

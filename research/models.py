@@ -47,12 +47,14 @@ class SourceLicense(TimestampedModel):
     """
 
     source = models.ForeignKey(Source, on_delete=models.CASCADE, related_name="licenses")
+    is_current = models.BooleanField(default=True, db_index=True)
     status = models.CharField(
         max_length=20,
         choices=Source.LicenseStatus.choices,
         default=Source.LicenseStatus.REVIEW,
     )
     scope = models.TextField()
+    required_notice = models.TextField(blank=True)
     terms_url = models.URLField(max_length=800, blank=True)
     redistribution_allowed = models.BooleanField(default=False)
     public_display_allowed = models.BooleanField(default=False)
@@ -71,7 +73,19 @@ class SourceLicense(TimestampedModel):
     notes = models.TextField(blank=True)
 
     class Meta:
-        ordering = ["-reviewed_at", "-created_at"]
+        # ``reviewed_at`` is intentionally not the primary sort key: on
+        # PostgreSQL a descending nullable column sorts NULL values first,
+        # which can make an unreviewed historical row look like the latest
+        # licence decision. ``created_at`` is always populated and ``pk``
+        # makes ties deterministic.
+        ordering = ["-created_at", "-pk"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["source"],
+                condition=models.Q(is_current=True),
+                name="one_current_license_per_source",
+            )
+        ]
 
 
 class DataRequirement(TimestampedModel):
@@ -366,6 +380,15 @@ class Thesis(TimestampedModel):
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)
     hit_rate = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
     simulated_return = models.DecimalField(max_digits=7, decimal_places=3, null=True, blank=True)
+    is_published = models.BooleanField(default=False, db_index=True)
+    published_at = models.DateTimeField(null=True, blank=True)
+    source_snapshot = models.ForeignKey(
+        DashboardSnapshot,
+        on_delete=models.PROTECT,
+        related_name="published_theses",
+        null=True,
+        blank=True,
+    )
 
     class Meta:
         ordering = ["-date"]
@@ -647,9 +670,39 @@ class GitHubProject(TimestampedModel):
     pushed_at = models.DateTimeField(null=True, blank=True)
     momentum_score = models.DecimalField(max_digits=8, decimal_places=2, default=0)
     homepage = models.URLField(max_length=800)
+    source = models.ForeignKey(Source, on_delete=models.PROTECT, null=True, blank=True)
+    data_as_of = models.DateTimeField(null=True, blank=True)
+    quality_status = models.CharField(
+        max_length=20,
+        choices=Observation.Quality.choices,
+        default=Observation.Quality.FRESH,
+    )
+    archived = models.BooleanField(default=False, db_index=True)
+    is_fork = models.BooleanField(default=False)
+    license_spdx = models.CharField(max_length=60, blank=True)
 
     class Meta:
         ordering = ["-momentum_score", "-stars"]
+
+
+class GitHubProjectSnapshot(TimestampedModel):
+    project = models.ForeignKey(GitHubProject, on_delete=models.CASCADE, related_name="snapshots")
+    snapshot_date = models.DateField(db_index=True)
+    stars = models.PositiveIntegerField(default=0)
+    forks = models.PositiveIntegerField(default=0)
+    open_issues = models.PositiveIntegerField(default=0)
+    pushed_at = models.DateTimeField(null=True, blank=True)
+    fetched_at = models.DateTimeField()
+    batch_id = models.UUIDField(default=uuid.uuid4, db_index=True)
+    source = models.ForeignKey(Source, on_delete=models.PROTECT)
+
+    class Meta:
+        ordering = ["-snapshot_date", "project__repo"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["project", "snapshot_date"], name="unique_github_project_daily_snapshot"
+            )
+        ]
 
 
 class GlossaryTerm(TimestampedModel):

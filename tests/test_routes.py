@@ -128,6 +128,8 @@ def test_dynamic_detail_routes_render(client, seeded_platform):
         evidence=[],
         triggers=[],
         invalidation="fixture invalidation",
+        is_published=True,
+        published_at=timezone.now(),
     )
     letter = FundLetter.objects.create(
         fund_name="Verified Fixture Fund",

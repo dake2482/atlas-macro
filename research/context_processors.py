@@ -115,7 +115,7 @@ ROUTE_REQUIREMENT_KEYS = {
     "fed-statements": ("fed",),
     "fed-speeches": ("fed",),
     "fed-news": ("fed",),
-    "credit-overview": ("credit-spreads", "credit-cds"),
+    "credit-overview": ("credit-spreads", "credit-cds", "credit-stress"),
     "volatility-overview": ("vix", "volatility-dashboard"),
     "news": ("news",),
     "semiconductor-news": ("news",),

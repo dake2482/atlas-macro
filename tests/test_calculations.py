@@ -114,4 +114,3 @@ def test_max_pain_minimizes_total_holder_intrinsic_value():
 def test_invalid_formula_inputs_fail_loudly(function, args):
     with pytest.raises(ValueError):
         function(*args)
-

@@ -16,10 +16,10 @@ def metric(label, value, change="", status="fresh", source="官方/授权数据"
 
 COMMON = {
     "source_notes": [
-        "页面数值来自清洁室演示快照；接入凭据后由对应官方或授权适配器替换。",
+        "页面只发布通过许可与质量检查的官方或授权数据；缺数时显示空缺。",
         "每个组件分别显示 value_date、fetched_at、quality_status 与 fallback，不以页面级时间覆盖差异。",
     ],
-    "chart_data": [42, 48, 45, 53, 57, 55, 61, 64, 62, 68, 71, 69],
+    "chart_data": [],
 }
 
 
@@ -535,7 +535,9 @@ PAGE_CONFIGS = {
                 "body": "company、fab、location、process_node、wafer_capacity_monthly、utilization_rate、market_share、revenue、capex、guidance_period、status、source_id、confidence。",
             },
         ],
-        "source_notes": ["利用率与市占率建议询价 TrendForce、TechInsights 或 Omdia，并单独确认网页展示权。"],
+        "source_notes": [
+            "利用率与市占率建议询价 TrendForce、TechInsights 或 Omdia，并单独确认网页展示权。"
+        ],
     },
     "supply-chain-packaging": {
         "title": "先进封装",
@@ -554,7 +556,9 @@ PAGE_CONFIGS = {
                 "body": "company、platform、period、capacity_monthly、planned_capacity、yield_rate、demand_monthly、coverage_ratio、lead_time_weeks、customer_mix、source_id、confidence。",
             },
         ],
-        "source_notes": ["免费证据优先来自公司 IR；精确产能与客户分配建议购买 SemiAnalysis、TechInsights 或 TrendForce。"],
+        "source_notes": [
+            "免费证据优先来自公司 IR；精确产能与客户分配建议购买 SemiAnalysis、TechInsights 或 TrendForce。"
+        ],
     },
     "supply-chain-hbm": {
         "title": "HBM 内存",
@@ -573,7 +577,9 @@ PAGE_CONFIGS = {
                 "body": "vendor、generation、stack_height、period、bit_output、capacity、demand、coverage_ratio、contract_price_change、qualification_status、customer、milestone_date、source_id、confidence。",
             },
         ],
-        "source_notes": ["位产出、供需和价格建议向 TrendForce、TechInsights、Omdia 或 SemiAnalysis 采购。"],
+        "source_notes": [
+            "位产出、供需和价格建议向 TrendForce、TechInsights、Omdia 或 SemiAnalysis 采购。"
+        ],
     },
     "supply-chain-gpu": {
         "title": "AI 加速器",
@@ -592,7 +598,9 @@ PAGE_CONFIGS = {
                 "body": "vendor、product、architecture、release_date、shipment_period、units_shipped、asp、lead_time_weeks、installed_base、customer、revenue、export_scope、source_id、confidence。",
             },
         ],
-        "source_notes": ["出货、ASP、客户分配和安装基数建议购买 SemiAnalysis Accelerator Model、TechInsights 或 Omdia。"],
+        "source_notes": [
+            "出货、ASP、客户分配和安装基数建议购买 SemiAnalysis Accelerator Model、TechInsights 或 Omdia。"
+        ],
     },
     "supply-chain-demand": {
         "title": "AI 下游需求",
@@ -611,7 +619,9 @@ PAGE_CONFIGS = {
                 "body": "company、period、total_capex、ai_capex、capex_guidance_low、capex_guidance_high、data_center_capacity_mw、accelerator_deployments、ai_revenue、backlog、source_id、estimate_flag、confidence。",
             },
         ],
-        "source_notes": ["公司披露可免费入库；客户级 GPU 部署与需求预测可询价 SemiAnalysis、Omdia 或 TechInsights。"],
+        "source_notes": [
+            "公司披露可免费入库；客户级 GPU 部署与需求预测可询价 SemiAnalysis、Omdia 或 TechInsights。"
+        ],
     },
 }
 
