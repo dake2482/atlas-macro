@@ -92,9 +92,13 @@ def refresh_credit_official_sources() -> dict[str, Any]:
     return refresh_credit_official_data()
 
 
-@shared_task(name="research.tasks.refresh_macro_official_sources")
+@shared_task(
+    name="research.tasks.refresh_macro_official_sources",
+    soft_time_limit=240,
+    time_limit=300,
+)
 def refresh_macro_official_sources() -> dict[str, Any]:
-    """Refresh BEA and Census macro series, using keyless official releases."""
+    """Refresh BEA GDP/PIO and Census retail series from keyless official releases."""
 
     return refresh_macro_official_data()
 

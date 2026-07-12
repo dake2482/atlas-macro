@@ -247,6 +247,13 @@ def test_bea_and_census_observations_publish_gdp_and_consumer_pages():
         records=[
             {"series_id": "BEA-A191RL", "date": "2026-04-01", "value": "2.1"},
             {"series_id": "BEA-DPCERL", "date": "2026-04-01", "value": "1.7"},
+            {"series_id": "BEA-REAL-PCE-MOM", "date": "2026-06-01", "value": "0.3"},
+            {"series_id": "BEA-REAL-DPI-MOM", "date": "2026-06-01", "value": "0.2"},
+            {
+                "series_id": "BEA-PERSONAL-SAVING-RATE",
+                "date": "2026-06-01",
+                "value": "3.1",
+            },
         ],
     )
     census = ProviderResult(
@@ -258,7 +265,17 @@ def test_bea_and_census_observations_publish_gdp_and_consumer_pages():
                 "series_id": "CENSUS-MRTS-44X72-SM-SA",
                 "date": "2026-06-01",
                 "value": "763700.0",
-            }
+            },
+            {
+                "series_id": "CENSUS-MRTS-44X72-SM-SA-MOM",
+                "date": "2026-06-01",
+                "value": "0.4",
+            },
+            {
+                "series_id": "CENSUS-MRTS-44X72-SM-SA-YOY",
+                "date": "2026-06-01",
+                "value": "3.9",
+            },
         ],
     )
     record_provider_result(bea, persist=store_series_observations)

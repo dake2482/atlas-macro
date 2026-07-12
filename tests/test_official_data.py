@@ -19,6 +19,7 @@ from research.models import (
 from research.official_data import (
     _fresh_until,
     _has_publishable_run,
+    _metric,
     publish_official_dashboards,
 )
 from research.providers import (
@@ -762,3 +763,209 @@ def test_top_level_source_keys_cannot_hide_revoked_metric_source(client):
 
     assert response.status_code == 200
     assert "REVOKED-SOURCE-MUST-NOT-RENDER" not in response.content.decode()
+
+
+@pytest.mark.django_db
+def test_chart_lineage_cannot_hide_revoked_source(client):
+    allowed = _licensed_source("allowed-chart-shell")
+    revoked = _licensed_source(
+        "revoked-chart-source",
+        current_status=Source.LicenseStatus.RESTRICTED,
+        public_display_allowed=False,
+        include_historical_open=True,
+    )
+    DashboardSnapshot.objects.create(
+        key="rates",
+        title="Mixed-source chart",
+        as_of=timezone.now(),
+        source=allowed,
+        is_published=True,
+        data={
+            "demo": False,
+            "source_keys": [allowed.key],
+            "metrics": [
+                {
+                    "label": "Allowed shell metric",
+                    "display_value": "1.00%",
+                    "source_key": allowed.key,
+                }
+            ],
+            "charts": [
+                {
+                    "key": "hidden-revoked-lineage",
+                    "title": "MUST-NOT-RENDER-CHART",
+                    "data": [
+                        {
+                            "date": "2026-07-01",
+                            "Restricted value": 99,
+                            "_source_keys": [revoked.key],
+                        }
+                    ],
+                }
+            ],
+        },
+    )
+
+    response = client.get("/rates/")
+
+    assert response.status_code == 200
+    body = response.content.decode()
+    assert "MUST-NOT-RENDER-CHART" not in body
+    assert "Restricted value" not in body
+
+
+@pytest.mark.django_db
+def test_fallback_source_is_in_metric_lineage_and_recursive_licence_gate(client):
+    allowed = _licensed_source("allowed-primary-source")
+    revoked = _licensed_source(
+        "revoked-fallback-source",
+        current_status=Source.LicenseStatus.RESTRICTED,
+        public_display_allowed=False,
+        include_historical_open=True,
+    )
+    series = SeriesDefinition.objects.create(
+        key="fallback-lineage-series",
+        name="Fallback lineage fixture",
+        unit="%",
+        frequency="daily",
+        source=allowed,
+    )
+    now = timezone.now()
+    Observation.objects.create(
+        series=series,
+        value="1.25",
+        value_date=now,
+        as_of=now,
+        fetched_at=now,
+        source=allowed,
+        fallback_source=revoked,
+    )
+
+    metric = _metric("fallback-lineage-series", "Fallback metric", suffix="%")
+    assert metric["fallback_source"] == revoked.key
+    assert set(metric["source_keys"]) == {allowed.key, revoked.key}
+
+    DashboardSnapshot.objects.create(
+        key="rates",
+        title="Fallback-only hidden source",
+        as_of=now,
+        source=allowed,
+        is_published=True,
+        data={
+            "demo": False,
+            "source_keys": [allowed.key],
+            "metrics": [
+                {
+                    "label": "Fallback-only forbidden metric",
+                    "display_value": "FALLBACK-MUST-NOT-RENDER",
+                    "source_key": allowed.key,
+                    "fallback_source": revoked.key,
+                }
+            ],
+        },
+    )
+
+    response = client.get("/rates/")
+    assert response.status_code == 200
+    assert "FALLBACK-MUST-NOT-RENDER" not in response.content.decode()
+
+
+@pytest.mark.django_db
+def test_newer_revoked_chart_snapshot_falls_back_to_previous_safe_snapshot(client):
+    allowed = _licensed_source("safe-snapshot-source")
+    revoked = _licensed_source(
+        "newer-revoked-chart-source",
+        current_status=Source.LicenseStatus.RESTRICTED,
+        public_display_allowed=False,
+        include_historical_open=True,
+    )
+    now = timezone.now()
+    DashboardSnapshot.objects.create(
+        key="rates",
+        title="Previous safe snapshot",
+        as_of=now - timedelta(days=1),
+        source=allowed,
+        is_published=True,
+        data={
+            "demo": False,
+            "source_keys": [allowed.key],
+            "metrics": [
+                {
+                    "label": "Safe metric",
+                    "display_value": "SAFE-SNAPSHOT-RENDERS",
+                    "source_key": allowed.key,
+                }
+            ],
+            "chart_data": [],
+        },
+    )
+    DashboardSnapshot.objects.create(
+        key="rates",
+        title="Newer unsafe snapshot",
+        as_of=now,
+        source=allowed,
+        is_published=True,
+        data={
+            "demo": False,
+            "source_keys": [allowed.key],
+            "metrics": [
+                {
+                    "label": "Unsafe metric",
+                    "display_value": "UNSAFE-SNAPSHOT-MUST-NOT-RENDER",
+                    "source_key": allowed.key,
+                }
+            ],
+            "charts": [
+                {
+                    "title": "Unsafe chart",
+                    "data": [{"date": "2026-07-01", "value": 1}],
+                    "fallback_source": revoked.key,
+                }
+            ],
+        },
+    )
+
+    response = client.get("/rates/")
+    body = response.content.decode()
+    assert response.status_code == 200
+    assert "SAFE-SNAPSHOT-RENDERS" in body
+    assert "UNSAFE-SNAPSHOT-MUST-NOT-RENDER" not in body
+
+
+@pytest.mark.django_db
+def test_legacy_chart_data_footer_uses_chart_lineage_not_all_page_sources(client):
+    shell = _licensed_source("legacy-chart-shell")
+    chart_source = _licensed_source("legacy-chart-only")
+    metric_source = _licensed_source("legacy-metric-only")
+    DashboardSnapshot.objects.create(
+        key="rates",
+        title="Legacy chart snapshot",
+        as_of=timezone.now(),
+        source=shell,
+        is_published=True,
+        data={
+            "demo": False,
+            "source_keys": [chart_source.key, metric_source.key],
+            "metrics": [
+                {
+                    "label": "Legacy metric",
+                    "display_value": "1.00%",
+                    "source_key": metric_source.key,
+                }
+            ],
+            "chart_data": [
+                {
+                    "date": "2026-07-01",
+                    "Rate": 1,
+                    "_source_keys": [chart_source.key],
+                }
+            ],
+        },
+    )
+
+    body = client.get("/rates/").content.decode()
+    chart_footer = body.split('<footer class="source-line', 1)[1].split(
+        "</footer>", 1
+    )[0]
+    assert chart_source.name in chart_footer
+    assert metric_source.name not in chart_footer

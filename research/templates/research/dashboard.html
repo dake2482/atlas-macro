@@ -7,12 +7,14 @@
   {% else %}
     {% include "research/includes/page_header.html" with eyebrow=eyebrow page_title=title page_description=description show_copy=True %}
   {% endif %}
-  {% if snapshot.quality_status == "stale" %}<div class="callout mb-4 !border-[var(--warning)] text-[12px]"><strong class="warning">数据已过期：</strong>上游更新尚未通过完整性检查，当前保留上一批可用快照。</div>{% endif %}
+  {% if snapshot.quality_status == "stale" %}<div class="callout mb-4 !border-[var(--warning)] text-[12px]"><strong class="warning">数据已过期：</strong>{% if refresh_failure.reason %}{{ refresh_failure.reason }}{% else %}上游更新尚未通过完整性检查，当前保留上一批可用快照。{% endif %}</div>{% endif %}
   {% if required_notices %}<aside class="callout mb-4 text-[10px] leading-5" aria-label="数据授权声明">{% for notice in required_notices %}<p{% if not forloop.first %} class="mt-2"{% endif %}>{{ notice }}</p>{% endfor %}</aside>{% endif %}
   {% if metrics %}<section class="mb-4 grid grid-cols-1 gap-3 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-6" aria-label="关键指标">{% for metric in metrics %}{% include "research/includes/metric_card.html" with metric=metric %}{% endfor %}</section>{% endif %}
   <div class="grid gap-4 xl:grid-cols-[minmax(0,1.5fr)_minmax(18rem,.65fr)]">
-    {% if snapshot %}
-      {% include "research/includes/chart_panel.html" with chart_id="dashboard-primary-chart" chart_title="核心趋势" chart_data=chart_data chart_kind="line" chart_class="chart-tall" source=snapshot.source as_of=snapshot.as_of %}
+    {% if charts %}
+      {% with chart=charts.0 %}
+        {% include "research/includes/chart_panel.html" with chart_id=chart.dom_id chart_title=chart.title chart_description=chart.description chart_data=chart.data chart_kind=chart.kind chart_class="chart-tall" sources=chart.sources as_of=chart.as_of fetched_at=chart.fetched_at quality_status=chart.quality_status %}
+      {% endwith %}
     {% else %}
       {% include "research/includes/chart_panel.html" with chart_id="dashboard-primary-chart" chart_title="核心趋势" chart_data=chart_data chart_kind="line" chart_class="chart-tall" %}
     {% endif %}
@@ -21,6 +23,13 @@
       {% if events %}<section class="panel"><header class="panel-header"><h2 class="section-title">未来事件</h2></header><div class="panel-body timeline">{% for event in events %}<article class="timeline-item"><span class="timeline-dot"></span>{% if event.date %}<time class="mono text-[10px] muted">{{ event.date|date:"m-d H:i" }}</time>{% elif event.at %}<time class="mono text-[10px] muted">{{ event.at|date:"m-d H:i" }}</time>{% endif %}<p class="mt-1 text-[12px] font-semibold">{% if event.title %}{{ event.title }}{% else %}{{ event.name }}{% endif %}</p></article>{% endfor %}</div></section>{% endif %}
     </div>
   </div>
+  {% if charts|length > 1 %}
+    <div class="mt-4 grid gap-4 lg:grid-cols-2" aria-label="补充趋势图">
+      {% for chart in charts|slice:"1:" %}
+        {% include "research/includes/chart_panel.html" with chart_id=chart.dom_id chart_title=chart.title chart_description=chart.description chart_data=chart.data chart_kind=chart.kind chart_class="chart-tall" sources=chart.sources as_of=chart.as_of fetched_at=chart.fetched_at quality_status=chart.quality_status %}
+      {% endfor %}
+    </div>
+  {% endif %}
   {% if sections %}
     <div class="mt-4 grid gap-4 lg:grid-cols-2">
       {% for section in sections %}

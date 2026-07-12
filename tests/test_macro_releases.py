@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import hashlib
+import uuid
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from io import BytesIO
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -12,14 +14,21 @@ from openpyxl import Workbook
 from research.data_catalog import DATA_REQUIREMENTS
 from research.macro_releases import (
     BEA_GDP_PAGE,
+    BEA_PIO_PAGE,
+    BEA_PIO_SECTION2_WORKBOOK,
     BEA_VINTAGE_WORKBOOK,
     CENSUS_MARTS_INDEX,
     XLSX_CONTENT_TYPE,
     BEAGDPReleaseProvider,
+    BEAPIOReleaseProvider,
     CensusMARTSReleaseProvider,
 )
-from research.models import RawArtifact
+from research.models import DashboardSnapshot, Observation, RawArtifact
 from research.official_data import (
+    MACRO_PUBLICATION_GROUPS,
+    _keys_with_current_required_batches,
+    _mark_latest_dashboards_stale,
+    _publishable_keys_for_source_groups,
     _store_release_workbook_observations,
     publish_official_dashboards,
 )
@@ -137,6 +146,135 @@ def _census_workbook() -> bytes:
     return _workbook_bytes(workbook)
 
 
+def _bea_pio_summary_workbook(*, real_pce: float = 0.3) -> bytes:
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "PIOhist_M"
+    sheet["G1"] = datetime(2026, 6, 25)
+    sheet["A2"] = "May 2026 Personal Income and Outlays"
+    sheet["A3"] = "Historical Comparisons"
+    sheet["B5"] = datetime(2026, 5, 1)
+    sheet["A16"] = "Chained dollars"
+    sheet["A20"] = "Percent change from preceding month:"
+    sheet["A21"] = "DPI"
+    sheet["B21"] = 0.3
+    sheet["A22"] = "PCE"
+    sheet["B22"] = real_pce
+    sheet["A30"] = "Personal saving as a percentage of DPI"
+    sheet["A31"] = "Personal saving rate"
+    sheet["B31"] = 3.0
+    return _workbook_bytes(workbook)
+
+
+def _bea_pio_section2_workbook(
+    *, duplicate_code: bool = False, missing_middle: bool = False
+) -> bytes:
+    workbook = Workbook()
+    section_206 = workbook.active
+    section_206.title = "T20600-M"
+    section_20801 = workbook.create_sheet("T20801-M")
+    section_20806 = workbook.create_sheet("T20806-M")
+    for sheet, title in (
+        (section_206, "Table 2.6. Personal Income and Its Disposition, Monthly"),
+        (
+            section_20801,
+            "Table 2.8.1. Percent Change From Preceding Period in Real "
+            "Personal Consumption Expenditures by Major Type of Product, Monthly",
+        ),
+        (
+            section_20806,
+            "Table 2.8.6. Real Personal Consumption Expenditures by Major "
+            "Type of Product, Monthly, Chained Dollars",
+        ),
+    ):
+        sheet["A1"] = title
+        sheet["A5"] = "Data published June 25, 2026"
+    section_206["A2"] = (
+        "[Millions of dollars; months are seasonally adjusted at annual rates]"
+    )
+    section_20801["A2"] = "[Percent]"
+    section_20806["A2"] = (
+        "[Millions of chained (2017) dollars; seasonally adjusted at annual rates]"
+    )
+
+    def monthly_periods(start_year: int, start_month: int) -> list[str]:
+        periods = []
+        year, month = start_year, start_month
+        while (year, month) <= (2026, 5):
+            periods.append(f"{year:04d}M{month:02d}")
+            if month == 12:
+                year, month = year + 1, 1
+            else:
+                month += 1
+        return periods
+
+    periods_206 = monthly_periods(1959, 1)
+    periods_20801 = monthly_periods(1959, 2)
+    periods_20806 = monthly_periods(2007, 1)
+    for sheet, periods in (
+        (section_206, periods_206),
+        (section_20801, periods_20801),
+        (section_20806, periods_20806),
+    ):
+        sheet["A3"] = f"Monthly data from {periods[0]} to {periods[-1]}"
+        for offset, period in enumerate(periods, start=4):
+            sheet.cell(8, offset, period)
+
+    rows_206 = (
+        (35, "Disposable personal income", "A067RC", 20000000, 23486851, 23651714, False),
+        (43, "Personal saving rate", "A072RC", 5.0, 3.0, 3.0, False),
+        (
+            47,
+            "Real disposable personal income, chained (2017) dollars",
+            "A067RX",
+            15000000,
+            17938761,
+            17983827,
+            False,
+        ),
+        (53, "Disposable personal income MoM", "A067RCM", 0.1, -0.1, 0.7, True),
+        (
+            55,
+            "Real disposable personal income, chained (2017) dollars, MoM",
+            "A067RM",
+            0.1,
+            -0.5,
+            0.3,
+            True,
+        ),
+    )
+    for row_number, label, code, default, previous, current, leading_blank in rows_206:
+        section_206.cell(row_number, 2, label)
+        section_206.cell(row_number, 3, code)
+        for offset, _period in enumerate(periods_206, start=4):
+            if leading_blank and offset == 4:
+                continue
+            section_206.cell(row_number, offset, default)
+        section_206.cell(row_number, 3 + len(periods_206) - 1, previous)
+        section_206.cell(row_number, 3 + len(periods_206), current)
+    if duplicate_code:
+        section_206.cell(56, 2, "Duplicate real DPI")
+        section_206.cell(56, 3, "A067RM")
+        section_206.cell(56, 4, -0.5)
+        section_206.cell(56, 5, 0.3)
+
+    section_20801.cell(9, 2, "Personal consumption expenditures")
+    section_20801.cell(9, 3, "DPCERAM")
+    for offset, _period in enumerate(periods_20801, start=4):
+        section_20801.cell(9, offset, 0.1)
+    section_20801.cell(9, 3 + len(periods_20801) - 1, 0.0)
+    section_20801.cell(9, 3 + len(periods_20801), 0.3)
+    if missing_middle:
+        section_20801.cell(9, 100, ".....")
+    section_20806.cell(9, 2, "Personal consumption expenditures")
+    section_20806.cell(9, 3, "DPCERX")
+    for offset, _period in enumerate(periods_20806, start=4):
+        section_20806.cell(9, offset, 15000000)
+    section_20806.cell(9, 3 + len(periods_20806) - 1, 16729609)
+    section_20806.cell(9, 3 + len(periods_20806), 16773429)
+    return _workbook_bytes(workbook)
+
+
 def _bea_client(vintage: bytes, comparisons: bytes) -> httpx.Client:
     comparison_url = "https://www.bea.gov/sites/default/files/2026-06/hist1q26-3rd.xlsx"
 
@@ -194,6 +332,37 @@ def _census_client(workbook: bytes) -> httpx.Client:
     return httpx.Client(transport=httpx.MockTransport(handler), follow_redirects=True)
 
 
+def _bea_pio_client(summary: bytes, section2: bytes) -> httpx.Client:
+    summary_url = "https://www.bea.gov/sites/default/files/2026-06/pi0526-hist.xlsx"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        if url == BEA_PIO_PAGE:
+            return httpx.Response(
+                200,
+                text=(
+                    '<html><a href="/sites/default/files/2026-06/pi0526-hist.xlsx">'
+                    "Historical Comparisons</a></html>"
+                ),
+                headers={"content-type": "text/html"},
+            )
+        if url == summary_url:
+            return httpx.Response(
+                200,
+                content=summary,
+                headers={"content-type": XLSX_CONTENT_TYPE, "last-modified": "June 25, 2026"},
+            )
+        if url == BEA_PIO_SECTION2_WORKBOOK:
+            return httpx.Response(
+                200,
+                content=section2,
+                headers={"content-type": XLSX_CONTENT_TYPE, "last-modified": "June 25, 2026"},
+            )
+        raise AssertionError(f"unexpected URL: {url}")
+
+    return httpx.Client(transport=httpx.MockTransport(handler), follow_redirects=True)
+
+
 def test_bea_release_provider_preserves_vintages_components_and_artifact_hashes():
     vintage = _bea_vintage_workbook()
     comparisons = _bea_comparison_workbook()
@@ -226,6 +395,90 @@ def test_bea_release_provider_preserves_vintages_components_and_artifact_hashes(
     ]["unit"] == "percentage points contribution to real GDP growth"
 
 
+def test_bea_pio_provider_parses_full_history_codes_and_cross_checks_summary():
+    summary = _bea_pio_summary_workbook()
+    section2 = _bea_pio_section2_workbook()
+    result = BEAPIOReleaseProvider(
+        client=_bea_pio_client(summary, section2)
+    ).personal_income_outlays()
+
+    assert result.ok
+    assert result.row_count == 5084
+    assert result.metadata["latest_value_date"] == "2026-05-01"
+    assert result.metadata["source_revision_date"] == "2026-06-25"
+    assert result.metadata["summary_cross_check"] == "passed"
+    artifacts = {item["url"]: item for item in result.metadata["artifacts"]}
+    assert set(artifacts) == {
+        BEA_PIO_PAGE,
+        "https://www.bea.gov/sites/default/files/2026-06/pi0526-hist.xlsx",
+        BEA_PIO_SECTION2_WORKBOOK,
+    }
+    assert artifacts[BEA_PIO_SECTION2_WORKBOOK]["sha256"] == hashlib.sha256(
+        section2
+    ).hexdigest()
+
+    by_series_and_date = {
+        (item["series_id"], item["date"]): item for item in result.records
+    }
+    assert len(by_series_and_date) == result.row_count
+    assert by_series_and_date[("BEA-REAL-PCE-MOM", "2026-05-01")][
+        "value"
+    ] == Decimal("0.3")
+    assert by_series_and_date[("BEA-REAL-DPI-MOM", "2026-04-01")][
+        "value"
+    ] == Decimal("-0.5")
+    assert by_series_and_date[("BEA-PERSONAL-SAVING-RATE", "2026-05-01")][
+        "value"
+    ] == Decimal("3")
+    assert by_series_and_date[("BEA-DPI-NOMINAL-SAAR", "2026-05-01")][
+        "value"
+    ] == Decimal("23651714")
+    assert by_series_and_date[("BEA-DPI-REAL-SAAR", "2026-05-01")][
+        "value"
+    ] == Decimal("17983827")
+    assert by_series_and_date[("BEA-REAL-PCE-SAAR", "2026-05-01")][
+        "value"
+    ] == Decimal("16773429")
+    real_pce = by_series_and_date[("BEA-REAL-PCE-MOM", "2026-05-01")]
+    assert real_pce["metadata"]["official_series_code"] == "DPCERAM"
+    assert real_pce["metadata"]["vintage_status"] == "current_release_vintage"
+    assert by_series_and_date[("BEA-DPI-REAL-SAAR", "2026-05-01")]["metadata"][
+        "reference_year"
+    ] == 2017
+
+
+@pytest.mark.parametrize(
+    ("summary", "section2", "message"),
+    [
+        (
+            _bea_pio_summary_workbook(real_pce=0.4),
+            _bea_pio_section2_workbook(),
+            "disagree for BEA-REAL-PCE-MOM",
+        ),
+        (
+            _bea_pio_summary_workbook(),
+            _bea_pio_section2_workbook(duplicate_code=True),
+            "duplicated NIPA code A067RM",
+        ),
+        (
+            _bea_pio_summary_workbook(),
+            _bea_pio_section2_workbook(missing_middle=True),
+            "missing/non-numeric value after history began",
+        ),
+    ],
+)
+def test_bea_pio_provider_fails_closed_on_inconsistent_workbooks(
+    summary, section2, message
+):
+    result = BEAPIOReleaseProvider(
+        client=_bea_pio_client(summary, section2)
+    ).personal_income_outlays()
+
+    assert not result.ok
+    assert result.records == []
+    assert message in result.error
+
+
 def test_census_release_provider_selects_latest_calendar_file_and_preserves_status():
     workbook = _census_workbook()
     result = CensusMARTSReleaseProvider(client=_census_client(workbook)).monthly_retail_sales()
@@ -252,15 +505,32 @@ def test_census_release_provider_selects_latest_calendar_file_and_preserves_stat
 
 
 @pytest.mark.django_db
-def test_release_workbooks_persist_lineage_and_publish_gdp_and_consumer_pages():
+def test_consumer_dashboard_refuses_partial_metric_set():
+    census = CensusMARTSReleaseProvider(
+        client=_census_client(_census_workbook())
+    ).monthly_retail_sales()
+    record_provider_result(census, persist=_store_release_workbook_observations)
+
+    assert publish_official_dashboards(keys={"consumer"}) == []
+
+
+@pytest.mark.django_db
+def test_release_workbooks_persist_lineage_and_publish_gdp_and_consumer_pages(client):
     bea = BEAGDPReleaseProvider(
         client=_bea_client(_bea_vintage_workbook(), _bea_comparison_workbook())
     ).gdp_pce()
     census = CensusMARTSReleaseProvider(
         client=_census_client(_census_workbook())
     ).monthly_retail_sales()
+    pio = BEAPIOReleaseProvider(
+        client=_bea_pio_client(
+            _bea_pio_summary_workbook(),
+            _bea_pio_section2_workbook(),
+        )
+    ).personal_income_outlays()
     bea_run = record_provider_result(bea, persist=_store_release_workbook_observations)
     census_run = record_provider_result(census, persist=_store_release_workbook_observations)
+    pio_run = record_provider_result(pio, persist=_store_release_workbook_observations)
 
     dashboards = {
         item.key: item
@@ -269,8 +539,10 @@ def test_release_workbooks_persist_lineage_and_publish_gdp_and_consumer_pages():
 
     assert bea_run.status == "success"
     assert census_run.status == "success"
+    assert pio_run.status == "success"
     assert RawArtifact.objects.filter(run=bea_run).count() == 3
     assert RawArtifact.objects.filter(run=census_run).count() == 2
+    assert RawArtifact.objects.filter(run=pio_run).count() == 3
     assert set(dashboards) == {"gdp", "consumer"}
     gdp = {item["key"]: item for item in dashboards["gdp"].data["metrics"]}
     consumer = {
@@ -281,6 +553,59 @@ def test_release_workbooks_persist_lineage_and_publish_gdp_and_consumer_pages():
     assert gdp["bea-pce-contribution"]["display_value"] == "0.37pp"
     assert consumer["census-mrts-44x72-sm-sa"]["display_value"] == "757,085 USD mn"
     assert consumer["census-mrts-44x72-sm-sa-mom"]["display_value"] == "0.50%"
+    assert consumer["census-mrts-44x72-sm-sa-mom"]["change_unit"] == "pp"
+    assert consumer["bea-real-pce-mom"]["display_value"] == "0.30%"
+    assert consumer["bea-real-dpi-mom"]["display_value"] == "0.30%"
+    assert consumer["bea-personal-saving-rate"]["display_value"] == "3.00%"
+    assert consumer["bea-real-pce-mom"]["source_key"] == "bea-pio-release"
+    charts = dashboards["consumer"].data["charts"]
+    assert [chart["key"] for chart in charts] == [
+        "retail-sales",
+        "real-consumption-income-momentum",
+        "personal-saving-rate",
+    ]
+    assert dashboards["consumer"].data["chart_data"] == charts[0]["data"]
+    assert charts[0]["source_keys"] == ["census-release"]
+    assert charts[1]["source_keys"] == ["bea-pio-release"]
+    assert charts[0]["data"][0]["_lineage"]["零售与餐饮服务"][
+        "source_key"
+    ] == "census-release"
+    response = client.get("/economy/consumer/")
+    body = response.content.decode()
+    assert response.status_code == 200
+    assert body.count(" data-chart ") == 3
+    assert "dashboard-chart-0" in body
+    assert "dashboard-chart-1" in body
+    assert "dashboard-chart-2" in body
+    assert "实际 PCE 环比" in body
+    assert "3.00%" in body
+    assert "U.S. Bureau of Economic Analysis Personal Income and Outlays Releases" in body
+    assert "来源：Atlas Macro Derived Data" not in body
+
+    runs = [bea_run, census_run, pio_run]
+    assert _keys_with_current_required_batches({"gdp", "consumer"}, runs) == {
+        "gdp",
+        "consumer",
+    }
+    latest_pio = Observation.objects.filter(
+        series__key="bea-real-pce-mom",
+        source__key="bea-pio-release",
+    ).latest("value_date")
+    latest_pio.batch_id = uuid.uuid4()
+    latest_pio.save(update_fields=["batch_id", "updated_at"])
+    assert _keys_with_current_required_batches({"gdp", "consumer"}, runs) == {
+        "gdp"
+    }
+    _mark_latest_dashboards_stale({"consumer"}, runs)
+    stale = DashboardSnapshot.objects.filter(key="consumer").latest("created_at")
+    assert stale.quality_status == "stale"
+    assert "上一版完整快照" in stale.data["refresh_failure"]["reason"]
+
+    latest_pio.batch_id = pio_run.batch_id
+    latest_pio.save(update_fields=["batch_id", "updated_at"])
+    assert publish_official_dashboards(keys={"consumer"}) == []
+    recovered = DashboardSnapshot.objects.get(pk=stale.pk)
+    assert "refresh_failure" not in recovered.data
 
 
 @pytest.mark.django_db
@@ -321,6 +646,43 @@ def test_dashboard_deduplicates_same_date_across_provider_sources():
     assert [row["date"] for row in chart] == ["2025-10-01", "2026-01-01"]
 
 
+@pytest.mark.django_db
+def test_release_persistence_rejects_regressed_latest_month():
+    current = ProviderResult(
+        provider="census-release",
+        dataset="regression-guard-current",
+        records=[
+            {
+                "series_id": "CENSUS-MRTS-44X72-SM-SA",
+                "date": "2026-05-01",
+                "value": "100",
+            }
+        ],
+    )
+    current_run = record_provider_result(
+        current, persist=_store_release_workbook_observations
+    )
+    regressed = ProviderResult(
+        provider="census-release",
+        dataset="regression-guard-old",
+        records=[
+            {
+                "series_id": "CENSUS-MRTS-44X72-SM-SA",
+                "date": "2026-04-01",
+                "value": "90",
+            }
+        ],
+    )
+    regressed_run = record_provider_result(
+        regressed, persist=_store_release_workbook_observations
+    )
+
+    assert current_run.status == "success"
+    assert regressed_run.status == "failed"
+    assert "latest value date regressed" in regressed_run.error
+    assert Observation.objects.filter(source__key="census-release").count() == 1
+
+
 def test_economy_catalog_separates_live_release_data_from_remaining_gaps():
     requirements = {item["key"]: item for item in DATA_REQUIREMENTS}
 
@@ -328,5 +690,39 @@ def test_economy_catalog_separates_live_release_data_from_remaining_gaps():
     assert requirements["census-retail"]["status"] == "live"
     assert requirements["bea-gdp-contributions"]["status"] == "live"
     assert requirements["bea-gdp-vintage-trail"]["status"] == "needs_source"
-    assert requirements["bea-personal-income-outlays"]["status"] == "needs_source"
+    assert requirements["bea-personal-income-outlays"]["status"] == "live"
+    assert "Section 2" in requirements["bea-personal-income-outlays"]["reason"]
+    assert requirements["bea-pio-vintage-trail"]["status"] == "needs_source"
+    assert requirements["census-retail-history"]["status"] == "needs_source"
+    assert requirements["consumer-credit-official"]["status"] == "needs_source"
     assert requirements["consumer-confidence"]["status"] == "purchase_required"
+
+
+@pytest.mark.parametrize(
+    ("statuses", "expected"),
+    [
+        (("success", "success", "success"), {"gdp", "consumer"}),
+        (("success", "success", "failed"), {"gdp"}),
+        (("success", "failed", "success"), {"gdp"}),
+        (("failed", "success", "success"), {"consumer"}),
+        (("success", "partial", "success"), {"gdp"}),
+    ],
+)
+def test_macro_publication_groups_isolate_unrelated_page_failures(statuses, expected):
+    runs = [
+        SimpleNamespace(
+            source=SimpleNamespace(key=source_key),
+            status=status,
+            row_count=1 if status == "success" else 0,
+        )
+        for source_key, status in zip(
+            ("bea-release", "census-release", "bea-pio-release"),
+            statuses,
+            strict=True,
+        )
+    ]
+
+    assert (
+        _publishable_keys_for_source_groups(runs, MACRO_PUBLICATION_GROUPS)
+        == expected
+    )

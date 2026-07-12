@@ -23,6 +23,10 @@ from openpyxl import load_workbook
 from .providers import HTTPProvider, ProviderResult
 
 BEA_GDP_PAGE = "https://www.bea.gov/data/gdp/gross-domestic-product"
+BEA_PIO_PAGE = "https://www.bea.gov/data/income-saving/personal-income"
+BEA_PIO_SECTION2_WORKBOOK = (
+    "https://apps.bea.gov/national/Release/XLS/Survey/Section2All_xls.xlsx"
+)
 BEA_VINTAGE_WORKBOOK = (
     "https://apps.bea.gov/national/xls/gdp-gdi-vintage-history.xlsx"
 )
@@ -72,6 +76,35 @@ def _quarter_start(period: str) -> str | None:
         return None
     year, quarter = (int(value) for value in match.groups())
     return f"{year:04d}-{(quarter - 1) * 3 + 1:02d}-01"
+
+
+def _month_start(value: Any) -> str | None:
+    if isinstance(value, datetime):
+        return value.date().replace(day=1).isoformat()
+    text = str(value or "").strip()
+    if match := re.fullmatch(r"(\d{4})M(\d{1,2})", text, re.IGNORECASE):
+        year, month = (int(part) for part in match.groups())
+    elif match := re.search(r"([A-Z][a-z]{2,8})\s+(\d{4})", text):
+        try:
+            month = datetime.strptime(match.group(1), "%B").month
+        except ValueError:
+            try:
+                month = datetime.strptime(match.group(1), "%b").month
+            except ValueError:
+                return None
+        year = int(match.group(2))
+    else:
+        return None
+    if not 1 <= month <= 12:
+        return None
+    return f"{year:04d}-{month:02d}-01"
+
+
+def _previous_month(value_date: str) -> str:
+    year, month, _ = (int(part) for part in value_date.split("-"))
+    if month == 1:
+        return f"{year - 1:04d}-12-01"
+    return f"{year:04d}-{month - 1:02d}-01"
 
 
 def _previous_quarter(period: str) -> str:
@@ -436,6 +469,452 @@ class BEAGDPReleaseProvider(_ReleaseWorkbookProvider):
             "comparison_release_date": release_date,
             "comparison_estimate_round": estimate_round,
         }
+
+
+class BEAPIOReleaseProvider(_ReleaseWorkbookProvider):
+    """Parse BEA PIO history and cross-check it against the current release summary."""
+
+    key = "bea-pio-release"
+    base_url = "https://www.bea.gov"
+    allowed_hosts = frozenset({"bea.gov", "www.bea.gov", "apps.bea.gov"})
+    max_workbook_bytes = 8 * 1024 * 1024
+
+    SERIES = {
+        "BEA-REAL-PCE-MOM": {
+            "sheet": "T20801-M",
+            "code": "DPCERAM",
+            "label": "Real personal consumption expenditures",
+            "unit": "percent change from preceding month",
+            "seasonal_adjustment": "seasonally adjusted monthly percent change",
+        },
+        "BEA-REAL-DPI-MOM": {
+            "sheet": "T20600-M",
+            "code": "A067RM",
+            "label": "Real disposable personal income",
+            "unit": "percent change from preceding month",
+            "seasonal_adjustment": "seasonally adjusted monthly percent change",
+            "requires_reference_year": True,
+        },
+        "BEA-PERSONAL-SAVING-RATE": {
+            "sheet": "T20600-M",
+            "code": "A072RC",
+            "label": "Personal saving as a percentage of disposable personal income",
+            "unit": "percent of disposable personal income",
+            "seasonal_adjustment": "seasonally adjusted",
+        },
+        "BEA-DPI-NOMINAL-SAAR": {
+            "sheet": "T20600-M",
+            "code": "A067RC",
+            "label": "Disposable personal income",
+            "unit": "USD millions SAAR",
+            "seasonal_adjustment": "seasonally adjusted at annual rates",
+        },
+        "BEA-DPI-REAL-SAAR": {
+            "sheet": "T20600-M",
+            "code": "A067RX",
+            "label": "Real disposable personal income",
+            "unit": "millions of chained dollars SAAR",
+            "seasonal_adjustment": "seasonally adjusted at annual rates",
+            "requires_reference_year": True,
+        },
+        "BEA-DPI-NOMINAL-MOM": {
+            "sheet": "T20600-M",
+            "code": "A067RCM",
+            "label": "Disposable personal income",
+            "unit": "percent change from preceding month",
+            "seasonal_adjustment": "seasonally adjusted monthly percent change",
+        },
+        "BEA-REAL-PCE-SAAR": {
+            "sheet": "T20806-M",
+            "code": "DPCERX",
+            "label": "Real personal consumption expenditures",
+            "unit": "millions of chained dollars SAAR",
+            "seasonal_adjustment": "seasonally adjusted at annual rates",
+            "requires_reference_year": True,
+        },
+    }
+    SHEET_CONTRACTS = {
+        "T20600-M": (
+            "personal income and its disposition",
+            "millions of dollars",
+            "seasonally adjusted at annual rates",
+        ),
+        "T20801-M": (
+            "percent change from preceding period in real personal consumption expenditures",
+            "[percent]",
+        ),
+        "T20806-M": (
+            "real personal consumption expenditures",
+            "millions of chained",
+            "seasonally adjusted at annual rates",
+        ),
+    }
+    LATEST_ACCEPTABLE_HISTORY_START = {
+        "T20600-M": "1959-01-01",
+        "T20801-M": "1959-02-01",
+        "T20806-M": "2007-01-01",
+    }
+    SUMMARY_SERIES = frozenset(
+        {
+            "BEA-REAL-PCE-MOM",
+            "BEA-REAL-DPI-MOM",
+            "BEA-PERSONAL-SAVING-RATE",
+        }
+    )
+
+    def personal_income_outlays(self) -> ProviderResult:
+        dataset = "personal-income-outlays-release"
+        try:
+            page, page_type, _ = self._download(BEA_PIO_PAGE, expected="html")
+            summary_url = self._workbook_url(page)
+            summary, summary_type, summary_modified = self._download(
+                summary_url, expected="xlsx"
+            )
+            section2, section2_type, section2_modified = self._download(
+                BEA_PIO_SECTION2_WORKBOOK, expected="xlsx"
+            )
+            summary_values, summary_metadata = self._parse_summary_workbook(summary)
+            records, history_metadata = self._parse_section2_workbook(section2)
+            self._cross_check(summary_values, summary_metadata, records, history_metadata)
+        except Exception as exc:
+            return ProviderResult.failure(self.key, dataset, f"{type(exc).__name__}: {exc}")
+        return ProviderResult(
+            provider=self.key,
+            dataset=dataset,
+            records=records,
+            metadata={
+                "source_url": BEA_PIO_PAGE,
+                "summary_workbook_url": summary_url,
+                "section2_workbook_url": BEA_PIO_SECTION2_WORKBOOK,
+                "summary_workbook_last_modified": summary_modified,
+                "section2_workbook_last_modified": section2_modified,
+                "artifacts": [
+                    _artifact(BEA_PIO_PAGE, page, page_type),
+                    _artifact(summary_url, summary, summary_type),
+                    _artifact(BEA_PIO_SECTION2_WORKBOOK, section2, section2_type),
+                ],
+                "vintage_policy": (
+                    "full history as revised in the latest official Section 2 release; "
+                    "normalized observations contain the current release vintage only"
+                ),
+                "revision_storage": (
+                    "raw release artifact hash retained; queryable cross-vintage history "
+                    "is not yet implemented"
+                ),
+                "attribution": "U.S. Bureau of Economic Analysis",
+                **history_metadata,
+                "summary_workbook_title": summary_metadata["workbook_title"],
+                "summary_cross_check": "passed",
+            },
+        )
+
+    @staticmethod
+    def _workbook_url(page: bytes) -> str:
+        parser = _LinkParser()
+        parser.feed(page.decode("utf-8", errors="replace"))
+        candidates = []
+        for href, label in parser.links:
+            absolute = urljoin(BEA_PIO_PAGE, href)
+            parsed = urlparse(absolute)
+            if (
+                parsed.scheme == "https"
+                and parsed.hostname in {"bea.gov", "www.bea.gov"}
+                and parsed.path.lower().endswith(".xlsx")
+                and (
+                    "Historical Comparisons" in label
+                    or re.search(r"/pi\d{4}-hist\.xlsx$", parsed.path, re.IGNORECASE)
+                )
+            ):
+                candidates.append(absolute)
+        if len(set(candidates)) != 1:
+            raise ValueError("BEA PIO page must expose exactly one historical-comparisons workbook")
+        return candidates[0]
+
+    @classmethod
+    def _parse_summary_workbook(
+        cls, content: bytes
+    ) -> tuple[dict[str, Decimal], dict[str, Any]]:
+        workbook = load_workbook(BytesIO(content), read_only=True, data_only=True)
+        try:
+            if "PIOhist_M" not in workbook.sheetnames:
+                raise ValueError("BEA PIO summary workbook is missing PIOhist_M")
+            sheet = workbook["PIOhist_M"]
+            rows = [list(row) + [None] * 8 for row in sheet.iter_rows(values_only=True)]
+            title = str(rows[1][0] or "") if len(rows) > 1 else ""
+            if len(rows) < 6 or "Personal Income and Outlays" not in title:
+                raise ValueError("BEA PIO summary workbook has no release title")
+            if "Historical Comparisons" not in str(rows[2][0] or ""):
+                raise ValueError("BEA PIO summary workbook has no historical-comparisons marker")
+            current_date = _month_start(rows[4][1]) or _month_start(title)
+            title_date = _month_start(title)
+            release_date = _release_date(rows[0][6])
+            if not current_date or current_date != title_date or not release_date:
+                raise ValueError("BEA PIO release month or release date is inconsistent")
+            if datetime.fromisoformat(release_date) <= datetime.fromisoformat(current_date):
+                raise ValueError("BEA PIO release date must follow its observation month")
+
+            target_rows: dict[str, list[Any]] = {}
+            section = ""
+            subsection = ""
+
+            def capture(series_id: str, values: list[Any]) -> None:
+                if series_id in target_rows:
+                    raise ValueError(f"BEA PIO summary duplicated required series {series_id}")
+                target_rows[series_id] = values
+
+            for values in rows:
+                label = str(values[0] or "").strip()
+                if label in {
+                    "Current dollars",
+                    "Chained dollars",
+                    "Chain-type price indexes",
+                    "Personal saving as a percentage of DPI",
+                }:
+                    section = label
+                    subsection = ""
+                    continue
+                if label.endswith("change from preceding month:"):
+                    subsection = "month-over-month"
+                    continue
+                if section == "Chained dollars" and subsection == "month-over-month":
+                    if label == "DPI":
+                        capture("BEA-REAL-DPI-MOM", values)
+                    elif label == "PCE":
+                        capture("BEA-REAL-PCE-MOM", values)
+                elif (
+                    section == "Personal saving as a percentage of DPI"
+                    and label == "Personal saving rate"
+                ):
+                    capture("BEA-PERSONAL-SAVING-RATE", values)
+
+            current_values: dict[str, Decimal] = {}
+            for series_id in cls.SUMMARY_SERIES:
+                values = target_rows.get(series_id)
+                value = _decimal(values[1]) if values else None
+                if value is None:
+                    raise ValueError(f"BEA PIO summary is missing current value for {series_id}")
+                current_values[series_id] = value
+            return current_values, {
+                "latest_value_date": current_date,
+                "source_revision_date": release_date,
+                "workbook_title": title,
+            }
+        finally:
+            workbook.close()
+
+    @classmethod
+    def _parse_section2_workbook(
+        cls, content: bytes
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        workbook = load_workbook(BytesIO(content), read_only=True, data_only=True)
+        records: list[dict[str, Any]] = []
+        release_dates: set[str] = set()
+        latest_dates: set[str] = set()
+        series_counts: dict[str, int] = {}
+        try:
+            definitions_by_sheet: dict[str, dict[str, tuple[str, dict[str, Any]]]] = {}
+            for series_id, definition in cls.SERIES.items():
+                sheet_definitions = definitions_by_sheet.setdefault(definition["sheet"], {})
+                code = definition["code"]
+                if code in sheet_definitions:
+                    raise ValueError(f"duplicate BEA NIPA code configured: {code}")
+                sheet_definitions[code] = (series_id, definition)
+
+            for sheet_name, sheet_definitions in definitions_by_sheet.items():
+                if sheet_name not in workbook.sheetnames:
+                    raise ValueError(f"BEA Section 2 workbook is missing {sheet_name}")
+                sheet = workbook[sheet_name]
+                sheet_contract = " ".join(
+                    str(sheet.cell(row=row, column=1).value or "")
+                    for row in (1, 2)
+                ).casefold()
+                if any(
+                    marker not in sheet_contract
+                    for marker in cls.SHEET_CONTRACTS[sheet_name]
+                ):
+                    raise ValueError(
+                        f"BEA Section 2 sheet {sheet_name} title/unit contract changed"
+                    )
+                coverage_text = str(sheet.cell(row=3, column=1).value or "")
+                coverage_match = re.search(
+                    r"Monthly data from\s+(\d{4}M\d{2})\s+to\s+(\d{4}M\d{2})",
+                    coverage_text,
+                    re.IGNORECASE,
+                )
+                if not coverage_match:
+                    raise ValueError(
+                        f"BEA Section 2 sheet {sheet_name} has no declared monthly coverage"
+                    )
+                declared_start = _month_start(coverage_match.group(1))
+                declared_end = _month_start(coverage_match.group(2))
+                release_date = _release_date(sheet.cell(row=5, column=1).value)
+                if not release_date:
+                    raise ValueError(f"BEA Section 2 sheet {sheet_name} has no release date")
+                release_dates.add(release_date)
+
+                header = next(
+                    sheet.iter_rows(min_row=8, max_row=8, values_only=True),
+                    None,
+                )
+                if not header:
+                    raise ValueError(f"BEA Section 2 sheet {sheet_name} has no period header")
+                periods: list[tuple[int, str]] = []
+                for index, raw_period in enumerate(header[3:], start=3):
+                    if raw_period in (None, ""):
+                        continue
+                    period = _month_start(raw_period)
+                    if not period:
+                        raise ValueError(
+                            f"BEA Section 2 sheet {sheet_name} has invalid period {raw_period!r}"
+                        )
+                    periods.append((index, period))
+                period_dates = [period for _, period in periods]
+                if len(period_dates) < 2 or period_dates != sorted(set(period_dates)):
+                    raise ValueError(
+                        f"BEA Section 2 sheet {sheet_name} periods are not unique and ascending"
+                    )
+                if any(
+                    _previous_month(current) != previous
+                    for previous, current in zip(period_dates, period_dates[1:], strict=False)
+                ):
+                    raise ValueError(f"BEA Section 2 sheet {sheet_name} periods are not contiguous")
+                if (declared_start, declared_end) != (
+                    period_dates[0],
+                    period_dates[-1],
+                ):
+                    raise ValueError(
+                        f"BEA Section 2 sheet {sheet_name} coverage does not match headers"
+                    )
+                if period_dates[0] > cls.LATEST_ACCEPTABLE_HISTORY_START[sheet_name]:
+                    raise ValueError(
+                        f"BEA Section 2 sheet {sheet_name} historical coverage is truncated"
+                    )
+                latest_date = period_dates[-1]
+                latest_dates.add(latest_date)
+
+                matched_rows: dict[str, tuple[Any, ...]] = {}
+                for row in sheet.iter_rows(min_row=9, values_only=True):
+                    code = str(row[2] or "").strip() if len(row) > 2 else ""
+                    if code not in sheet_definitions:
+                        continue
+                    if code in matched_rows:
+                        raise ValueError(
+                            f"BEA Section 2 sheet {sheet_name} duplicated NIPA code {code}"
+                        )
+                    matched_rows[code] = row
+                missing_codes = set(sheet_definitions) - set(matched_rows)
+                if missing_codes:
+                    raise ValueError(
+                        f"BEA Section 2 sheet {sheet_name} is missing NIPA codes "
+                        f"{', '.join(sorted(missing_codes))}"
+                    )
+
+                for code, (series_id, definition) in sheet_definitions.items():
+                    row = matched_rows[code]
+                    reference_year = None
+                    if definition.get("requires_reference_year"):
+                        reference_match = re.search(
+                            r"chained\s*\((\d{4})\)\s*dollars",
+                            f"{sheet_contract} {str(row[1] or '').casefold()}",
+                        )
+                        if not reference_match:
+                            raise ValueError(
+                                f"BEA Section 2 series {series_id} has no chained-dollar "
+                                "reference year"
+                            )
+                        reference_year = int(reference_match.group(1))
+                    count = 0
+                    latest_value: Decimal | None = None
+                    numeric_history_started = False
+                    for index, period in periods:
+                        value = _decimal(row[index] if index < len(row) else None)
+                        if value is None:
+                            if numeric_history_started:
+                                raise ValueError(
+                                    f"BEA Section 2 series {series_id} has a missing/non-numeric "
+                                    f"value after history began at {period}"
+                                )
+                            continue
+                        numeric_history_started = True
+                        metadata = {
+                            "source_revision_date": release_date,
+                            "release_freshness_days": 45,
+                            "vintage_status": "current_release_vintage",
+                            "official_series_code": code,
+                            "source_table": sheet_name,
+                            "component_label": definition["label"],
+                            "unit": definition["unit"],
+                            "seasonal_adjustment": definition["seasonal_adjustment"],
+                            "estimate_month": period[:7],
+                        }
+                        if reference_year:
+                            metadata["reference_year"] = reference_year
+                            if "chained dollars" in metadata["unit"]:
+                                metadata["unit"] = metadata["unit"].replace(
+                                    "chained dollars",
+                                    f"chained {reference_year} dollars",
+                                )
+                        records.append(
+                            {
+                                "series_id": series_id,
+                                "date": period,
+                                "value": value,
+                                "metadata": metadata,
+                            }
+                        )
+                        count += 1
+                        if period == latest_date:
+                            latest_value = value
+                    if not count or latest_value is None:
+                        raise ValueError(
+                            f"BEA Section 2 series {series_id} has no current numeric value"
+                        )
+                    series_counts[series_id] = count
+
+            if len(release_dates) != 1 or len(latest_dates) != 1:
+                raise ValueError("BEA Section 2 sheets do not share one release date and month")
+            release_date = next(iter(release_dates))
+            latest_date = next(iter(latest_dates))
+            if datetime.fromisoformat(release_date) <= datetime.fromisoformat(latest_date):
+                raise ValueError("BEA Section 2 release date must follow its latest month")
+            if set(series_counts) != set(cls.SERIES):
+                raise ValueError("BEA Section 2 workbook did not yield every configured series")
+            return records, {
+                "latest_value_date": latest_date,
+                "source_revision_date": release_date,
+                "series_counts": series_counts,
+                "record_count": len(records),
+                "precision_policy": "retain workbook values without additional rounding",
+            }
+        finally:
+            workbook.close()
+
+    @classmethod
+    def _cross_check(
+        cls,
+        summary_values: dict[str, Decimal],
+        summary_metadata: dict[str, Any],
+        records: list[dict[str, Any]],
+        history_metadata: dict[str, Any],
+    ) -> None:
+        if summary_metadata["latest_value_date"] != history_metadata["latest_value_date"]:
+            raise ValueError("BEA PIO summary and Section 2 latest months do not match")
+        if summary_metadata["source_revision_date"] != history_metadata["source_revision_date"]:
+            raise ValueError("BEA PIO summary and Section 2 release dates do not match")
+        latest_date = history_metadata["latest_value_date"]
+        latest_values = {
+            item["series_id"]: item["value"]
+            for item in records
+            if item["date"] == latest_date and item["series_id"] in cls.SUMMARY_SERIES
+        }
+        if set(latest_values) != cls.SUMMARY_SERIES:
+            raise ValueError("BEA Section 2 current cross-check series are incomplete")
+        for series_id, summary_value in summary_values.items():
+            if latest_values[series_id] != summary_value:
+                raise ValueError(
+                    f"BEA PIO summary and Section 2 disagree for {series_id}: "
+                    f"{summary_value} != {latest_values[series_id]}"
+                )
 
 
 class CensusMARTSReleaseProvider(_ReleaseWorkbookProvider):

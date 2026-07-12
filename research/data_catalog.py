@@ -310,21 +310,62 @@ DATA_REQUIREMENTS = [
         "key": "bea-personal-income-outlays",
         "page_key": "consumer",
         "metric_name": "实际 PCE 环比、可支配个人收入与个人储蓄率",
-        "status": NEEDS_SOURCE,
-        "source_name": "U.S. Bureau of Economic Analysis Personal Income and Outlays",
+        "status": LIVE,
+        "source_name": "U.S. Bureau of Economic Analysis PIO and NIPA Section 2",
         "source_url": "https://www.bea.gov/data/income-saving/personal-income",
         "reason": (
-            "需新增 BEA 月度 Personal Income and Outlays 发布工作簿适配器，"
-            "保留发布日、修订状态和原文件指纹；未接入前不用季度 PCE 增速代替月度值。"
+            "已解析免密的 NIPA Section 2 月度完整工作簿，并用当月 Historical "
+            "Comparisons 摘要交叉校验观测月、发布日期和三个核心值；发布当前官方 "
+            "vintage，保留两个原始工作簿与产品页哈希。"
         ),
         "priority": 1,
+    },
+    {
+        "key": "bea-pio-vintage-trail",
+        "page_key": "consumer",
+        "metric_name": "PIO 各发布日期之间的可查询修订轨迹",
+        "status": NEEDS_SOURCE,
+        "source_name": "U.S. Bureau of Economic Analysis archived PIO releases",
+        "source_url": "https://www.bea.gov/news/current-releases",
+        "reason": (
+            "当前 Observation 契约会以同一来源和月份覆盖旧值；RawArtifact 哈希能证明"
+            "每次抓取文件，但不等于可查询的 vintage 历史。需增加独立 vintage 维度后"
+            "才能发布修订轨迹。"
+        ),
+        "priority": 2,
+    },
+    {
+        "key": "census-retail-history",
+        "page_key": "consumer",
+        "metric_name": "MARTS 零售销售完整月度历史回填",
+        "status": NEEDS_SOURCE,
+        "source_name": "U.S. Census Bureau MARTS historical release directory/API",
+        "source_url": "https://www2.census.gov/retail/releases/historical/marts/",
+        "reason": (
+            "当前最新发布工作簿只入库可明确识别的近期月份。需从官方历史文件或 EITS "
+            "API 回填并做修订/状态去重，完成前图表明确显示有限历史窗口。"
+        ),
+        "priority": 2,
+    },
+    {
+        "key": "consumer-credit-official",
+        "page_key": "consumer",
+        "metric_name": "消费者信贷、家庭债务与偿债缓冲",
+        "status": NEEDS_SOURCE,
+        "source_name": "Federal Reserve G.19 and New York Fed Household Debt and Credit",
+        "source_url": "https://www.federalreserve.gov/releases/g19/about.htm",
+        "reason": (
+            "可免费接入 G.19 总量/流量及纽约联储家庭债务季度数据；仍需实现适配器、"
+            "频率对齐和口径说明，且不能用总量数据推断特定收入群体的压力。"
+        ),
+        "priority": 2,
     },
     {
         "key": "consumer-confidence",
         "page_key": "consumer",
         "metric_name": "消费者信心指数与调查分项",
         "status": PURCHASE_REQUIRED,
-        "vendor": "The Conference Board / University of Michigan Surveys of Consumers",
+        "vendor": "University of Michigan Surveys of Consumers / The Conference Board",
         "product": "Consumer-confidence history and public website-display rights",
         "reason": (
             "这些调查指数不是美国政府开放数据；官网或新闻中可见的最新数值"

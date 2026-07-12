@@ -6,7 +6,10 @@ from research.official_data import refresh_macro_official_data
 
 
 class Command(BaseCommand):
-    help = "Refresh official BEA GDP/PCE and Census MARTS data with keyless release fallbacks."
+    help = (
+        "Refresh keyless official BEA GDP/PIO and Census MARTS releases with "
+        "page-level publication gates."
+    )
 
     def handle(self, *args, **options):
         summary = refresh_macro_official_data()

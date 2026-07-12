@@ -153,6 +153,27 @@ SOURCE_CATALOG: dict[str, dict[str, Any]] = {
             "Estimate and revision labels are retained; Atlas Macro is not affiliated with BEA."
         ),
     },
+    "bea-pio-release": {
+        "name": "U.S. Bureau of Economic Analysis Personal Income and Outlays Releases",
+        "homepage": "https://www.bea.gov/data/income-saving/personal-income",
+        "kind": "official",
+        "license_status": Source.LicenseStatus.OPEN,
+        "license_scope": (
+            "Attributed U.S. government Personal Income and Outlays release data; "
+            "BEA logos, seals and third-party material excluded"
+        ),
+        "redistribution_allowed": True,
+        "public_display_allowed": True,
+        "derived_display_allowed": True,
+        "historical_storage_allowed": True,
+        "ai_use_allowed": True,
+        "terms_url": "https://www.bea.gov/about/policies-and-information/data-dissemination",
+        "attribution": "U.S. Bureau of Economic Analysis",
+        "required_notice": (
+            "Source: U.S. Bureau of Economic Analysis Personal Income and Outlays "
+            "release workbooks. Atlas Macro is not affiliated with BEA."
+        ),
+    },
     "census": {
         "name": "U.S. Census Bureau Data API",
         "homepage": "https://www.census.gov/data/developers.html",
@@ -698,6 +719,41 @@ SERIES_CATALOG = {
         "Government Contribution to Real GDP Growth",
         "percentage points",
         "quarterly",
+    ),
+    "BEA-REAL-PCE-MOM": (
+        "Real Personal Consumption Expenditures, Month-over-Month",
+        "%",
+        "monthly",
+    ),
+    "BEA-REAL-DPI-MOM": (
+        "Real Disposable Personal Income, Month-over-Month",
+        "%",
+        "monthly",
+    ),
+    "BEA-PERSONAL-SAVING-RATE": (
+        "Personal Saving Rate",
+        "%",
+        "monthly",
+    ),
+    "BEA-DPI-NOMINAL-SAAR": (
+        "Disposable Personal Income, SAAR",
+        "USD millions",
+        "monthly",
+    ),
+    "BEA-DPI-REAL-SAAR": (
+        "Real Disposable Personal Income, SAAR",
+        "millions of chained dollars",
+        "monthly",
+    ),
+    "BEA-DPI-NOMINAL-MOM": (
+        "Disposable Personal Income, Month-over-Month",
+        "%",
+        "monthly",
+    ),
+    "BEA-REAL-PCE-SAAR": (
+        "Real Personal Consumption Expenditures, SAAR",
+        "millions of chained dollars",
+        "monthly",
     ),
     "CENSUS-MRTS-44X72-SM-SA": (
         "Retail Trade and Food Services Sales, Seasonally Adjusted",

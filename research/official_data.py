@@ -24,7 +24,11 @@ from .credit_official import FederalReserveSLOOSProvider, TreasuryHQMProvider
 from .fed_h10 import FederalReserveH10Provider
 from .fed_h41 import FederalReserveH41Provider
 from .fed_prates import FederalReservePRATESProvider
-from .macro_releases import BEAGDPReleaseProvider, CensusMARTSReleaseProvider
+from .macro_releases import (
+    BEAGDPReleaseProvider,
+    BEAPIOReleaseProvider,
+    CensusMARTSReleaseProvider,
+)
 from .models import (
     DashboardSnapshot,
     IngestionRun,
@@ -94,7 +98,45 @@ PRATES_PUBLICATION_KEYS = frozenset(
 )
 H10_PUBLICATION_KEYS = frozenset({"assets-fx"})
 CREDIT_PUBLICATION_KEYS = frozenset({"credit", "credit-spreads", "credit-stress"})
-MACRO_PUBLICATION_KEYS = frozenset({"gdp", "consumer"})
+MACRO_PUBLICATION_GROUPS = {
+    "gdp": frozenset({"bea-release"}),
+    "consumer": frozenset({"census-release", "bea-pio-release"}),
+}
+MACRO_REQUIRED_SERIES = {
+    "gdp": {
+        "bea-release": frozenset(
+            {
+                "BEA-A191RL",
+                "BEA-DPCERL",
+                "BEA-GDP-NOMINAL-SAAR",
+                "BEA-GDI-REAL-GROWTH-SAAR",
+                "BEA-PCE-GOODS-GROWTH",
+                "BEA-PCE-SERVICES-GROWTH",
+                "BEA-GPDI-GROWTH",
+                "BEA-PCE-CONTRIBUTION",
+                "BEA-GPDI-CONTRIBUTION",
+                "BEA-NET-EXPORTS-CONTRIBUTION",
+                "BEA-GOVERNMENT-CONTRIBUTION",
+            }
+        )
+    },
+    "consumer": {
+        "census-release": frozenset(
+            {
+                "CENSUS-MRTS-44X72-SM-SA",
+                "CENSUS-MRTS-44X72-SM-SA-MOM",
+                "CENSUS-MRTS-44X72-SM-SA-YOY",
+            }
+        ),
+        "bea-pio-release": frozenset(
+            {
+                "BEA-REAL-PCE-MOM",
+                "BEA-REAL-DPI-MOM",
+                "BEA-PERSONAL-SAVING-RATE",
+            }
+        ),
+    },
+}
 
 
 def _has_publishable_run(runs: Iterable[IngestionRun]) -> bool:
@@ -107,11 +149,121 @@ def _has_publishable_run(runs: Iterable[IngestionRun]) -> bool:
     )
 
 
+def _publishable_keys_for_source_groups(
+    runs: Iterable[IngestionRun],
+    groups: dict[str, frozenset[str]],
+) -> set[str]:
+    """Return page keys whose exact source group completed in this refresh."""
+
+    by_source: dict[str, list[IngestionRun]] = {}
+    for run in runs:
+        by_source.setdefault(run.source.key, []).append(run)
+    return {
+        page_key
+        for page_key, required_sources in groups.items()
+        if all(
+            len(by_source.get(source_key, [])) == 1
+            and _has_publishable_run(by_source[source_key])
+            for source_key in required_sources
+        )
+    }
+
+
+def _keys_with_current_required_batches(
+    page_keys: Iterable[str],
+    runs: Iterable[IngestionRun],
+) -> set[str]:
+    """Bind each page's required latest observations to this refresh's batches."""
+
+    run_by_source = {run.source.key: run for run in runs}
+    current: set[str] = set()
+    for page_key in page_keys:
+        page_requirements = MACRO_REQUIRED_SERIES.get(page_key, {})
+        page_is_current = bool(page_requirements)
+        for source_key, series_keys in page_requirements.items():
+            run = run_by_source.get(source_key)
+            if run is None:
+                page_is_current = False
+                break
+            expected_batch = str(run.batch_id)
+            for series_key in series_keys:
+                observation = _real_observations(series_key).first()
+                if (
+                    observation is None
+                    or observation.source.key != source_key
+                    or str(observation.batch_id) != expected_batch
+                ):
+                    page_is_current = False
+                    break
+            if not page_is_current:
+                break
+        if page_is_current:
+            current.add(page_key)
+    return current
+
+
+def _mark_latest_dashboards_stale(
+    page_keys: Iterable[str],
+    runs: Iterable[IngestionRun],
+) -> None:
+    """Keep the last complete snapshot but expose the failed refresh state."""
+
+    runs_by_source = {run.source.key: run for run in runs}
+    checked_at = timezone.now().isoformat()
+    with transaction.atomic():
+        for page_key in page_keys:
+            latest = (
+                DashboardSnapshot.objects.select_for_update()
+                .filter(key=page_key, is_published=True)
+                .order_by("-created_at")
+                .first()
+            )
+            if latest is None:
+                continue
+            required_sources = MACRO_PUBLICATION_GROUPS.get(page_key, frozenset())
+            source_states = []
+            for source_key in sorted(required_sources):
+                run = runs_by_source.get(source_key)
+                source_states.append(
+                    {
+                        "source": source_key,
+                        "status": run.status if run else "missing",
+                        "row_count": run.row_count if run else 0,
+                        "error": (run.error if run else "source run missing")[:240],
+                    }
+                )
+            data = dict(latest.data or {})
+            data["refresh_failure"] = {
+                "checked_at": checked_at,
+                "reason": (
+                    "最近一次必需数据刷新未通过完整性、时序或本批次一致性检查；"
+                    "继续保留上一版完整快照。"
+                ),
+                "sources": source_states,
+            }
+            latest.data = data
+            latest.quality_status = Observation.Quality.STALE
+            latest.save(update_fields=["data", "quality_status", "updated_at"])
+
+
 def _fresh_until(observation: Observation) -> datetime:
     """Return a deadline from the observation period end, not period start."""
 
     value_date = observation.value_date
     frequency = observation.series.frequency
+    release_date = (observation.metadata or {}).get("source_revision_date")
+    release_freshness_days = (observation.metadata or {}).get(
+        "release_freshness_days"
+    )
+    if release_date and release_freshness_days:
+        try:
+            release_deadline = datetime.fromisoformat(str(release_date)).replace(
+                tzinfo=UTC
+            ) + timedelta(days=int(release_freshness_days))
+        except (TypeError, ValueError, OverflowError):
+            release_deadline = None
+        if release_deadline is not None:
+            return release_deadline
     if frequency == "monthly":
         day = calendar.monthrange(value_date.year, value_date.month)[1]
         period_end = value_date.replace(day=day)
@@ -131,7 +283,7 @@ def _real_observations(series_key: str):
         Observation.objects.filter(series__key=series_key.lower())
         .exclude(source__key="demo-market")
         .filter(public_display_license_q())
-        .select_related("series", "source")
+        .select_related("series", "source", "fallback_source")
         .distinct()
         .order_by("-value_date", "-fetched_at", "-id")
     )
@@ -154,6 +306,16 @@ def _latest_observations_by_value_date(
     return observations
 
 
+def _observation_source_keys(*observations: Observation) -> set[str]:
+    keys = {observation.source.key for observation in observations}
+    keys.update(
+        observation.fallback_source.key
+        for observation in observations
+        if observation.fallback_source_id
+    )
+    return keys
+
+
 def _metric(
     series_key: str,
     label: str,
@@ -173,18 +335,26 @@ def _metric(
     quality_status = latest.quality_status
     if timezone.now() > fresh_until and quality_status == Observation.Quality.FRESH:
         quality_status = Observation.Quality.STALE
+    source_keys = sorted(_observation_source_keys(latest))
     return {
         "key": series_key.lower(),
         "label": label,
         "value": float(value),
         "display_value": f"{value:,.{decimals}f}{suffix}",
         "change": round(float(change), decimals) if change is not None else None,
-        "change_unit": suffix,
+        "change_unit": "pp" if suffix == "%" else suffix,
         "unit": suffix,
         "quality_status": quality_status,
-        "source": latest.source.name,
+        "source": (
+            f"{latest.source.name}（备用：{latest.fallback_source.name}）"
+            if latest.fallback_source_id
+            else latest.source.name
+        ),
         "source_key": latest.source.key,
-        "source_keys": [latest.source.key],
+        "source_keys": source_keys,
+        "fallback_source": (
+            latest.fallback_source.key if latest.fallback_source_id else None
+        ),
         "as_of": latest.as_of.isoformat(),
         "value_date": latest.value_date.isoformat(),
         "fetched_at": latest.fetched_at.isoformat(),
@@ -211,6 +381,9 @@ def _derived_metric(
     left_deadline = _fresh_until(left)
     right_deadline = _fresh_until(right)
     fresh_until = min(left_deadline, right_deadline)
+    source_keys = sorted(
+        _observation_source_keys(left, right) | {"internal"}
+    )
     return {
         "key": key,
         "label": label,
@@ -221,7 +394,7 @@ def _derived_metric(
         "quality_status": Observation.Quality.ESTIMATED,
         "source": f"Atlas Macro 计算：{left.source.name} − {right.source.name}",
         "source_key": "internal",
-        "source_keys": sorted({left.source.key, right.source.key, "internal"}),
+        "source_keys": source_keys,
         "as_of": min(left.as_of, right.as_of).isoformat(),
         "value_date": min(left.value_date, right.value_date).isoformat(),
         "fetched_at": max(left.fetched_at, right.fetched_at).isoformat(),
@@ -229,7 +402,7 @@ def _derived_metric(
         "batch_id": f"{left.batch_id},{right.batch_id}",
         "metadata": {
             "formula": f"{left_key} - {right_key}",
-            "source_keys": sorted({left.source.key, right.source.key}),
+            "source_keys": sorted(_observation_source_keys(left, right)),
         },
     }
 
@@ -262,6 +435,9 @@ def _linear_metric(
         ("+ " if coefficient > 0 and index else "- " if coefficient < 0 else "") + series_key
         for index, (coefficient, series_key) in enumerate(terms)
     )
+    input_source_keys = _observation_source_keys(
+        *(observation for _, observation in inputs)
+    )
     return {
         "key": key,
         "label": label,
@@ -272,7 +448,7 @@ def _linear_metric(
         "quality_status": quality,
         "source": "Atlas Macro 计算：" + formula,
         "source_key": "internal",
-        "source_keys": sorted({item.source.key for _, item in inputs} | {"internal"}),
+        "source_keys": sorted(input_source_keys | {"internal"}),
         "as_of": min(item.as_of for _, item in inputs).isoformat(),
         "value_date": min(item.value_date for _, item in inputs).isoformat(),
         "fetched_at": max(item.fetched_at for _, item in inputs).isoformat(),
@@ -281,7 +457,7 @@ def _linear_metric(
         "metadata": {
             "formula": formula,
             "input_series": [series_key for _, series_key in terms],
-            "source_keys": sorted({item.source.key for _, item in inputs}),
+            "source_keys": sorted(input_source_keys),
         },
     }
 
@@ -307,12 +483,89 @@ def _history_rows(series: dict[str, str], *, limit: int = 120) -> list[dict[str,
         observations = _latest_observations_by_value_date(series_key, limit=limit)
         for observation in reversed(observations):
             day = observation.value_date.date().isoformat()
-            row = by_date.setdefault(day, {"date": day, "_source_keys": []})
-            row[label] = float(observation.value)
-            row["_source_keys"] = sorted(
-                {*row["_source_keys"], observation.source.key}
+            row = by_date.setdefault(
+                day,
+                {"date": day, "_source_keys": [], "_lineage": {}},
             )
+            row[label] = float(observation.value)
+            source_keys = {observation.source.key}
+            fallback_key = None
+            if observation.fallback_source_id:
+                fallback_key = observation.fallback_source.key
+                source_keys.add(fallback_key)
+            row["_source_keys"] = sorted(
+                {*row["_source_keys"], *source_keys}
+            )
+            row["_lineage"][label] = {
+                "series_key": series_key.lower(),
+                "source_key": observation.source.key,
+                "source_name": observation.source.name,
+                "value_date": observation.value_date.isoformat(),
+                "as_of": observation.as_of.isoformat(),
+                "fetched_at": observation.fetched_at.isoformat(),
+                "batch_id": str(observation.batch_id),
+                "quality_status": observation.quality_status,
+                "license_scope": observation.source.license_scope,
+                "fallback_source": fallback_key,
+            }
     return [by_date[day] for day in sorted(by_date)]
+
+
+def _history_chart(
+    *,
+    key: str,
+    title: str,
+    series: dict[str, str],
+    limit: int = 120,
+    description: str = "",
+    kind: str = "line",
+) -> dict[str, Any] | None:
+    """Build a chart contract with component-level source and freshness metadata."""
+
+    rows = _history_rows(series, limit=limit)
+    if not rows:
+        return None
+    latest = [
+        observation
+        for series_key in series
+        if (observation := _real_observations(series_key).first()) is not None
+    ]
+    if len(latest) != len(series):
+        return None
+    deadlines = [_fresh_until(observation) for observation in latest]
+    quality_statuses = {observation.quality_status for observation in latest}
+    if Observation.Quality.ERROR in quality_statuses:
+        quality_status = Observation.Quality.ERROR
+    elif timezone.now() > min(deadlines) or Observation.Quality.STALE in quality_statuses:
+        quality_status = Observation.Quality.STALE
+    elif Observation.Quality.FALLBACK in quality_statuses:
+        quality_status = Observation.Quality.FALLBACK
+    elif quality_statuses == {Observation.Quality.FRESH}:
+        quality_status = Observation.Quality.FRESH
+    else:
+        quality_status = Observation.Quality.ESTIMATED
+    source_keys = {
+        source_key
+        for observation in latest
+        for source_key in (
+            observation.source.key,
+            observation.fallback_source.key if observation.fallback_source_id else None,
+        )
+        if source_key
+    }
+    return {
+        "key": key,
+        "title": title,
+        "description": description,
+        "kind": kind,
+        "data": rows,
+        "source_keys": sorted(source_keys),
+        "as_of": min(observation.as_of for observation in latest).isoformat(),
+        "fetched_at": max(observation.fetched_at for observation in latest).isoformat(),
+        "fresh_until": min(deadlines).isoformat(),
+        "quality_status": quality_status,
+        "batch_ids": sorted({str(observation.batch_id) for observation in latest}),
+    }
 
 
 def _earliest_fresh_until(rows: Iterable[dict[str, Any]]) -> str | None:
@@ -330,6 +583,7 @@ def _sofr_market_metrics() -> list[dict[str, Any]]:
     previous = observations[1] if len(observations) > 1 else None
     fresh_until = _fresh_until(latest)
     quality = Observation.Quality.STALE if timezone.now() > fresh_until else latest.quality_status
+    latest_source_keys = sorted(_observation_source_keys(latest))
     definitions = (
         ("sofr-volume", "SOFR 成交量", "volumeInBillions", " USD bn", 0),
         ("sofr-p99", "SOFR 99P", "percentPercentile99", "%", 2),
@@ -349,12 +603,21 @@ def _sofr_market_metrics() -> list[dict[str, Any]]:
                 "value": float(value),
                 "display_value": f"{value:,.{decimals}f}{suffix}",
                 "change": float(change) if change is not None else None,
-                "change_unit": suffix,
+                "change_unit": "pp" if suffix == "%" else suffix,
                 "unit": suffix,
                 "quality_status": quality,
-                "source": latest.source.name,
+                "source": (
+                    f"{latest.source.name}（备用：{latest.fallback_source.name}）"
+                    if latest.fallback_source_id
+                    else latest.source.name
+                ),
                 "source_key": latest.source.key,
-                "source_keys": [latest.source.key],
+                "source_keys": latest_source_keys,
+                "fallback_source": (
+                    latest.fallback_source.key
+                    if latest.fallback_source_id
+                    else None
+                ),
                 "as_of": latest.as_of.isoformat(),
                 "value_date": latest.value_date.isoformat(),
                 "fetched_at": latest.fetched_at.isoformat(),
@@ -377,7 +640,9 @@ def _sofr_market_metrics() -> list[dict[str, Any]]:
                 "quality_status": Observation.Quality.ESTIMATED,
                 "source": f"Atlas Macro 计算：{latest.source.name}",
                 "source_key": "internal",
-                "source_keys": [latest.source.key, "internal"],
+                "source_keys": sorted(
+                    _observation_source_keys(latest) | {"internal"}
+                ),
                 "as_of": latest.as_of.isoformat(),
                 "value_date": latest.value_date.isoformat(),
                 "fetched_at": latest.fetched_at.isoformat(),
@@ -385,7 +650,7 @@ def _sofr_market_metrics() -> list[dict[str, Any]]:
                 "batch_id": str(latest.batch_id),
                 "metadata": {
                     "formula": "SOFR percentPercentile99 - percentRate",
-                    "source_keys": [latest.source.key],
+                    "source_keys": sorted(_observation_source_keys(latest)),
                 },
             }
         )
@@ -393,7 +658,8 @@ def _sofr_market_metrics() -> list[dict[str, Any]]:
         if iorb is not None:
             iorb_tail = (Decimal(str(percentile_99)) - iorb.value) * Decimal("100")
             iorb_fresh_until = min(fresh_until, _fresh_until(iorb))
-            source_keys = sorted({latest.source.key, iorb.source.key, "internal"})
+            input_source_keys = _observation_source_keys(latest, iorb)
+            source_keys = sorted(input_source_keys | {"internal"})
             metrics.append(
                 {
                     "key": "sofr-p99-minus-iorb",
@@ -419,7 +685,7 @@ def _sofr_market_metrics() -> list[dict[str, Any]]:
                     "batch_id": f"{latest.batch_id},{iorb.batch_id}",
                     "metadata": {
                         "formula": "SOFR percentPercentile99 - IORB",
-                        "source_keys": sorted({latest.source.key, iorb.source.key}),
+                        "source_keys": sorted(input_source_keys),
                     },
                 }
             )
@@ -434,7 +700,7 @@ def _sofr_market_history(*, limit: int = 120) -> list[dict[str, Any]]:
         row: dict[str, Any] = {
             "date": observation.value_date.date().isoformat(),
             "SOFR": float(observation.value),
-            "_source_keys": [observation.source.key],
+            "_source_keys": sorted(_observation_source_keys(observation)),
         }
         if observation.metadata.get("percentPercentile99") is not None:
             row["99P"] = float(observation.metadata["percentPercentile99"])
@@ -588,6 +854,29 @@ def _store_h10_observations(result, source, run) -> int:
 def _store_release_workbook_observations(result, source, run) -> int:
     """Persist normalized release rows plus immutable HTML/XLSX fingerprints."""
 
+    incoming_series = {
+        str(record.get("series_id") or "").lower()
+        for record in result.records
+        if record.get("series_id") and record.get("date")
+    }
+    incoming_dates = [
+        datetime.fromisoformat(str(record["date"])[:10])
+        for record in result.records
+        if record.get("series_id") and record.get("date")
+    ]
+    existing_latest = (
+        Observation.objects.filter(source=source, series__key__in=incoming_series)
+        .order_by("-value_date")
+        .first()
+    )
+    if (
+        incoming_dates
+        and existing_latest is not None
+        and max(incoming_dates).date() < existing_latest.value_date.date()
+    ):
+        raise ValueError(
+            "release latest value date regressed behind the stored official source"
+        )
     row_count = store_series_observations(result, source, run)
     for artifact in result.metadata.get("artifacts", []):
         url = str(artifact.get("url") or "")
@@ -610,37 +899,25 @@ def _publish_dashboard(
     title: str,
     summary: str,
     metrics: list[dict[str, Any]],
-    chart_data: list[float] | None = None,
+    chart_data: Any = None,
+    charts: list[dict[str, Any]] | None = None,
     sections: list[dict[str, Any]] | None = None,
+    required_metric_keys: frozenset[str] | None = None,
     batch_id: uuid.UUID,
 ) -> DashboardSnapshot | None:
     if not metrics:
         return None
-    as_of_values = [datetime.fromisoformat(item["as_of"]) for item in metrics if item.get("as_of")]
-    as_of = min(as_of_values) if as_of_values else timezone.now()
-    if as_of.tzinfo is None:
-        as_of = as_of.replace(tzinfo=UTC)
-    component_qualities = {item.get("quality_status") for item in metrics}
-    if Observation.Quality.ERROR in component_qualities:
-        quality = Observation.Quality.ERROR
-    elif Observation.Quality.STALE in component_qualities:
-        quality = Observation.Quality.STALE
-    elif component_qualities == {Observation.Quality.FRESH}:
-        quality = Observation.Quality.FRESH
-    else:
-        quality = Observation.Quality.ESTIMATED
-    source = ensure_source("internal")
-    component_batches = sorted(
-        {
-            batch.strip()
-            for item in metrics
-            for batch in str(item.get("batch_id") or "").split(",")
-            if batch.strip()
-        }
-    )
+    if required_metric_keys and not required_metric_keys <= {
+        str(item.get("key") or "") for item in metrics
+    }:
+        return None
+
     def payload_source_keys(value: Any) -> set[str]:
         if isinstance(value, dict):
             keys = {str(value["source_key"])} if value.get("source_key") else set()
+            for fallback_field in ("fallback_source", "fallback_source_key"):
+                if value.get(fallback_field):
+                    keys.add(str(value[fallback_field]))
             keys.update(str(item) for item in value.get("source_keys", []) if item)
             keys.update(str(item) for item in value.get("_source_keys", []) if item)
             for nested in value.values():
@@ -653,17 +930,114 @@ def _publish_dashboard(
             return keys
         return set()
 
-    source_keys = sorted(payload_source_keys([metrics, chart_data or [], sections or []]))
+    def payload_batch_ids(value: Any) -> set[str]:
+        def normalized(raw: Any) -> set[str]:
+            return {
+                item.strip()
+                for item in str(raw or "").split(",")
+                if item.strip()
+            }
+
+        if isinstance(value, dict):
+            batches = normalized(value.get("batch_id"))
+            for item in value.get("batch_ids", []):
+                batches.update(normalized(item))
+            for nested in value.values():
+                batches.update(payload_batch_ids(nested))
+            return batches
+        if isinstance(value, list):
+            batches: set[str] = set()
+            for nested in value:
+                batches.update(payload_batch_ids(nested))
+            return batches
+        return set()
+
+    normalized_charts = [dict(item) for item in charts or [] if item]
+    if not normalized_charts:
+        inherited_source_keys = payload_source_keys(chart_data or [])
+        if not inherited_source_keys:
+            inherited_source_keys = payload_source_keys(metrics)
+        metric_qualities = {item.get("quality_status") for item in metrics}
+        if Observation.Quality.ERROR in metric_qualities:
+            inherited_quality = Observation.Quality.ERROR
+        elif Observation.Quality.STALE in metric_qualities:
+            inherited_quality = Observation.Quality.STALE
+        elif Observation.Quality.FALLBACK in metric_qualities:
+            inherited_quality = Observation.Quality.FALLBACK
+        elif metric_qualities == {Observation.Quality.FRESH}:
+            inherited_quality = Observation.Quality.FRESH
+        else:
+            inherited_quality = Observation.Quality.ESTIMATED
+        normalized_charts = [
+            {
+                "key": "primary",
+                "title": "核心趋势",
+                "description": "",
+                "kind": "line",
+                "data": chart_data or [],
+                "source_keys": sorted(inherited_source_keys),
+                "as_of": min(
+                    (item["as_of"] for item in metrics if item.get("as_of")),
+                    default=None,
+                ),
+                "fetched_at": max(
+                    (item["fetched_at"] for item in metrics if item.get("fetched_at")),
+                    default=None,
+                ),
+                "fresh_until": min(
+                    (item["fresh_until"] for item in metrics if item.get("fresh_until")),
+                    default=None,
+                ),
+                "quality_status": inherited_quality,
+                "batch_ids": sorted(payload_batch_ids(metrics)),
+            }
+        ]
+    for chart in normalized_charts:
+        chart.setdefault("data", [])
+        chart.setdefault("kind", "line")
+        chart.setdefault("title", "趋势")
+
+    as_of_values = [
+        datetime.fromisoformat(item["as_of"])
+        for item in [*metrics, *normalized_charts]
+        if item.get("as_of")
+    ]
+    as_of = min(as_of_values) if as_of_values else timezone.now()
+    if as_of.tzinfo is None:
+        as_of = as_of.replace(tzinfo=UTC)
+    component_qualities = {
+        item.get("quality_status") for item in [*metrics, *normalized_charts]
+    }
+    if Observation.Quality.ERROR in component_qualities:
+        quality = Observation.Quality.ERROR
+    elif Observation.Quality.STALE in component_qualities:
+        quality = Observation.Quality.STALE
+    elif component_qualities == {Observation.Quality.FRESH}:
+        quality = Observation.Quality.FRESH
+    else:
+        quality = Observation.Quality.ESTIMATED
+    source = ensure_source("internal")
+    component_batches = sorted(
+        payload_batch_ids([metrics, normalized_charts, sections or []])
+    )
+    source_keys = sorted(
+        payload_source_keys([metrics, normalized_charts, sections or []])
+    )
     snapshot_data = {
         "demo": False,
         "metrics": metrics,
-        "chart_data": chart_data or [],
+        "charts": normalized_charts,
+        "chart_data": normalized_charts[0]["data"],
         "sections": sections or [],
         "component_batches": component_batches,
         "source_keys": source_keys,
         "required_notices": public_source_notices(source_keys),
         "fresh_until": min(
-            (item["fresh_until"] for item in metrics if item.get("fresh_until")),
+            (
+                item["fresh_until"]
+                for item in [*metrics, *normalized_charts, *(sections or [])]
+                if item.get("fresh_until")
+            ),
             default=None,
         ),
         "publication_batch_id": str(batch_id),
@@ -684,6 +1058,7 @@ def _publish_dashboard(
                 if item_key
                 not in {
                     "batch_id",
+                    "batch_ids",
                     "component_batch_id",
                     "component_batches",
                     "fetched_at",
@@ -714,12 +1089,21 @@ def _publish_dashboard(
         .first()
     )
     if latest and latest.data.get("fingerprint") == fingerprint:
+        latest_data = dict(latest.data or {})
+        refresh_failure = latest_data.pop("refresh_failure", None)
+        if refresh_failure or latest.quality_status != quality:
+            latest.data = latest_data
+            latest.quality_status = quality
+            latest.save(update_fields=["data", "quality_status", "updated_at"])
         return None
     for item in metrics:
         item_value = item.get("value")
         if item_value is None:
             continue
         component_source = Source.objects.filter(key=item.get("source_key", "")).first() or source
+        component_fallback_source = Source.objects.filter(
+            key=item.get("fallback_source", "")
+        ).first()
         value_date = datetime.fromisoformat(item["as_of"]) if item.get("as_of") else as_of
         if value_date.tzinfo is None:
             value_date = value_date.replace(tzinfo=UTC)
@@ -745,6 +1129,7 @@ def _publish_dashboard(
                 "as_of": value_date,
                 "fetched_at": fetched_at,
                 "source": component_source,
+                "fallback_source": component_fallback_source,
                 "quality_status": item.get("quality_status", Observation.Quality.FRESH),
                 "license_scope": component_source.license_scope[:120],
                 "metadata": {
@@ -781,6 +1166,60 @@ def publish_official_dashboards(
     hqm_curve = _curve_rows("hqm-par", ("2y", "5y", "10y", "30y"))
     sofr_market_metrics = _sofr_market_metrics()
     auction_metrics, auction_rows = _auction_snapshot_data()
+    consumer_metrics: list[dict[str, Any]] = []
+    consumer_charts: list[dict[str, Any]] = []
+    if selected_keys is None or "consumer" in selected_keys:
+        consumer_metrics = _existing(
+            _metric(
+                "CENSUS-MRTS-44X72-SM-SA",
+                "零售与餐饮服务",
+                decimals=0,
+                suffix=" USD mn",
+            ),
+            _metric(
+                "CENSUS-MRTS-44X72-SM-SA-MOM",
+                "零售环比",
+                suffix="%",
+            ),
+            _metric(
+                "CENSUS-MRTS-44X72-SM-SA-YOY",
+                "零售同比",
+                suffix="%",
+            ),
+            _metric("BEA-REAL-PCE-MOM", "实际 PCE 环比", suffix="%"),
+            _metric("BEA-PERSONAL-SAVING-RATE", "个人储蓄率", suffix="%"),
+            _metric("BEA-REAL-DPI-MOM", "实际可支配收入环比", suffix="%"),
+        )
+        consumer_charts = [
+            chart
+            for chart in (
+                _history_chart(
+                    key="retail-sales",
+                    title="零售与餐饮服务销售",
+                    description="季调月度水平，单位：百万美元",
+                    series={"CENSUS-MRTS-44X72-SM-SA": "零售与餐饮服务"},
+                    limit=36,
+                ),
+                _history_chart(
+                    key="real-consumption-income-momentum",
+                    title="实际消费与收入动能",
+                    description="实际 PCE 与实际可支配收入月环比，单位：%",
+                    series={
+                        "BEA-REAL-PCE-MOM": "实际 PCE 环比",
+                        "BEA-REAL-DPI-MOM": "实际 DPI 环比",
+                    },
+                    limit=120,
+                ),
+                _history_chart(
+                    key="personal-saving-rate",
+                    title="个人储蓄率",
+                    description="个人储蓄占可支配个人收入，单位：%",
+                    series={"BEA-PERSONAL-SAVING-RATE": "个人储蓄率"},
+                    limit=120,
+                ),
+            )
+            if chart is not None
+        ]
     dashboards: list[DashboardSnapshot] = []
     definitions = [
         {
@@ -1189,28 +1628,23 @@ def publish_official_dashboards(
         {
             "key": "consumer",
             "title": "消费与零售",
-            "summary": "零售与餐饮服务销售来自 Census MARTS 官方发布工作簿；季调水平、环比和同比保留 Advance/Preliminary/Revised 标签。",
-            "metrics": _existing(
-                _metric(
-                    "CENSUS-MRTS-44X72-SM-SA",
-                    "零售与餐饮服务",
-                    decimals=0,
-                    suffix=" USD mn",
-                ),
-                _metric(
-                    "CENSUS-MRTS-44X72-SM-SA-MOM",
-                    "零售环比",
-                    suffix="%",
-                ),
-                _metric(
-                    "CENSUS-MRTS-44X72-SM-SA-YOY",
-                    "零售同比",
-                    suffix="%",
-                ),
+            "summary": (
+                "零售与餐饮服务销售来自 Census MARTS 官方发布工作簿；实际 PCE、"
+                "实际可支配收入和个人储蓄率来自 BEA 月度 PIO Section 2 工作簿，"
+                "并与当月 Historical Comparisons 摘要交叉校验。消费者信心因公开"
+                "再发布许可未就绪，继续保留采购标记。"
             ),
-            "chart_data": _history_rows(
-                {"CENSUS-MRTS-44X72-SM-SA": "零售与餐饮服务"},
-                limit=36,
+            "metrics": consumer_metrics,
+            "charts": consumer_charts,
+            "required_metric_keys": frozenset(
+                {
+                    "census-mrts-44x72-sm-sa",
+                    "census-mrts-44x72-sm-sa-mom",
+                    "census-mrts-44x72-sm-sa-yoy",
+                    "bea-real-pce-mom",
+                    "bea-personal-saving-rate",
+                    "bea-real-dpi-mom",
+                }
             ),
         },
     ]
@@ -1435,7 +1869,7 @@ def refresh_credit_official_data() -> dict[str, Any]:
 
 
 def refresh_macro_official_data(*, current_year: int | None = None) -> dict[str, Any]:
-    """Refresh the complete keyless BEA GDP and Census retail release batch."""
+    """Refresh keyless GDP, PIO and retail releases with page-level quality gates."""
 
     _ = current_year  # Backward-compatible command/task signature.
     providers = [
@@ -1451,6 +1885,12 @@ def refresh_macro_official_data(*, current_year: int | None = None) -> dict[str,
             {},
             _store_release_workbook_observations,
         ),
+        (
+            BEAPIOReleaseProvider(),
+            "personal_income_outlays",
+            {},
+            _store_release_workbook_observations,
+        ),
     ]
     runs: list[IngestionRun] = []
     try:
@@ -1460,9 +1900,15 @@ def refresh_macro_official_data(*, current_year: int | None = None) -> dict[str,
     finally:
         for provider, _, _, _ in providers:
             provider.close()
+    completed_keys = _publishable_keys_for_source_groups(
+        runs, MACRO_PUBLICATION_GROUPS
+    )
+    publishable_keys = _keys_with_current_required_batches(completed_keys, runs)
+    stale_keys = set(MACRO_PUBLICATION_GROUPS) - publishable_keys
+    _mark_latest_dashboards_stale(stale_keys, runs)
     dashboards = (
-        publish_official_dashboards(keys=MACRO_PUBLICATION_KEYS)
-        if _has_publishable_run(runs)
+        publish_official_dashboards(keys=publishable_keys)
+        if publishable_keys
         else []
     )
     return {
@@ -1478,4 +1924,5 @@ def refresh_macro_official_data(*, current_year: int | None = None) -> dict[str,
             for run in runs
         ],
         "dashboard_keys": [dashboard.key for dashboard in dashboards],
+        "stale_dashboard_keys": sorted(stale_keys),
     }

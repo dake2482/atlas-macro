@@ -122,6 +122,16 @@ def test_service_worker_caches_offline_fallback():
     assert root_worker or explicit_root_scope, "service worker must control root-page navigation"
 
 
+def test_sparse_chart_rows_render_as_gaps_instead_of_fabricated_zeroes():
+    source = (
+        Path(__file__).resolve().parents[1] / "assets" / "js" / "app.js"
+    ).read_text(encoding="utf-8")
+
+    assert 'value === null || value === undefined || value === ""' in source
+    assert "Number.isFinite(numeric) ? numeric : null" in source
+    assert "Number(row[key]) || 0" not in source
+
+
 @pytest.mark.django_db
 def test_root_service_worker_endpoint_can_control_navigation(client):
     response = client.get("/sw.js")

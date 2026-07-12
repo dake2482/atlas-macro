@@ -61,15 +61,22 @@ def _breadcrumbs(*items):
 
 
 def _snapshot_source_keys(data):
-    keys = {str(key) for key in (data or {}).get("source_keys", []) if key}
-    for metric in (data or {}).get("metrics", []):
-        keys.update(str(key) for key in metric.get("source_keys", []) if key)
-        if metric.get("source_key"):
-            keys.add(str(metric["source_key"]))
-        keys.update(
-            str(key) for key in (metric.get("metadata") or {}).get("source_keys", []) if key
-        )
-    return keys
+    if isinstance(data, dict):
+        keys = {str(data["source_key"])} if data.get("source_key") else set()
+        for fallback_field in ("fallback_source", "fallback_source_key"):
+            if data.get(fallback_field):
+                keys.add(str(data[fallback_field]))
+        keys.update(str(key) for key in data.get("source_keys", []) if key)
+        keys.update(str(key) for key in data.get("_source_keys", []) if key)
+        for value in data.values():
+            keys.update(_snapshot_source_keys(value))
+        return keys
+    if isinstance(data, list):
+        keys = set()
+        for value in data:
+            keys.update(_snapshot_source_keys(value))
+        return keys
+    return set()
 
 
 def _public_theses():
@@ -448,20 +455,23 @@ def dashboard_page(request, page_key: str):
         config = get_page_config(page_key)
     except KeyError as exc:
         raise Http404("未知仪表盘") from exc
-    snapshot = (
+    snapshot_candidates = (
         DashboardSnapshot.objects.filter(key=page_key, is_published=True)
         .filter(Q(data__demo=False) | ~Q(data__has_key="demo"))
         .exclude(source__key="demo-market")
         .select_related("source")
         .order_by("-as_of", "-created_at")
-        .first()
     )
-    snapshot_source_keys = _snapshot_source_keys(snapshot.data) if snapshot else set()
-    if snapshot and snapshot.source_id:
-        snapshot_source_keys.add(snapshot.source.key)
-    if snapshot and not publicly_displayable_source_keys(snapshot_source_keys):
-        snapshot = None
-        snapshot_source_keys = set()
+    snapshot = None
+    snapshot_source_keys: set[str] = set()
+    for candidate in snapshot_candidates[:50]:
+        candidate_source_keys = _snapshot_source_keys(candidate.data)
+        if candidate.source_id:
+            candidate_source_keys.add(candidate.source.key)
+        if publicly_displayable_source_keys(candidate_source_keys):
+            snapshot = candidate
+            snapshot_source_keys = candidate_source_keys
+            break
     if snapshot:
         snapshot_data = dict(snapshot.data or {})
         metrics = [dict(item) for item in snapshot_data.get("metrics", [])]
@@ -495,14 +505,102 @@ def dashboard_page(request, page_key: str):
                 section["status"] = "stale"
                 snapshot.quality_status = "stale"
         snapshot_data["sections"] = sections
+        raw_charts = snapshot_data.get("charts")
+        if not isinstance(raw_charts, list) or not raw_charts:
+            legacy_chart_data = snapshot_data.get("chart_data", [])
+            raw_charts = [
+                {
+                    "key": "primary",
+                    "title": "核心趋势",
+                    "kind": "line",
+                    "data": legacy_chart_data,
+                    "source_keys": sorted(
+                        _snapshot_source_keys(legacy_chart_data)
+                    )
+                    or snapshot_data.get("source_keys", []),
+                    "as_of": snapshot.as_of.isoformat(),
+                    "quality_status": snapshot.quality_status,
+                }
+            ]
+        charts = []
+        allowed_chart_kinds = {
+            "line",
+            "bar",
+            "area",
+            "scatter",
+            "pie",
+            "gauge",
+            "graph",
+            "heatmap",
+        }
+        source_map = {
+            source.key: source
+            for source in Source.objects.filter(key__in=snapshot_source_keys)
+            .filter(public_display_license_q("licenses"))
+            .distinct()
+        }
+        for index, raw_chart in enumerate(raw_charts):
+            if not isinstance(raw_chart, dict):
+                continue
+            chart = dict(raw_chart)
+            chart["dom_id"] = f"dashboard-chart-{index}"
+            chart["kind"] = (
+                chart.get("kind")
+                if chart.get("kind") in allowed_chart_kinds
+                else "line"
+            )
+            chart_source_keys = sorted(_snapshot_source_keys(chart))
+            if not chart_source_keys:
+                chart_source_keys = [
+                    key
+                    for key in snapshot_data.get("source_keys", [])
+                    if key in source_map
+                ]
+            chart["sources"] = [
+                source_map[key] for key in chart_source_keys if key in source_map
+            ]
+            chart.setdefault("as_of", snapshot.as_of.isoformat())
+            chart.setdefault("quality_status", snapshot.quality_status)
+            fresh_until = chart.get("fresh_until")
+            if fresh_until:
+                try:
+                    deadline = datetime.fromisoformat(fresh_until)
+                except (TypeError, ValueError):
+                    deadline = None
+                if deadline is not None:
+                    if deadline.tzinfo is None:
+                        deadline = deadline.replace(
+                            tzinfo=timezone.get_current_timezone()
+                        )
+                    if deadline < now:
+                        chart["quality_status"] = "stale"
+                        snapshot.quality_status = "stale"
+            if chart.get("quality_status") == "stale":
+                snapshot.quality_status = "stale"
+            charts.append(chart)
+        if not charts:
+            charts = [
+                {
+                    "dom_id": "dashboard-chart-0",
+                    "title": "核心趋势",
+                    "kind": "line",
+                    "data": [],
+                    "sources": [],
+                    "as_of": snapshot.as_of.isoformat(),
+                    "quality_status": snapshot.quality_status,
+                }
+            ]
+        snapshot_data["charts"] = raw_charts
         snapshot.data = snapshot_data
         config["snapshot"] = snapshot
+        config["refresh_failure"] = snapshot_data.get("refresh_failure")
         config["required_notices"] = public_source_notices(snapshot_source_keys)
         config["analysis"] = snapshot.summary or (
             "本批次只发布了通过许可和质量校验的数值，尚未生成经审核的信号解读。"
         )
         config["metrics"] = snapshot_data.get("metrics", [])
-        config["chart_data"] = snapshot_data.get("chart_data", [])
+        config["charts"] = charts
+        config["chart_data"] = charts[0].get("data", [])
         config["sections"] = sections
     else:
         static_metrics = config.get("metrics", [])
@@ -522,12 +620,23 @@ def dashboard_page(request, page_key: str):
             for label in labels
         ]
         config["chart_data"] = []
+        config["charts"] = [
+            {
+                "dom_id": "dashboard-chart-0",
+                "title": "核心趋势",
+                "kind": "line",
+                "data": [],
+                "sources": [],
+                "quality_status": "stale",
+            }
+        ]
         config["sections"] = []
         config["analysis"] = (
             "本页尚无通过来源许可与质量检查的可发布快照。缺失项目和采购建议见页面下方数据覆盖台账。"
         )
         config["source_notes"] = ["没有真实数据时显示空缺，不回退到演示或合成数值。"]
         config["required_notices"] = []
+        config["refresh_failure"] = None
     config.update(
         {
             "page_key": page_key,

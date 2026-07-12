@@ -171,7 +171,14 @@ function rowsToSeries(raw) {
   if (raw.every((row) => typeof row === "number" || typeof row === "string")) {
     return {
       labels: raw.map((_, index) => index + 1),
-      series: [{ name: "数值", data: raw.map((value) => Number(value) || 0) }],
+      series: [{
+        name: "数值",
+        data: raw.map((value) => {
+          if (value === null || value === undefined || value === "") return null;
+          const numeric = Number(value);
+          return Number.isFinite(numeric) ? numeric : null;
+        }),
+      }],
     };
   }
   const labels = raw.map((row, index) => row.label ?? row.date ?? row.name ?? index + 1);
@@ -180,7 +187,15 @@ function rowsToSeries(raw) {
   );
   return {
     labels,
-    series: keys.map((key) => ({ name: key, data: raw.map((row) => Number(row[key]) || 0) })),
+    series: keys.map((key) => ({
+      name: key,
+      data: raw.map((row) => {
+        const value = row?.[key];
+        if (value === null || value === undefined || value === "") return null;
+        const numeric = Number(value);
+        return Number.isFinite(numeric) ? numeric : null;
+      }),
+    })),
   };
 }
 

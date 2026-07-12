@@ -106,6 +106,15 @@ def test_public_routes_render(client, seeded_platform, path):
 
 
 @pytest.mark.django_db
+def test_assets_overview_keeps_legacy_chart_contract(client, seeded_platform):
+    body = client.get("/assets/").content.decode()
+
+    assert 'id="dashboard-primary-chart"' in body
+    assert 'data-chart-source="dashboard-primary-chart"' in body
+    assert 'aria-labelledby="dashboard-primary-chart-title"' in body
+
+
+@pytest.mark.django_db
 def test_no_public_route_leaks_seeded_demo_content(client, seeded_platform):
     forbidden = (
         "演示日报",
