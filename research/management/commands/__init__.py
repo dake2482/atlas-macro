@@ -1,0 +1,2 @@
+"""Research application management commands."""
+

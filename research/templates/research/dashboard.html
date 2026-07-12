@@ -1,0 +1,39 @@
+{% extends "research/base.html" %}
+{% block title %}{{ title }} · {{ site_name }}{% endblock %}
+{% block content %}
+<div class="content-wrap">
+  {% if snapshot %}
+    {% include "research/includes/page_header.html" with eyebrow=eyebrow page_title=title page_description=description as_of=snapshot.as_of source=snapshot.source quality_status=snapshot.quality_status show_copy=True %}
+  {% else %}
+    {% include "research/includes/page_header.html" with eyebrow=eyebrow page_title=title page_description=description show_copy=True %}
+  {% endif %}
+  {% if snapshot.quality_status == "stale" %}<div class="callout mb-4 !border-[var(--warning)] text-[12px]"><strong class="warning">数据已过期：</strong>上游更新尚未通过完整性检查，当前保留上一批可用快照。</div>{% endif %}
+  {% if metrics %}<section class="mb-4 grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6" aria-label="关键指标">{% for metric in metrics %}{% include "research/includes/metric_card.html" with metric=metric %}{% endfor %}</section>{% endif %}
+  <div class="grid gap-4 xl:grid-cols-[minmax(0,1.5fr)_minmax(18rem,.65fr)]">
+    {% if snapshot %}
+      {% include "research/includes/chart_panel.html" with chart_id="dashboard-primary-chart" chart_title="核心趋势" chart_data=chart_data chart_kind="line" chart_class="chart-tall" source=snapshot.source as_of=snapshot.as_of %}
+    {% else %}
+      {% include "research/includes/chart_panel.html" with chart_id="dashboard-primary-chart" chart_title="核心趋势" chart_data=chart_data chart_kind="line" chart_class="chart-tall" %}
+    {% endif %}
+    <div class="grid content-start gap-4">
+      <section class="panel"><header class="panel-header"><div><h2 class="section-title">信号解读</h2><p class="section-deck">公式、口径与当前含义</p></div></header><div class="panel-body prose-atlas !text-[12px]">{% if analysis %}{{ analysis|linebreaks }}{% else %}<p class="muted">等待已审核的数据解读。</p>{% endif %}</div></section>
+      {% if events %}<section class="panel"><header class="panel-header"><h2 class="section-title">未来事件</h2></header><div class="panel-body timeline">{% for event in events %}<article class="timeline-item"><span class="timeline-dot"></span>{% if event.date %}<time class="mono text-[10px] muted">{{ event.date|date:"m-d H:i" }}</time>{% elif event.at %}<time class="mono text-[10px] muted">{{ event.at|date:"m-d H:i" }}</time>{% endif %}<p class="mt-1 text-[12px] font-semibold">{% if event.title %}{{ event.title }}{% else %}{{ event.name }}{% endif %}</p></article>{% endfor %}</div></section>{% endif %}
+    </div>
+  </div>
+  {% if sections %}
+    <div class="mt-4 grid gap-4 lg:grid-cols-2">
+      {% for section in sections %}
+        <section class="panel {% if section.full_width %}lg:col-span-2{% endif %}">
+          <header class="panel-header"><div><h2 class="section-title">{{ section.title }}</h2>{% if section.description %}<p class="section-deck">{{ section.description }}</p>{% endif %}</div>{% if section.status %}<span class="badge {% if section.status == 'fresh' %}badge-positive{% else %}badge-warning{% endif %}">{{ section.status }}</span>{% endif %}</header>
+          {% if section.body %}<div class="panel-body prose-atlas !text-[12px]">{{ section.body|linebreaks }}</div>{% endif %}
+          {% if section.rows %}<div class="data-table-wrap"><table class="data-table"><thead><tr><th>项目</th><th class="numeric">数值</th><th>状态 / 说明</th><th>来源 / 截至</th></tr></thead><tbody>{% for row in section.rows %}<tr><td><strong>{% if row.label %}{{ row.label }}{% elif row.name %}{{ row.name }}{% else %}{{ row.key }}{% endif %}</strong>{% if row.description %}<p class="mt-1 text-[10px] muted">{{ row.description }}</p>{% endif %}</td><td class="numeric">{% if row.display_value %}{{ row.display_value }}{% elif row.value != None %}{{ row.value }}{% else %}—{% endif %}</td><td>{% if row.status %}{{ row.status }}{% elif row.quality_status %}{{ row.quality_status }}{% elif row.note %}{{ row.note }}{% else %}—{% endif %}</td><td><span class="block">{% if row.source.name %}{{ row.source.name }}{% elif row.source %}{{ row.source }}{% else %}—{% endif %}</span>{% if row.as_of %}<time class="mono mt-1 block text-[9px] muted">{{ row.as_of|date:"m-d H:i" }}</time>{% endif %}</td></tr>{% endfor %}</tbody></table></div>{% endif %}
+        </section>
+      {% endfor %}
+    </div>
+  {% endif %}
+  {% if asset_groups %}
+    <div class="mt-4 grid gap-4 xl:grid-cols-2">{% for group in asset_groups %}<section class="panel"><header class="panel-header"><div><h2 class="section-title">{{ group.label }}</h2><p class="section-deck">价格、日变动与组件级状态</p></div><span class="badge">{{ group.rows|length }}</span></header><div class="data-table-wrap"><table class="data-table"><thead><tr><th>标的</th><th class="numeric">数值</th><th class="numeric">变动</th><th>状态</th><th>截至</th></tr></thead><tbody>{% for row in group.rows %}<tr><td><strong>{{ row.symbol }}</strong><p class="text-[9px] muted">{{ row.name }}</p></td><td class="numeric">{{ row.value|floatformat:2 }}</td><td class="numeric {% if row.change > 0 %}positive{% elif row.change < 0 %}negative{% endif %}">{% if row.change > 0 %}+{% endif %}{{ row.change|floatformat:2 }}%</td><td><span class="badge {% if row.status == 'fresh' %}badge-positive{% else %}badge-warning{% endif %}">{{ row.status }}</span></td><td class="mono">{{ row.as_of|date:"m-d H:i" }}</td></tr>{% empty %}<tr><td colspan="5" class="muted text-center">等待首批数据。</td></tr>{% endfor %}</tbody></table></div></section>{% endfor %}</div>
+  {% endif %}
+  {% if source_notes %}<details class="panel mt-4"><summary class="panel-header cursor-pointer list-none"><div><h2 class="section-title">方法、来源与口径</h2><p class="section-deck">展开查看许可与限制</p></div><span aria-hidden="true">＋</span></summary><div class="panel-body prose-atlas"><ul>{% for note in source_notes %}<li>{{ note }}</li>{% endfor %}</ul></div></details>{% endif %}
+</div>
+{% endblock %}

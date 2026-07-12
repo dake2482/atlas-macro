@@ -1,0 +1,114 @@
+from __future__ import annotations
+
+import json
+import re
+from pathlib import Path
+from xml.etree import ElementTree
+
+import pytest
+from django.contrib.staticfiles import finders
+
+from research.models import Company, FundLetter, SupplyChainNode
+
+
+@pytest.mark.django_db
+def test_sitemap_is_xml_and_contains_static_and_dynamic_urls(client, seeded_platform, settings):
+    settings.SITE_URL = "https://atlas.example.test"
+    company = Company.objects.order_by("pk").first()
+    node = SupplyChainNode.objects.order_by("pk").first()
+    letter = FundLetter.objects.order_by("pk").first()
+
+    response = client.get("/sitemap.xml")
+
+    assert response.status_code == 200
+    assert response["Content-Type"].startswith(("application/xml", "text/xml"))
+    document = ElementTree.fromstring(response.content)
+    locations = {
+        element.text
+        for element in document.iter()
+        if element.tag.rsplit("}", 1)[-1] == "loc" and element.text
+    }
+    expected_paths = {
+        "/",
+        "/assets/",
+        "/rates/",
+        "/liquidity/",
+        company.get_absolute_url(),
+        node.get_absolute_url(),
+        letter.get_absolute_url(),
+    }
+    for path in expected_paths:
+        assert any(location.endswith(path) for location in locations), path
+
+
+@pytest.mark.django_db
+def test_robots_policy_protects_internal_surfaces(client, settings):
+    settings.SITE_URL = "https://atlas.example.test"
+
+    response = client.get("/robots.txt")
+
+    assert response.status_code == 200
+    assert response["Content-Type"].startswith("text/plain")
+    body = response.content.decode()
+    assert "User-agent: *" in body
+    assert "Disallow: /admin/" in body
+    assert "Disallow: /api/" in body
+    assert "Disallow: /search/" in body
+    assert "Sitemap: https://atlas.example.test/sitemap.xml" in body
+
+
+def test_pwa_manifest_is_discoverable_and_valid_json():
+    path = finders.find("research/manifest.webmanifest")
+    assert path, "manifest.webmanifest must be collected by Django staticfiles"
+
+    manifest = json.loads(Path(path).read_text(encoding="utf-8"))
+    assert manifest["name"]
+    assert manifest["short_name"]
+    assert manifest["start_url"] == "/"
+    assert manifest["display"] in {"standalone", "minimal-ui"}
+    assert manifest["theme_color"].startswith("#")
+    assert manifest["background_color"].startswith("#")
+    assert manifest.get("icons"), "installable PWAs need at least one icon"
+
+
+@pytest.mark.django_db
+def test_pwa_manifest_endpoint_uses_the_static_manifest(client):
+    response = client.get("/manifest.webmanifest")
+    assert response.status_code == 200
+    assert response["Content-Type"].startswith("application/manifest+json")
+    assert response.json()["start_url"] == "/"
+    assert response.json()["icons"]
+
+
+def test_service_worker_caches_offline_fallback():
+    path = finders.find("research/sw.js")
+    assert path, "sw.js must be collected by Django staticfiles"
+
+    source = Path(path).read_text(encoding="utf-8")
+    assert "/offline/" in source
+    assert "fetch" in source
+    assert "caches" in source
+    for asset in ("research/css/app.css", "research/js/app.js", "research/icon.svg"):
+        assert finders.find(asset), f"service-worker shell asset is missing: {asset}"
+
+    app_source = Path(finders.find("research/js/app.js")).read_text(encoding="utf-8")
+    root_worker = re.search(r"register\([\"']/sw\.js", app_source)
+    explicit_root_scope = re.search(r"scope\s*:\s*[\"']/[\"']", app_source)
+    assert root_worker or explicit_root_scope, "service worker must control root-page navigation"
+
+
+@pytest.mark.django_db
+def test_root_service_worker_endpoint_can_control_navigation(client):
+    response = client.get("/sw.js")
+    assert response.status_code == 200
+    assert "javascript" in response["Content-Type"]
+    assert response["Service-Worker-Allowed"] == "/"
+    assert "/offline/" in response.content.decode()
+
+
+@pytest.mark.django_db
+def test_offline_fallback_page_is_self_contained(client):
+    response = client.get("/offline/")
+    assert response.status_code == 200
+    body = response.content.decode().lower()
+    assert "offline" in body or "离线" in body

@@ -1,0 +1,23 @@
+<article class="metric-card">
+  <div class="flex items-start justify-between gap-3">
+    <p class="metric-label">{% if metric.label %}{{ metric.label }}{% elif metric.name %}{{ metric.name }}{% else %}指标{% endif %}</p>
+    {% if metric.quality_status or metric.status %}
+      <span class="badge {% if metric.quality_status == 'fresh' or metric.status == 'fresh' %}badge-positive{% elif metric.quality_status == 'error' or metric.status == 'error' %}badge-negative{% else %}badge-warning{% endif %}">{% if metric.get_quality_status_display %}{{ metric.get_quality_status_display }}{% elif metric.quality_status %}{{ metric.quality_status }}{% else %}{{ metric.status }}{% endif %}</span>
+    {% endif %}
+  </div>
+  <p class="metric-value">{% if metric.display_value %}{{ metric.display_value }}{% elif metric.value != None %}{{ metric.value }}{% else %}—{% endif %}{% if metric.unit and not metric.display_value %}<small class="ml-1 text-[11px] text-[var(--muted)]">{{ metric.unit }}</small>{% endif %}</p>
+  {% if metric.change != None %}
+    <p class="metric-delta {% if metric.change > 0 %}positive{% elif metric.change < 0 %}negative{% else %}muted{% endif %}">
+      {% if metric.change > 0 %}+{% endif %}{{ metric.change }}
+      <span class="ml-1 text-[var(--faint)]">较前值</span>
+    </p>
+  {% else %}
+    <p class="metric-delta text-[var(--faint)]">暂无可比前值</p>
+  {% endif %}
+  {% if metric.as_of or metric.source %}
+    <div class="source-line absolute bottom-3 left-4 right-4 pr-8">
+      {% if metric.source %}<span>{% if metric.source.name %}{{ metric.source.name }}{% else %}{{ metric.source }}{% endif %}</span>{% endif %}
+      {% if metric.as_of %}<time datetime="{{ metric.as_of|date:'c' }}">{{ metric.as_of|date:"m-d H:i" }}</time>{% endif %}
+    </div>
+  {% endif %}
+</article>

@@ -1,0 +1,22 @@
+{% extends "research/base.html" %}
+{% block title %}{{ page_title|default:"美联储文档" }} · {{ site_name }}{% endblock %}
+{% block content %}
+<div class="content-wrap">
+  {% include "research/includes/page_header.html" with eyebrow="Federal Reserve watch" page_title=title page_description="官方原文、AI 摘要与鹰鸽分数并列呈现；评分是研究辅助，不替代语境阅读。" %}
+  <form class="filter-bar mb-4" method="get">
+    <label class="field field-grow"><span class="field-label">搜索</span><input class="control" name="q" value="{{ request.GET.q }}" placeholder="标题、官员或摘要"></label>
+    <label class="field"><span class="field-label">类型</span><select class="control" name="type"><option value="">全部文档</option>{% for value, label in type_choices %}<option value="{{ value }}" {% if request.GET.type == value %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>
+    <button class="button button-primary" type="submit">筛选</button>
+  </form>
+  <div class="grid gap-3">
+    {% for document in documents %}
+      <article class="panel transition hover:border-[var(--accent)]"><div class="grid gap-4 p-4 md:grid-cols-[8rem_minmax(0,1fr)_7rem] md:items-start">
+        <div><time class="mono text-[10px] muted">{{ document.published_at|date:"Y-m-d H:i" }}</time><p class="mt-2"><span class="badge">{{ document.get_document_type_display|default:document.document_type }}</span></p>{% if document.speaker %}<p class="mt-2 text-[11px] font-semibold">{{ document.speaker }}</p>{% endif %}</div>
+        <div><h2 class="text-[15px] font-semibold tracking-[-.02em]"><a class="hover:text-[var(--accent)]" href="{% if document.document_type == 'speech' %}/fed/speeches/{{ document.slug }}/{% elif document.document_type == 'news' %}/fed/news/{{ document.slug }}/{% else %}/fed/statements/{{ document.slug }}/{% endif %}">{{ document.title }}</a></h2><p class="mt-2 line-clamp-2 text-[11px] leading-5 muted">{{ document.summary }}</p></div>
+        <div class="md:text-right"><span class="mono text-lg {% if document.hawkish_score > 0 %}negative{% elif document.hawkish_score < 0 %}positive{% endif %}">{% if document.hawkish_score > 0 %}+{% endif %}{{ document.hawkish_score }}</span><span class="block text-[9px] uppercase tracking-wider muted">鹰鸽评分</span></div>
+      </div></article>
+    {% empty %}<div class="panel">{% include "research/includes/empty_state.html" with empty_title="没有匹配的联储文档" empty_href=request.path %}</div>{% endfor %}
+  </div>
+  {% include "research/includes/pagination.html" %}
+</div>
+{% endblock %}

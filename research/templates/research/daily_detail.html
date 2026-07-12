@@ -1,0 +1,39 @@
+{% extends "research/base.html" %}
+{% block title %}{{ object.regime }} · {{ site_name }}{% endblock %}
+{% block content %}
+{% with item=object %}
+<article class="content-wrap">
+  <header class="mx-auto max-w-4xl border-b hairline pb-7 pt-3">
+    <div class="flex flex-wrap items-center gap-2"><span class="eyebrow">Daily brief</span><span class="badge">{{ item.date|date:"Y-m-d" }}</span>{% if item.stale %}<span class="badge badge-warning">已过期</span>{% endif %}</div>
+    <h1 class="page-title mt-4">{{ item.regime }}</h1>
+    <p class="page-deck">{{ item.summary }}</p>
+    <div class="source-line mt-5"><span>研究状态：{% if item.get_status_display %}{{ item.get_status_display }}{% else %}已发布{% endif %}</span>{% if item.model_name %}<span>模型：{{ item.model_name }}</span>{% endif %}{% if item.data_as_of %}<span>数据截至：{{ item.data_as_of|date:"Y-m-d H:i" }}</span>{% endif %}</div>
+  </header>
+  <div class="mx-auto mt-6 grid max-w-6xl gap-5 lg:grid-cols-[minmax(0,1fr)_18rem]">
+    <div class="panel"><div class="panel-body !p-6 sm:!p-8">
+      {% if item.body %}<div class="prose-atlas">{{ item.body|linebreaks }}</div>{% else %}
+        <div class="prose-atlas"><p>{{ item.summary }}</p>
+          {% if item.evidence %}<h2>核心证据</h2><ol>{% for evidence in item.evidence %}<li>{{ evidence.text|default:evidence }}</li>{% endfor %}</ol>{% endif %}
+          {% if item.triggers %}<h2>触发器</h2><ul>{% for trigger in item.triggers %}<li>{{ trigger.text|default:trigger }}</li>{% endfor %}</ul>{% endif %}
+          {% if item.invalidation %}<blockquote><strong>证伪条件：</strong>{{ item.invalidation }}</blockquote>{% endif %}
+        </div>
+      {% endif %}
+    </div></div>
+    <aside class="grid content-start gap-4">
+      <section class="panel"><header class="panel-header"><h2 class="section-title">报告元数据</h2></header><dl class="panel-body grid gap-3 text-[11px]">
+        <div class="flex justify-between gap-3"><dt class="muted">日期</dt><dd class="mono">{{ item.date|date:"Y-m-d" }}</dd></div>
+        <div class="flex justify-between gap-3"><dt class="muted">置信度</dt><dd>{{ item.confidence|default:"—" }}</dd></div>
+        <div class="flex justify-between gap-3"><dt class="muted">提示词版本</dt><dd class="mono">{{ item.prompt_version|default:"—" }}</dd></div>
+        <div class="flex justify-between gap-3"><dt class="muted">证据数</dt><dd class="mono">{{ item.evidence|length }}</dd></div>
+      </dl></section>
+      <div class="callout text-[11px] leading-5">本页是研究快照，不会用后见之明覆盖当日信息边界。</div>
+    </aside>
+  </div>
+  <nav class="mx-auto mt-6 flex max-w-6xl items-center justify-between gap-4 border-t hairline pt-5" aria-label="相邻报告">
+    <div>{% if previous %}<a class="button" href="{{ previous.get_absolute_url }}">← 较早报告</a>{% endif %}</div>
+    <a class="button button-ghost" href="/daily-report/">返回报告库</a>
+    <div>{% if following %}<a class="button" href="{{ following.get_absolute_url }}">较新报告 →</a>{% endif %}</div>
+  </nav>
+</article>
+{% endwith %}
+{% endblock %}
