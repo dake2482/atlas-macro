@@ -3,15 +3,15 @@ schema_version: 1
 id: AI-RESEARCH-003
 project_id: AI-RESEARCH
 title: 修正并补齐官方就业数据页
-status: REVIEW
+status: DONE
 priority: P1
 executor: codex
 task_id: atlas-employment-official-20260712
 branch: main
 worktree: local
 dependencies: []
-updated_at: '2026-07-12T23:17:01+08:00'
-next_action: Run the project closeout gate after recording production evidence.
+updated_at: '2026-07-12T23:21:07+08:00'
+next_action: Start AI-RESEARCH-004 to replace inflation index levels with official monthly and annual rates.
 evidence:
 - Production currently displays total payroll employment as the headline nonfarm metric instead of monthly
   payroll change.
@@ -27,6 +27,8 @@ evidence:
   preserving a sub-500ms measured TTFB. Six containers remain healthy/running with zero restarts and OOM events.
 - The validated pre-release PostgreSQL backup is
   `/srv/atlasmacro/backups/pre-ce740e9-20260712T150441Z.dump` with its SHA-256 sidecar.
+- portfolio closeout AI-RESEARCH passed on commit 54c8826 with Ruff, the complete pytest suite, Django
+  checks, strict portfolio validation, and the local-only Git boundary verified.
 started_at: '2026-07-12T22:22:27+08:00'
 ---
 
