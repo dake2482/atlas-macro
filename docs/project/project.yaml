@@ -9,10 +9,10 @@ success_metrics:
 current_milestone:
   id: AI-RESEARCH-005
   title: 修正 Fed Funds 政策走廊的同日对齐
-  status: IN_PROGRESS
+  status: DONE
 health: GREEN
-next_action: Audit NY Fed and PRATES effective-date semantics and design the two-source publication coordinator.
-updated_at: '2026-07-13T00:10:00+08:00'
+next_action: Start AI-RESEARCH-006 to replace raw economy overview levels with gated official rate metrics.
+updated_at: '2026-07-13T01:28:35+08:00'
 validation_commands:
   - .venv/bin/ruff check .
   - .venv/bin/pytest -q
