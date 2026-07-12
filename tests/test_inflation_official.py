@@ -448,7 +448,7 @@ def test_refresh_official_data_wires_independent_inflation_gate(monkeypatch):
 
     first = refresh_official_data(current_year=2026)
     assert first["dashboard_keys"] == ["inflation"]
-    assert first["stale_dashboard_keys"] == ["employment"]
+    assert first["stale_dashboard_keys"] == ["economy", "employment"]
     snapshot = DashboardSnapshot.objects.get(key="inflation")
     bls_run = IngestionRun.objects.filter(
         source__key="bls", status="success"
@@ -458,7 +458,11 @@ def test_refresh_official_data_wires_independent_inflation_gate(monkeypatch):
     FakeBLSProvider.fail = True
     second = refresh_official_data(current_year=2026)
     assert "inflation" not in second["dashboard_keys"]
-    assert second["stale_dashboard_keys"] == ["employment", "inflation"]
+    assert second["stale_dashboard_keys"] == [
+        "economy",
+        "employment",
+        "inflation",
+    ]
     snapshot.refresh_from_db()
     assert snapshot.quality_status == "stale"
     assert snapshot.data["refresh_failure"]["sources"] == [

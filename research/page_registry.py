@@ -337,14 +337,48 @@ PAGE_CONFIGS = {
     "economy": {
         "title": "经济数据",
         "eyebrow": "US Macro Pulse",
-        "description": "增长、就业、通胀与消费四个模块分别保留官方发布日期与修订版本。",
-        "metrics": [
-            metric("实际 GDP", "+2.1%", "年化", source="BEA / FRED"),
-            metric("失业率", "4.1%", "+0.1pp", source="BLS"),
-            metric("核心 CPI", "+3.3%", "同比 -0.1pp", source="BLS"),
-            metric("实际消费", "+0.3%", "环比", source="BEA"),
+        "description": (
+            "增长、就业、通胀与消费四个官方子页原子组合；每项分别保留"
+            "有效日、抓取时间、输入批次、公式、许可与质量。"
+        ),
+        "snapshot_contract_version": 1,
+        "period_options": [
+            {"value": "1y", "label": "1 年", "months": 12},
+            {"value": "3y", "label": "3 年", "months": 36},
+            {"value": "5y", "label": "5 年", "months": 60},
         ],
-        "analysis": "增长温和放缓、通胀回落但不均衡，软着陆仍是基准情景。",
+        "default_period": "3y",
+        "tab_options": [
+            {"value": "overview", "label": "总览", "chart_keys": []},
+            {
+                "value": "growth",
+                "label": "增长",
+                "chart_keys": ["gdp-growth-history"],
+            },
+            {
+                "value": "labor",
+                "label": "就业",
+                "chart_keys": ["labor-slack"],
+            },
+            {
+                "value": "inflation",
+                "label": "通胀",
+                "chart_keys": ["core-cpi-rates"],
+            },
+            {
+                "value": "consumer",
+                "label": "消费",
+                "chart_keys": ["real-consumption-income-momentum"],
+            },
+        ],
+        "default_tab": "overview",
+        "metrics": [
+            metric("实际 GDP 季调年化增速"),
+            metric("失业率"),
+            metric("核心 CPI 同比"),
+            metric("实际 PCE 环比"),
+        ],
+        "analysis": "只有四个必需组件同时通过契约检查时才发布完整总览。",
     },
     "gdp": {
         "title": "GDP",

@@ -251,12 +251,17 @@ DATA_REQUIREMENTS = [
         "priority": 2,
     },
     {
-        "key": "bls-labor-inflation",
+        "key": "economy-official-component-composite",
         "page_key": "economy",
-        "metric_name": "就业、失业率、CPI 与 PPI",
+        "metric_name": "实际 GDP 增速、失业率、核心 CPI 同比与实际 PCE 环比",
         "status": LIVE,
-        "source_name": "U.S. Bureau of Labor Statistics Public Data API",
-        "source_url": "https://www.bls.gov/developers/",
+        "source_name": "BEA GDP/PIO releases and BLS Public Data API",
+        "source_url": "https://www.bea.gov/data/gdp/gross-domestic-product",
+        "reason": (
+            "总览不再直接读取 CES 就业总水平或 CPI 指数；只继承 GDP、就业、"
+            "通胀与消费四个已发布子页中通过许可、质量、批次和新鲜度门禁的"
+            "变化率指标及对应趋势图。"
+        ),
         "priority": 1,
     },
     {

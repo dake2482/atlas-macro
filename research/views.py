@@ -575,6 +575,11 @@ def dashboard_page(request, page_key: str):
         # after a quarterly source is added to the latest complete batch.
         .order_by("-created_at", "-as_of")
     )
+    required_contract_version = config.get("snapshot_contract_version")
+    if required_contract_version is not None:
+        snapshot_candidates = snapshot_candidates.filter(
+            data__contract_version=required_contract_version
+        )
     snapshot = None
     snapshot_source_keys: set[str] = set()
     for candidate in snapshot_candidates[:50]:
