@@ -1,0 +1,19 @@
+schema_version: 1
+project_id: AI-RESEARCH
+name: Atlas Macro
+purpose: Build a clean-room macro-research and AI supply-chain intelligence platform with traceable public sources, explicit data-quality labels, and original presentation.
+success_metrics:
+  - Public research outputs preserve source lineage, observation time, quality state, and licence boundaries.
+  - Demo or fallback records are never presented as verified official data.
+  - Django checks, lint, and deterministic tests remain green.
+current_milestone:
+  id: AI-RESEARCH-001
+  title: 接入统一项目控制面
+  status: REVIEW
+health: YELLOW
+next_action: Review and commit the onboarding files, then run `portfolio closeout AI-RESEARCH`; decide separately whether a canonical remote is needed.
+updated_at: '2026-07-12T20:35:00+08:00'
+validation_commands:
+  - .venv/bin/ruff check .
+  - .venv/bin/pytest -q
+  - .venv/bin/python manage.py check
