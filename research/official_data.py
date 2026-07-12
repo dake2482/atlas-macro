@@ -696,7 +696,7 @@ def _gdp_vintage_chart_and_section() -> tuple[
     latest_entries = periods[latest_period]
     chart_rows = [
         {
-            "date": f"{item.vintage_label} · {item.release_date.isoformat()}",
+            "date": f"{item.vintage_label}\n{item.release_date:%m-%d}",
             "实际 GDP": float(item.value),
             "_source_keys": [item.source.key],
             "_lineage": {"实际 GDP": lineage(item)},
