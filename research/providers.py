@@ -32,6 +32,7 @@ class ProviderResult:
     skipped: bool = False
     error: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
+    supplemental_records: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
 
     @property
     def ok(self) -> bool:

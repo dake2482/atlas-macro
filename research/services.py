@@ -25,6 +25,7 @@ from .models import (
     Observation,
     QualityCheck,
     RawArtifact,
+    ReleaseVintageObservation,
     SeriesDefinition,
     Source,
     SourceLicense,
@@ -1023,6 +1024,76 @@ def store_series_observations(result: ProviderResult, source: Source, run: Inges
                 },
             )
             count += 1
+    return count
+
+
+def store_release_vintage_observations(
+    result: ProviderResult,
+    source: Source,
+    run: IngestionRun,
+    *,
+    record_group: str = "release_vintages",
+) -> int:
+    """Upsert release-vintage rows without collapsing values by economic period."""
+
+    records = result.supplemental_records.get(record_group, [])
+    if not records:
+        return 0
+    fetched_at = result.fetched_at
+    if timezone.is_naive(fetched_at):
+        fetched_at = timezone.make_aware(fetched_at, UTC)
+    count = 0
+    for record in records:
+        series_id = str(record.get("series_id") or "")
+        release_date = parse_date(str(record.get("release_date") or ""))
+        estimate_round = str(record.get("estimate_round") or "").strip()
+        vintage_label = str(record.get("vintage_label") or estimate_round).strip()
+        if not all(
+            (
+                series_id,
+                record.get("date"),
+                record.get("value") is not None,
+                release_date,
+                estimate_round,
+                vintage_label,
+            )
+        ):
+            raise ValueError("release vintage record is missing an identity or value field")
+        name, unit, frequency = SERIES_CATALOG.get(
+            series_id,
+            (series_id, "", "quarterly"),
+        )
+        series, _ = SeriesDefinition.objects.get_or_create(
+            key=series_id.lower(),
+            defaults={
+                "name": name,
+                "unit": unit,
+                "source": source,
+                "frequency": frequency,
+                "description": f"Imported directly from {source.name}.",
+            },
+        )
+        value_date = _aware_midnight(record["date"])
+        as_of = _aware_midnight(release_date)
+        ReleaseVintageObservation.objects.update_or_create(
+            series=series,
+            value_date=value_date,
+            release_date=release_date,
+            estimate_round=estimate_round,
+            source=source,
+            defaults={
+                "value": record["value"],
+                "as_of": as_of,
+                "vintage_label": vintage_label,
+                "fetched_at": fetched_at,
+                "batch_id": run.batch_id,
+                "fallback_source": None,
+                "quality_status": Observation.Quality.FRESH,
+                "license_scope": source.license_scope[:240],
+                "metadata": dict(record.get("metadata") or {}),
+            },
+        )
+        count += 1
     return count
 
 

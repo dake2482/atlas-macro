@@ -214,6 +214,62 @@ class Observation(TimestampedModel):
         ordering = ["-value_date"]
 
 
+class ReleaseVintageObservation(TimestampedModel):
+    """A value as published in one identifiable official release vintage."""
+
+    series = models.ForeignKey(
+        SeriesDefinition,
+        on_delete=models.CASCADE,
+        related_name="release_vintages",
+    )
+    value = models.DecimalField(max_digits=28, decimal_places=8)
+    value_date = models.DateTimeField()
+    as_of = models.DateTimeField()
+    release_date = models.DateField()
+    estimate_round = models.CharField(max_length=60)
+    vintage_label = models.CharField(max_length=120)
+    fetched_at = models.DateTimeField()
+    batch_id = models.UUIDField(default=uuid.uuid4, db_index=True)
+    source = models.ForeignKey(
+        Source,
+        on_delete=models.PROTECT,
+        related_name="release_vintage_observations",
+    )
+    fallback_source = models.ForeignKey(
+        Source,
+        on_delete=models.PROTECT,
+        related_name="fallback_release_vintage_observations",
+        null=True,
+        blank=True,
+    )
+    quality_status = models.CharField(
+        max_length=20,
+        choices=Observation.Quality.choices,
+        default=Observation.Quality.FRESH,
+    )
+    license_scope = models.CharField(max_length=240, blank=True)
+    metadata = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        ordering = ["-value_date", "release_date", "estimate_round", "series"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=[
+                    "series",
+                    "value_date",
+                    "release_date",
+                    "estimate_round",
+                    "source",
+                ],
+                name="release_vintage_series_period_round_source",
+            )
+        ]
+        indexes = [
+            models.Index(fields=["series", "-value_date", "release_date"]),
+            models.Index(fields=["source", "batch_id"]),
+        ]
+
+
 class MarketBar(TimestampedModel):
     instrument = models.ForeignKey(Instrument, on_delete=models.CASCADE, related_name="bars")
     interval = models.CharField(max_length=20, default="1d")

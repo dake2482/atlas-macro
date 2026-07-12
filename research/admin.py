@@ -38,6 +38,23 @@ class ObservationAdmin(admin.ModelAdmin):
     date_hierarchy = "value_date"
 
 
+@admin.register(models.ReleaseVintageObservation)
+class ReleaseVintageObservationAdmin(admin.ModelAdmin):
+    list_display = (
+        "series",
+        "value_date",
+        "release_date",
+        "estimate_round",
+        "value",
+        "quality_status",
+        "source",
+    )
+    list_filter = ("estimate_round", "quality_status", "source")
+    search_fields = ("series__name", "series__key", "vintage_label")
+    date_hierarchy = "release_date"
+    readonly_fields = ("batch_id",)
+
+
 @admin.register(models.Thesis)
 class ThesisAdmin(admin.ModelAdmin):
     list_display = (

@@ -36,6 +36,7 @@ from .models import (
     MetricSnapshot,
     Observation,
     RawArtifact,
+    ReleaseVintageObservation,
     Source,
     TreasuryAuction,
 )
@@ -52,6 +53,7 @@ from .services import (
     public_source_notices,
     record_provider_result,
     store_fed_documents,
+    store_release_vintage_observations,
     store_series_observations,
     store_treasury_auctions,
 )
@@ -163,6 +165,18 @@ MACRO_REQUIRED_SERIES = {
         ),
     },
 }
+MACRO_REQUIRED_VINTAGE_SERIES = {
+    "gdp": {
+        "bea-release": frozenset(
+            {
+                "BEA-A191RL",
+                "BEA-GDP-NOMINAL-SAAR",
+                "BEA-GDI-NOMINAL-SAAR",
+                "BEA-GDI-REAL-GROWTH-SAAR",
+            }
+        )
+    }
+}
 
 
 def _has_publishable_run(runs: Iterable[IngestionRun]) -> bool:
@@ -222,6 +236,23 @@ def _keys_with_current_required_batches(
                     page_is_current = False
                     break
             if not page_is_current:
+                break
+        for source_key, series_keys in MACRO_REQUIRED_VINTAGE_SERIES.get(
+            page_key, {}
+        ).items():
+            run = run_by_source.get(source_key)
+            if run is None:
+                page_is_current = False
+                break
+            stored_series = set(
+                ReleaseVintageObservation.objects.filter(
+                    source__key=source_key,
+                    batch_id=run.batch_id,
+                    series__key__in={key.lower() for key in series_keys},
+                ).values_list("series__key", flat=True)
+            )
+            if stored_series != {key.lower() for key in series_keys}:
+                page_is_current = False
                 break
         if page_is_current:
             current.add(page_key)
@@ -594,6 +625,151 @@ def _history_chart(
     }
 
 
+def _gdp_vintage_chart_and_section() -> tuple[
+    dict[str, Any] | None,
+    dict[str, Any] | None,
+]:
+    """Build the public GDP revision trail from one complete BEA workbook batch."""
+
+    latest_run = (
+        IngestionRun.objects.filter(
+            source__key="bea-release",
+            dataset="gdp-release-workbooks",
+            status=IngestionRun.Status.SUCCESS,
+        )
+        .order_by("-completed_at", "-id")
+        .first()
+    )
+    if latest_run is None:
+        return None, None
+    vintages = list(
+        ReleaseVintageObservation.objects.filter(
+            source=latest_run.source,
+            series__key="bea-a191rl",
+            batch_id=latest_run.batch_id,
+        )
+        .filter(public_display_license_q())
+        .select_related("series", "source", "fallback_source")
+        .order_by("value_date", "release_date", "id")
+    )
+    if not vintages:
+        return None, None
+    periods: dict[datetime, list[ReleaseVintageObservation]] = {}
+    for item in vintages:
+        periods.setdefault(item.value_date, []).append(item)
+    latest_period = max(periods)
+    current = (
+        Observation.objects.filter(
+            source=latest_run.source,
+            series__key="bea-a191rl",
+            batch_id=latest_run.batch_id,
+            value_date=latest_period,
+        )
+        .select_related("series", "source", "fallback_source")
+        .first()
+    )
+    if current is None:
+        return None, None
+    fresh_until = _fresh_until(current)
+    quality_status = current.quality_status
+    if timezone.now() > fresh_until and quality_status == Observation.Quality.FRESH:
+        quality_status = Observation.Quality.STALE
+
+    def lineage(item: ReleaseVintageObservation) -> dict[str, Any]:
+        return {
+            "series_key": item.series.key,
+            "source_key": item.source.key,
+            "source_name": item.source.name,
+            "value_date": item.value_date.isoformat(),
+            "as_of": item.as_of.isoformat(),
+            "release_date": item.release_date.isoformat(),
+            "estimate_round": item.estimate_round,
+            "fetched_at": item.fetched_at.isoformat(),
+            "batch_id": str(item.batch_id),
+            "quality_status": item.quality_status,
+            "license_scope": item.license_scope,
+            "fallback_source": (
+                item.fallback_source.key if item.fallback_source_id else None
+            ),
+        }
+
+    latest_entries = periods[latest_period]
+    chart_rows = [
+        {
+            "date": f"{item.vintage_label} · {item.release_date.isoformat()}",
+            "实际 GDP": float(item.value),
+            "_source_keys": [item.source.key],
+            "_lineage": {"实际 GDP": lineage(item)},
+        }
+        for item in latest_entries
+    ]
+    latest_item = latest_entries[-1]
+    quarter_label = (
+        f"{latest_period.year}Q{((latest_period.month - 1) // 3) + 1}"
+    )
+    chart = {
+        "key": "gdp-vintage-trail",
+        "title": f"{quarter_label} 实际 GDP 估算修订",
+        "description": "按 BEA 官方发布日期展示每轮季调年化环比估算，单位：%。",
+        "kind": "line",
+        "data": chart_rows,
+        "source_keys": [latest_run.source.key],
+        "as_of": latest_item.as_of.isoformat(),
+        "fetched_at": max(item.fetched_at for item in latest_entries).isoformat(),
+        "fresh_until": fresh_until.isoformat(),
+        "quality_status": quality_status,
+        "batch_ids": [str(latest_run.batch_id)],
+    }
+
+    section_rows = []
+    for period in sorted(periods, reverse=True)[:8]:
+        entries = periods[period]
+        first, latest = entries[0], entries[-1]
+        revision = latest.value - first.value
+        labels = " → ".join(item.vintage_label for item in entries)
+        values = " → ".join(f"{item.value:.2f}%" for item in entries)
+        release_path = " · ".join(
+            f"{item.vintage_label} {item.release_date.isoformat()}" for item in entries
+        )
+        section_rows.append(
+            {
+                "label": f"{period.year}Q{((period.month - 1) // 3) + 1}",
+                "display_value": values,
+                "status": f"{labels}；累计修订 {revision:+.2f}pp",
+                "description": release_path,
+                "source": latest.source.name,
+                "source_key": latest.source.key,
+                "source_keys": [latest.source.key],
+                "as_of": latest.as_of.isoformat(),
+                "fetched_at": latest.fetched_at.isoformat(),
+                "quality_status": latest.quality_status,
+                "license_scope": latest.license_scope,
+                "fallback_source": (
+                    latest.fallback_source.key if latest.fallback_source_id else None
+                ),
+                "batch_id": str(latest.batch_id),
+            }
+        )
+    section = {
+        "title": "GDP 发布轮次与修订路径",
+        "description": (
+            f"当前官方工作簿保留 {len(vintages):,} 条实际 GDP 发布记录；"
+            "表格展示最近 8 个观察季度，箭头严格按发布日期排序。"
+        ),
+        "rows": section_rows,
+        "status": quality_status,
+        "full_width": True,
+        "source_key": latest_run.source.key,
+        "source_keys": [latest_run.source.key],
+        "as_of": latest_item.as_of.isoformat(),
+        "fetched_at": latest_item.fetched_at.isoformat(),
+        "fresh_until": fresh_until.isoformat(),
+        "quality_status": quality_status,
+        "batch_id": str(latest_run.batch_id),
+    }
+    return chart, section
+
+
 def _earliest_fresh_until(rows: Iterable[dict[str, Any]]) -> str | None:
     return min(
         (item["fresh_until"] for item in rows if item.get("fresh_until")),
@@ -904,6 +1080,10 @@ def _store_release_workbook_observations(result, source, run) -> int:
             "release latest value date regressed behind the stored official source"
         )
     row_count = store_series_observations(result, source, run)
+    vintage_count = store_release_vintage_observations(result, source, run)
+    if result.dataset == "gdp-release-workbooks" and vintage_count == 0:
+        raise ValueError("BEA GDP release contained no persistable vintage observations")
+    row_count += vintage_count
     for artifact in result.metadata.get("artifacts", []):
         url = str(artifact.get("url") or "")
         digest = str(artifact.get("sha256") or "")
@@ -1194,6 +1374,10 @@ def publish_official_dashboards(
     auction_metrics, auction_rows = _auction_snapshot_data()
     consumer_metrics: list[dict[str, Any]] = []
     consumer_charts: list[dict[str, Any]] = []
+    gdp_vintage_chart: dict[str, Any] | None = None
+    gdp_vintage_section: dict[str, Any] | None = None
+    if selected_keys is None or "gdp" in selected_keys:
+        gdp_vintage_chart, gdp_vintage_section = _gdp_vintage_chart_and_section()
     if selected_keys is None or "consumer" in selected_keys:
         consumer_metrics = _existing(
             _metric(
@@ -1665,7 +1849,7 @@ def publish_official_dashboards(
         {
             "key": "gdp",
             "title": "GDP 与增长",
-            "summary": "实际 GDP、GDI、PCE、分项增速与对 GDP 的贡献均来自 BEA 官方发布工作簿；增速为季调年化环比，贡献单位为百分点。",
+            "summary": "实际 GDP、GDI、PCE、分项增速与贡献均来自 BEA 官方发布工作簿；当前指标取每季度最新轮次，独立 vintage 数据层同时保留 Advance、Second、Third 与后续 Revised 的完整修订路径。",
             "metrics": _existing(
                 _metric("BEA-A191RL", "实际 GDP 增速", suffix="%"),
                 _metric("BEA-DPCERL", "实际 PCE 增速", suffix="%"),
@@ -1683,10 +1867,27 @@ def publish_official_dashboards(
                 ),
                 _metric("BEA-GOVERNMENT-CONTRIBUTION", "政府贡献", suffix="pp"),
             ),
-            "chart_data": _history_rows(
-                {"BEA-A191RL": "实际 GDP", "BEA-DPCERL": "实际 PCE"},
-                limit=24,
+            "charts": _existing(
+                _history_chart(
+                    key="gdp-growth-history",
+                    title="实际 GDP 与实际 PCE 增速",
+                    description="季调年化环比，单位：%。",
+                    series={
+                        "BEA-A191RL": "实际 GDP",
+                        "BEA-DPCERL": "实际 PCE",
+                    },
+                    limit=24,
+                )
+                or _history_chart(
+                    key="gdp-growth-history",
+                    title="实际 GDP 增速",
+                    description="季调年化环比，单位：%。",
+                    series={"BEA-A191RL": "实际 GDP"},
+                    limit=24,
+                ),
+                gdp_vintage_chart,
             ),
+            "sections": _existing(gdp_vintage_section),
         },
         {
             "key": "employment",

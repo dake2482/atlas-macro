@@ -28,7 +28,13 @@ from research.macro_releases import (
     BEAPIOReleaseProvider,
     CensusMARTSReleaseProvider,
 )
-from research.models import DashboardSnapshot, Observation, RawArtifact
+from research.models import (
+    DashboardSnapshot,
+    IngestionRun,
+    Observation,
+    RawArtifact,
+    ReleaseVintageObservation,
+)
 from research.official_data import (
     MACRO_PUBLICATION_GROUPS,
     _keys_with_current_required_batches,
@@ -417,6 +423,8 @@ def test_bea_release_provider_preserves_vintages_components_and_artifact_hashes(
     assert result.metadata["comparison_quarter"] == "2026Q1"
     assert result.metadata["comparison_release_date"] == "2026-06-25"
     assert result.metadata["comparison_estimate_round"] == "Third"
+    assert result.metadata["vintage_release_count"] == 3
+    assert result.metadata["vintage_observation_count"] == 12
     assert len(result.metadata["artifacts"]) == 3
     assert result.metadata["artifacts"][1]["sha256"] == hashlib.sha256(vintage).hexdigest()
 
@@ -428,6 +436,17 @@ def test_bea_release_provider_preserves_vintages_components_and_artifact_hashes(
     assert latest_gdp["metadata"]["vintage_label"] == "Third"
     assert latest_gdp["metadata"]["estimate_round"] == "Third"
     assert latest_gdp["metadata"]["source_revision_date"] == "2026-06-25"
+    gdp_vintages = [
+        item
+        for item in result.supplemental_records["release_vintages"]
+        if item["series_id"] == "BEA-A191RL" and item["date"] == "2026-01-01"
+    ]
+    assert [item["estimate_round"] for item in gdp_vintages] == ["Third", "Second"]
+    assert [item["value"] for item in gdp_vintages] == [Decimal("2.1"), Decimal("1.6")]
+    assert [item["release_date"] for item in gdp_vintages] == [
+        "2026-06-25",
+        "2026-05-28",
+    ]
     assert by_series_and_date[("BEA-DPCERL", "2026-01-01")]["value"] == Decimal("0.5")
     assert by_series_and_date[("BEA-DPCERL", "2025-10-01")]["value"] == Decimal("1.9")
     assert by_series_and_date[("BEA-GPDI-GROWTH", "2026-01-01")]["value"] == Decimal("7.9")
@@ -594,6 +613,21 @@ def test_release_workbooks_persist_lineage_and_publish_gdp_and_consumer_pages(cl
     assert RawArtifact.objects.filter(run=bea_run).count() == 3
     assert RawArtifact.objects.filter(run=census_run).count() == 2
     assert RawArtifact.objects.filter(run=pio_run).count() == 3
+    assert ReleaseVintageObservation.objects.filter(batch_id=bea_run.batch_id).count() == 12
+    second_estimate = ReleaseVintageObservation.objects.get(
+        batch_id=bea_run.batch_id,
+        series__key="bea-a191rl",
+        value_date=datetime(2026, 1, 1, tzinfo=UTC),
+        release_date="2026-05-28",
+    )
+    assert second_estimate.value == Decimal("1.6")
+    assert second_estimate.estimate_round == "Second"
+    assert second_estimate.as_of.date().isoformat() == "2026-05-28"
+    assert second_estimate.fetched_at == bea.fetched_at
+    assert second_estimate.source.key == "bea-release"
+    assert second_estimate.license_scope == second_estimate.source.license_scope
+    assert second_estimate.fallback_source is None
+    assert second_estimate.quality_status == Observation.Quality.FRESH
     assert set(dashboards) == {"gdp", "consumer"}
     gdp = {item["key"]: item for item in dashboards["gdp"].data["metrics"]}
     consumer = {
@@ -602,6 +636,19 @@ def test_release_workbooks_persist_lineage_and_publish_gdp_and_consumer_pages(cl
     assert gdp["bea-a191rl"]["display_value"] == "2.10%"
     assert gdp["bea-dpcerl"]["display_value"] == "0.50%"
     assert gdp["bea-pce-contribution"]["display_value"] == "0.37pp"
+    gdp_charts = dashboards["gdp"].data["charts"]
+    assert [chart["key"] for chart in gdp_charts] == [
+        "gdp-growth-history",
+        "gdp-vintage-trail",
+    ]
+    assert [row["实际 GDP"] for row in gdp_charts[1]["data"]] == [1.6, 2.1]
+    assert gdp_charts[1]["data"][0]["_lineage"]["实际 GDP"][
+        "estimate_round"
+    ] == "Second"
+    revision_section = dashboards["gdp"].data["sections"][0]
+    assert revision_section["title"] == "GDP 发布轮次与修订路径"
+    assert revision_section["rows"][0]["display_value"] == "1.60% → 2.10%"
+    assert "累计修订 +0.50pp" in revision_section["rows"][0]["status"]
     assert consumer["census-mrts-44x72-sm-sa"]["display_value"] == "757,085 USD mn"
     assert consumer["census-mrts-44x72-sm-sa-mom"]["display_value"] == "0.50%"
     assert consumer["census-mrts-44x72-sm-sa-mom"]["change_unit"] == "pp"
@@ -643,6 +690,12 @@ def test_release_workbooks_persist_lineage_and_publish_gdp_and_consumer_pages(cl
     assert "U.S. Bureau of Economic Analysis Personal Income and Outlays Releases" in body
     assert "New York Fed Household Debt and Credit" in body
     assert "来源：Atlas Macro Derived Data" not in body
+    gdp_response = client.get("/economy/gdp/")
+    gdp_body = gdp_response.content.decode()
+    assert gdp_response.status_code == 200
+    assert gdp_body.count(" data-chart ") == 2
+    assert "GDP 发布轮次与修订路径" in gdp_body
+    assert "1.60% → 2.10%" in gdp_body
 
     runs = [bea_run, census_run, pio_run, g19_run, household_run]
     assert _keys_with_current_required_batches({"gdp", "consumer"}, runs) == {
@@ -756,13 +809,53 @@ def test_release_persistence_rejects_regressed_latest_month():
     assert Observation.objects.filter(source__key="census-release").count() == 1
 
 
+@pytest.mark.django_db
+def test_gdp_publication_gate_requires_vintages_from_the_same_release_batch():
+    result = BEAGDPReleaseProvider(
+        client=_bea_client(_bea_vintage_workbook(), _bea_comparison_workbook())
+    ).gdp_pce()
+    run = record_provider_result(result, persist=_store_release_workbook_observations)
+
+    assert _keys_with_current_required_batches({"gdp"}, [run]) == {"gdp"}
+    ReleaseVintageObservation.objects.filter(batch_id=run.batch_id).delete()
+    assert _keys_with_current_required_batches({"gdp"}, [run]) == set()
+
+
+@pytest.mark.django_db
+def test_gdp_vintage_persistence_is_idempotent_and_rebinds_the_refresh_batch():
+    first_result = BEAGDPReleaseProvider(
+        client=_bea_client(_bea_vintage_workbook(), _bea_comparison_workbook())
+    ).gdp_pce()
+    first_run = record_provider_result(
+        first_result,
+        persist=_store_release_workbook_observations,
+    )
+    second_result = BEAGDPReleaseProvider(
+        client=_bea_client(_bea_vintage_workbook(), _bea_comparison_workbook())
+    ).gdp_pce()
+    second_run = record_provider_result(
+        second_result,
+        persist=_store_release_workbook_observations,
+    )
+
+    assert first_run.status == IngestionRun.Status.SUCCESS
+    assert second_run.status == IngestionRun.Status.SUCCESS
+    assert ReleaseVintageObservation.objects.count() == 12
+    assert set(
+        ReleaseVintageObservation.objects.values_list("batch_id", flat=True)
+    ) == {second_run.batch_id}
+
+
 def test_economy_catalog_separates_live_release_data_from_remaining_gaps():
     requirements = {item["key"]: item for item in DATA_REQUIREMENTS}
 
     assert requirements["bea-gdp-pce"]["status"] == "live"
     assert requirements["census-retail"]["status"] == "live"
     assert requirements["bea-gdp-contributions"]["status"] == "live"
-    assert requirements["bea-gdp-vintage-trail"]["status"] == "needs_source"
+    assert requirements["bea-gdp-vintage-trail"]["status"] == "live"
+    assert "独立 release-vintage 数据层" in requirements["bea-gdp-vintage-trail"][
+        "reason"
+    ]
     assert requirements["bea-personal-income-outlays"]["status"] == "live"
     assert "Section 2" in requirements["bea-personal-income-outlays"]["reason"]
     assert requirements["bea-pio-vintage-trail"]["status"] == "needs_source"

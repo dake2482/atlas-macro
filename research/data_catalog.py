@@ -284,12 +284,13 @@ DATA_REQUIREMENTS = [
         "key": "bea-gdp-vintage-trail",
         "page_key": "gdp",
         "metric_name": "GDP Advance→Second→Third 估算修订轨迹",
-        "status": NEEDS_SOURCE,
+        "status": LIVE,
         "source_name": "U.S. Bureau of Economic Analysis GDP/GDI Vintage History",
         "source_url": "https://apps.bea.gov/national/xls/gdp-gdi-vintage-history.xlsx",
         "reason": (
-            "源工作簿已可获取，但当前 Observation 契约每季度只发布最新 vintage。"
-            "需增加独立的 vintage 维度和路由，才能完整查询每轮修订；未实现前不声称已保留轨迹。"
+            "独立 release-vintage 数据层按观察季度、官方发布日期和估算轮次保存"
+            "全部有效 GDP/GDI 记录；当前指标仍只取每季度最新轮次，GDP 页面另行"
+            "展示最近季度的完整修订路径，并保留原工作簿哈希和抓取批次。"
         ),
         "priority": 2,
     },

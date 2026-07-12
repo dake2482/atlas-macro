@@ -237,7 +237,7 @@ class BEAGDPReleaseProvider(_ReleaseWorkbookProvider):
             comparison, comparison_type, comparison_modified = self._download(
                 comparison_url, expected="xlsx"
             )
-            records, release_metadata = self._parse_vintage(vintage)
+            records, vintage_records, release_metadata = self._parse_vintage(vintage)
             component_records, component_metadata = self._parse_components(comparison)
             records.extend(component_records)
         except Exception as exc:
@@ -252,6 +252,7 @@ class BEAGDPReleaseProvider(_ReleaseWorkbookProvider):
             provider=self.key,
             dataset=dataset,
             records=records,
+            supplemental_records={"release_vintages": vintage_records},
             metadata={
                 "source_url": BEA_GDP_PAGE,
                 "vintage_workbook_url": BEA_VINTAGE_WORKBOOK,
@@ -259,7 +260,10 @@ class BEAGDPReleaseProvider(_ReleaseWorkbookProvider):
                 "vintage_last_modified": vintage_modified,
                 "comparison_last_modified": comparison_modified,
                 "artifacts": artifacts,
-                "vintage_policy": "latest published vintage for each estimate quarter",
+                "vintage_policy": (
+                    "latest published vintage for normalized observations; every valid "
+                    "release vintage is retained in the independent vintage store"
+                ),
                 "unit_policy": "source workbook values retained",
                 "attribution": "U.S. Bureau of Economic Analysis",
                 **release_metadata,
@@ -287,53 +291,161 @@ class BEAGDPReleaseProvider(_ReleaseWorkbookProvider):
         return candidates[0]
 
     @staticmethod
-    def _parse_vintage(content: bytes) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    def _parse_vintage(
+        content: bytes,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
         workbook = load_workbook(BytesIO(content), read_only=True, data_only=True)
-        if "Vintage History" not in workbook.sheetnames:
-            raise ValueError("BEA vintage workbook is missing the expected sheet")
-        sheet = workbook["Vintage History"]
-        updated = ""
-        records: list[dict[str, Any]] = []
-        current_period: str | None = None
-        for row in sheet.iter_rows(values_only=True):
-            values = list(row) + [None] * 7
-            if not updated and isinstance(values[0], str) and values[0].startswith("Last Updated"):
-                updated = values[0].removeprefix("Last Updated").strip()
-            if isinstance(values[0], str) and _quarter_start(values[0]):
-                current_period = values[0].strip().upper()
-                continue
-            if current_period is None:
-                continue
-            nominal_gdp = _decimal(values[2])
-            real_gdp = _decimal(values[4])
-            if not values[1] or nominal_gdp is None or real_gdp is None or not values[6]:
-                continue
-            value_date = _quarter_start(current_period)
-            metadata = {
-                "estimate_quarter": current_period,
-                "vintage_label": str(values[1]).strip(),
-                "estimate_round": str(values[1]).strip(),
-                "source_revision_date": _release_date(values[6]),
-                "source_revision_text": str(values[6]).strip(),
-                "workbook_last_updated": updated,
-                "seasonal_adjustment": "SAAR",
-            }
-            records.extend(
-                [
-                    {"series_id": "BEA-A191RL", "date": value_date, "value": real_gdp, "metadata": {**metadata, "unit": "percent change from preceding period"}},
-                    {"series_id": "BEA-GDP-NOMINAL-SAAR", "date": value_date, "value": nominal_gdp, "metadata": {**metadata, "unit": "USD billions, current dollars"}},
+        try:
+            if "Vintage History" not in workbook.sheetnames:
+                raise ValueError("BEA vintage workbook is missing the expected sheet")
+            sheet = workbook["Vintage History"]
+            updated = ""
+            vintage_records: list[dict[str, Any]] = []
+            current_period: str | None = None
+            for row in sheet.iter_rows(values_only=True):
+                values = list(row) + [None] * 7
+                if (
+                    not updated
+                    and isinstance(values[0], str)
+                    and values[0].startswith("Last Updated")
+                ):
+                    updated = values[0].removeprefix("Last Updated").strip()
+                if isinstance(values[0], str) and _quarter_start(values[0]):
+                    current_period = values[0].strip().upper()
+                    continue
+                if current_period is None:
+                    continue
+                nominal_gdp = _decimal(values[2])
+                real_gdp = _decimal(values[4])
+                release_date = _release_date(values[6])
+                if (
+                    not values[1]
+                    or nominal_gdp is None
+                    or real_gdp is None
+                    or release_date is None
+                ):
+                    continue
+                value_date = _quarter_start(current_period)
+                vintage_label = str(values[1]).strip()
+                metadata = {
+                    "estimate_quarter": current_period,
+                    "vintage_label": vintage_label,
+                    "estimate_round": vintage_label,
+                    "source_revision_date": release_date,
+                    "source_revision_text": str(values[6]).strip(),
+                    "workbook_last_updated": updated,
+                    "seasonal_adjustment": "SAAR",
+                }
+                period_records = [
+                    {
+                        "series_id": "BEA-A191RL",
+                        "date": value_date,
+                        "value": real_gdp,
+                        "release_date": release_date,
+                        "estimate_round": vintage_label,
+                        "vintage_label": vintage_label,
+                        "metadata": {
+                            **metadata,
+                            "unit": "percent change from preceding period",
+                        },
+                    },
+                    {
+                        "series_id": "BEA-GDP-NOMINAL-SAAR",
+                        "date": value_date,
+                        "value": nominal_gdp,
+                        "release_date": release_date,
+                        "estimate_round": vintage_label,
+                        "vintage_label": vintage_label,
+                        "metadata": {
+                            **metadata,
+                            "unit": "USD billions, current dollars",
+                        },
+                    },
                 ]
-            )
-            nominal_gdi = _decimal(values[3])
-            real_gdi = _decimal(values[5])
-            if nominal_gdi is not None:
-                records.append({"series_id": "BEA-GDI-NOMINAL-SAAR", "date": value_date, "value": nominal_gdi, "metadata": {**metadata, "unit": "USD billions, current dollars"}})
-            if real_gdi is not None:
-                records.append({"series_id": "BEA-GDI-REAL-GROWTH-SAAR", "date": value_date, "value": real_gdi, "metadata": {**metadata, "unit": "percent change from preceding period"}})
-            current_period = None
-        if not records:
-            raise ValueError("BEA vintage workbook yielded no GDP observations")
-        return records, {"workbook_last_updated": updated, "quarter_count": len({item["date"] for item in records})}
+                nominal_gdi = _decimal(values[3])
+                real_gdi = _decimal(values[5])
+                if nominal_gdi is not None:
+                    period_records.append(
+                        {
+                            "series_id": "BEA-GDI-NOMINAL-SAAR",
+                            "date": value_date,
+                            "value": nominal_gdi,
+                            "release_date": release_date,
+                            "estimate_round": vintage_label,
+                            "vintage_label": vintage_label,
+                            "metadata": {
+                                **metadata,
+                                "unit": "USD billions, current dollars",
+                            },
+                        }
+                    )
+                if real_gdi is not None:
+                    period_records.append(
+                        {
+                            "series_id": "BEA-GDI-REAL-GROWTH-SAAR",
+                            "date": value_date,
+                            "value": real_gdi,
+                            "release_date": release_date,
+                            "estimate_round": vintage_label,
+                            "vintage_label": vintage_label,
+                            "metadata": {
+                                **metadata,
+                                "unit": "percent change from preceding period",
+                            },
+                        }
+                    )
+                vintage_records.extend(period_records)
+            identities = [
+                (
+                    item["series_id"],
+                    item["date"],
+                    item["release_date"],
+                    item["estimate_round"],
+                )
+                for item in vintage_records
+            ]
+            if len(identities) != len(set(identities)):
+                raise ValueError("BEA vintage workbook duplicated a release identity")
+            periods = {item["date"] for item in vintage_records}
+            current_records: list[dict[str, Any]] = []
+            for period in sorted(periods):
+                period_records = [
+                    item for item in vintage_records if item["date"] == period
+                ]
+                latest_release = max(item["release_date"] for item in period_records)
+                latest_rounds = {
+                    item["estimate_round"]
+                    for item in period_records
+                    if item["release_date"] == latest_release
+                }
+                if len(latest_rounds) != 1:
+                    raise ValueError(
+                        "BEA vintage workbook has ambiguous latest estimate rounds"
+                    )
+                current_records.extend(
+                    item
+                    for item in period_records
+                    if item["release_date"] == latest_release
+                )
+            if not current_records or not vintage_records:
+                raise ValueError("BEA vintage workbook yielded no GDP observations")
+            return current_records, vintage_records, {
+                "workbook_last_updated": updated,
+                "quarter_count": len(periods),
+                "vintage_release_count": len(
+                    {
+                        (
+                            item["date"],
+                            item["release_date"],
+                            item["estimate_round"],
+                        )
+                        for item in vintage_records
+                    }
+                ),
+                "vintage_observation_count": len(vintage_records),
+            }
+        finally:
+            workbook.close()
 
     def _parse_components(
         self, content: bytes

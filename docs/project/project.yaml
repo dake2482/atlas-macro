@@ -7,12 +7,12 @@ success_metrics:
   - Demo or fallback records are never presented as verified official data.
   - Django checks, lint, and deterministic tests remain green.
 current_milestone:
-  id: AI-RESEARCH-001
-  title: 接入统一项目控制面
-  status: DONE
+  id: AI-RESEARCH-002
+  title: 发布可追溯的 GDP 修订轨迹
+  status: IN_PROGRESS
 health: GREEN
-next_action: Decide separately whether this local-only project needs a canonical remote.
-updated_at: '2026-07-12T19:04:14+08:00'
+next_action: Implement GDP vintage model, ingestion, publication, tests, and Mina verification.
+updated_at: '2026-07-12T21:43:47+08:00'
 validation_commands:
   - .venv/bin/ruff check .
   - .venv/bin/pytest -q
