@@ -7,6 +7,11 @@ class Migration(migrations.Migration):
     ]
 
     operations = [
+        migrations.AlterField(
+            model_name="sourcelicense",
+            name="is_current",
+            field=models.BooleanField(db_index=True, default=True),
+        ),
         migrations.AddConstraint(
             model_name="sourcelicense",
             constraint=models.UniqueConstraint(

@@ -32,7 +32,7 @@ class Migration(migrations.Migration):
         migrations.AddField(
             model_name="sourcelicense",
             name="is_current",
-            field=models.BooleanField(db_index=True, default=True),
+            field=models.BooleanField(default=True),
         ),
         migrations.AddField(
             model_name="sourcelicense",

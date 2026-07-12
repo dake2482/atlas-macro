@@ -104,9 +104,15 @@ def test_source_license_schema_operations_are_ordered_safely():
         if isinstance(operation, migrations.AddConstraint)
         and operation.constraint.name == "one_current_license_per_source"
     )
+    index_operation = next(
+        operation
+        for operation in constraint_migration.Migration.operations
+        if isinstance(operation, migrations.AlterField) and operation.name == "is_current"
+    )
 
     assert is_current_index < cleanup_index
     assert required_notice_index < cleanup_index
+    assert index_operation.field.db_index is True
     assert constraint.constraint.condition == models.Q(is_current=True)
     assert constraint_migration.Migration.dependencies == [
         ("research", "0009_sourcelicense_is_current_and_more")
