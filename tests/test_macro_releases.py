@@ -11,6 +11,11 @@ import httpx
 import pytest
 from openpyxl import Workbook
 
+from research.consumer_credit import (
+    G19_SERIES,
+    HHDC_BALANCE_SERIES,
+    HHDC_DELINQUENCY_SERIES,
+)
 from research.data_catalog import DATA_REQUIREMENTS
 from research.macro_releases import (
     BEA_GDP_PAGE,
@@ -40,6 +45,45 @@ def _workbook_bytes(workbook: Workbook) -> bytes:
     output = BytesIO()
     workbook.save(output)
     return output.getvalue()
+
+
+def _consumer_credit_results() -> tuple[ProviderResult, ProviderResult]:
+    g19_records = []
+    for period, offset in (("2026-04-01", Decimal("0")), ("2026-05-01", Decimal("1"))):
+        for index, (_, (series_id, _)) in enumerate(G19_SERIES.items(), start=1):
+            g19_records.append(
+                {
+                    "series_id": series_id,
+                    "date": period,
+                    "value": Decimal(index) + offset,
+                }
+            )
+    household_records = []
+    household_series = [
+        *HHDC_BALANCE_SERIES.values(),
+        *HHDC_DELINQUENCY_SERIES.values(),
+    ]
+    for period, offset in (("2025-12-31", Decimal("0")), ("2026-03-31", Decimal("1"))):
+        for index, series_id in enumerate(household_series, start=1):
+            household_records.append(
+                {
+                    "series_id": series_id,
+                    "date": period,
+                    "value": Decimal(index) + offset,
+                }
+            )
+    return (
+        ProviderResult(
+            provider="federal-reserve-g19",
+            dataset="g19-fixture",
+            records=g19_records,
+        ),
+        ProviderResult(
+            provider="ny-fed-household-credit",
+            dataset="hhdc-fixture",
+            records=household_records,
+        ),
+    )
 
 
 def _bea_vintage_workbook() -> bytes:
@@ -531,6 +575,11 @@ def test_release_workbooks_persist_lineage_and_publish_gdp_and_consumer_pages(cl
     bea_run = record_provider_result(bea, persist=_store_release_workbook_observations)
     census_run = record_provider_result(census, persist=_store_release_workbook_observations)
     pio_run = record_provider_result(pio, persist=_store_release_workbook_observations)
+    g19, household = _consumer_credit_results()
+    g19_run = record_provider_result(g19, persist=_store_release_workbook_observations)
+    household_run = record_provider_result(
+        household, persist=_store_release_workbook_observations
+    )
 
     dashboards = {
         item.key: item
@@ -540,6 +589,8 @@ def test_release_workbooks_persist_lineage_and_publish_gdp_and_consumer_pages(cl
     assert bea_run.status == "success"
     assert census_run.status == "success"
     assert pio_run.status == "success"
+    assert g19_run.status == "success"
+    assert household_run.status == "success"
     assert RawArtifact.objects.filter(run=bea_run).count() == 3
     assert RawArtifact.objects.filter(run=census_run).count() == 2
     assert RawArtifact.objects.filter(run=pio_run).count() == 3
@@ -558,11 +609,20 @@ def test_release_workbooks_persist_lineage_and_publish_gdp_and_consumer_pages(cl
     assert consumer["bea-real-dpi-mom"]["display_value"] == "0.30%"
     assert consumer["bea-personal-saving-rate"]["display_value"] == "3.00%"
     assert consumer["bea-real-pce-mom"]["source_key"] == "bea-pio-release"
+    assert consumer["g19-consumer-credit-outstanding-sa"]["source_key"] == (
+        "federal-reserve-g19"
+    )
+    assert consumer["hhdc-total-debt-balance"]["source_key"] == (
+        "ny-fed-household-credit"
+    )
     charts = dashboards["consumer"].data["charts"]
     assert [chart["key"] for chart in charts] == [
         "retail-sales",
         "real-consumption-income-momentum",
         "personal-saving-rate",
+        "consumer-credit-composition",
+        "household-debt-composition",
+        "household-debt-delinquency",
     ]
     assert dashboards["consumer"].data["chart_data"] == charts[0]["data"]
     assert charts[0]["source_keys"] == ["census-release"]
@@ -573,16 +633,18 @@ def test_release_workbooks_persist_lineage_and_publish_gdp_and_consumer_pages(cl
     response = client.get("/economy/consumer/")
     body = response.content.decode()
     assert response.status_code == 200
-    assert body.count(" data-chart ") == 3
+    assert body.count(" data-chart ") == 6
     assert "dashboard-chart-0" in body
     assert "dashboard-chart-1" in body
     assert "dashboard-chart-2" in body
+    assert "dashboard-chart-5" in body
     assert "实际 PCE 环比" in body
     assert "3.00%" in body
     assert "U.S. Bureau of Economic Analysis Personal Income and Outlays Releases" in body
+    assert "New York Fed Household Debt and Credit" in body
     assert "来源：Atlas Macro Derived Data" not in body
 
-    runs = [bea_run, census_run, pio_run]
+    runs = [bea_run, census_run, pio_run, g19_run, household_run]
     assert _keys_with_current_required_batches({"gdp", "consumer"}, runs) == {
         "gdp",
         "consumer",
@@ -603,6 +665,17 @@ def test_release_workbooks_persist_lineage_and_publish_gdp_and_consumer_pages(cl
 
     latest_pio.batch_id = pio_run.batch_id
     latest_pio.save(update_fields=["batch_id", "updated_at"])
+    latest_g19 = Observation.objects.filter(
+        series__key="g19-consumer-credit-outstanding-sa",
+        source__key="federal-reserve-g19",
+    ).latest("value_date")
+    latest_g19.batch_id = uuid.uuid4()
+    latest_g19.save(update_fields=["batch_id", "updated_at"])
+    assert _keys_with_current_required_batches({"gdp", "consumer"}, runs) == {
+        "gdp"
+    }
+    latest_g19.batch_id = g19_run.batch_id
+    latest_g19.save(update_fields=["batch_id", "updated_at"])
     assert publish_official_dashboards(keys={"consumer"}) == []
     recovered = DashboardSnapshot.objects.get(pk=stale.pk)
     assert "refresh_failure" not in recovered.data
@@ -694,18 +767,20 @@ def test_economy_catalog_separates_live_release_data_from_remaining_gaps():
     assert "Section 2" in requirements["bea-personal-income-outlays"]["reason"]
     assert requirements["bea-pio-vintage-trail"]["status"] == "needs_source"
     assert requirements["census-retail-history"]["status"] == "needs_source"
-    assert requirements["consumer-credit-official"]["status"] == "needs_source"
+    assert requirements["consumer-credit-official"]["status"] == "live"
+    assert requirements["consumer-credit-vintage-trail"]["status"] == "needs_source"
     assert requirements["consumer-confidence"]["status"] == "purchase_required"
 
 
 @pytest.mark.parametrize(
     ("statuses", "expected"),
     [
-        (("success", "success", "success"), {"gdp", "consumer"}),
-        (("success", "success", "failed"), {"gdp"}),
-        (("success", "failed", "success"), {"gdp"}),
-        (("failed", "success", "success"), {"consumer"}),
-        (("success", "partial", "success"), {"gdp"}),
+        (("success", "success", "success", "success", "success"), {"gdp", "consumer"}),
+        (("success", "success", "failed", "success", "success"), {"gdp"}),
+        (("success", "failed", "success", "success", "success"), {"gdp"}),
+        (("failed", "success", "success", "success", "success"), {"consumer"}),
+        (("success", "success", "success", "partial", "success"), {"gdp"}),
+        (("success", "success", "success", "success", "failed"), {"gdp"}),
     ],
 )
 def test_macro_publication_groups_isolate_unrelated_page_failures(statuses, expected):
@@ -716,7 +791,13 @@ def test_macro_publication_groups_isolate_unrelated_page_failures(statuses, expe
             row_count=1 if status == "success" else 0,
         )
         for source_key, status in zip(
-            ("bea-release", "census-release", "bea-pio-release"),
+            (
+                "bea-release",
+                "census-release",
+                "bea-pio-release",
+                "federal-reserve-g19",
+                "ny-fed-household-credit",
+            ),
             statuses,
             strict=True,
         )

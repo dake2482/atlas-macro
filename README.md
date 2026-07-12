@@ -43,6 +43,7 @@ docker compose run --rm web python manage.py refresh_official_data
 docker compose run --rm web python manage.py refresh_prates_data
 docker compose run --rm web python manage.py refresh_h10_data
 docker compose run --rm web python manage.py refresh_h41_data
+docker compose run --rm web python manage.py refresh_macro_data
 docker compose run --rm web python manage.py refresh_cftc_data
 docker compose run --rm web python manage.py refresh_berkshire_letters
 docker compose run --rm web python manage.py sync_official_glossary
@@ -70,6 +71,7 @@ docker compose exec web python manage.py purge_demo_data --dry-run
 docker compose exec web python manage.py refresh_official_data
 docker compose exec web python manage.py refresh_prates_data
 docker compose exec web python manage.py refresh_h10_data
+docker compose exec web python manage.py refresh_macro_data
 docker compose exec web python manage.py refresh_berkshire_letters
 docker compose exec web python manage.py sync_ai_glossary_catalog
 docker compose exec web python manage.py sync_ai_reference_catalog
@@ -143,9 +145,11 @@ the last complete snapshot remains visible and is marked stale.
 
 Production snapshots currently pull directly from the New York Fed, U.S.
 Treasury interest-rate and FiscalData APIs, BLS, CFTC PRE, Federal Reserve RSS,
-H.4.1, H.10 and PRATES. The fund-letter library also stores metadata-only links
-from Berkshire Hathaway's first-party index. FRED is not treated as a blanket
-redistribution licence. OKX and Deribit
+H.4.1, H.10, PRATES and Consumer Credit G.19; the consumer page also uses BEA
+Personal Income and Outlays, Census MARTS, and New York Fed Household Debt and
+Credit workbooks with the required Consumer Credit Panel / Equifax attribution.
+The fund-letter library also stores metadata-only links from Berkshire Hathaway's
+first-party index. FRED is not treated as a blanket redistribution licence. OKX and Deribit
 adapters are internal diagnostics only and never feed the public site without
 written display and redistribution permission. Paid CDS, commercial news,
 exchange data, branded indices, and third-party PDFs stay disabled until the

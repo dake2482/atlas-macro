@@ -7,7 +7,7 @@ from research.official_data import refresh_macro_official_data
 
 class Command(BaseCommand):
     help = (
-        "Refresh keyless official BEA GDP/PIO and Census MARTS releases with "
+        "Refresh keyless BEA, Census, G.19 and NY Fed consumer releases with "
         "page-level publication gates."
     )
 

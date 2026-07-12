@@ -20,6 +20,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from .calculations import yield_spread
+from .consumer_credit import FederalReserveG19Provider, NYFedHouseholdDebtProvider
 from .credit_official import FederalReserveSLOOSProvider, TreasuryHQMProvider
 from .fed_h10 import FederalReserveH10Provider
 from .fed_h41 import FederalReserveH41Provider
@@ -100,7 +101,14 @@ H10_PUBLICATION_KEYS = frozenset({"assets-fx"})
 CREDIT_PUBLICATION_KEYS = frozenset({"credit", "credit-spreads", "credit-stress"})
 MACRO_PUBLICATION_GROUPS = {
     "gdp": frozenset({"bea-release"}),
-    "consumer": frozenset({"census-release", "bea-pio-release"}),
+    "consumer": frozenset(
+        {
+            "census-release",
+            "bea-pio-release",
+            "federal-reserve-g19",
+            "ny-fed-household-credit",
+        }
+    ),
 }
 MACRO_REQUIRED_SERIES = {
     "gdp": {
@@ -133,6 +141,24 @@ MACRO_REQUIRED_SERIES = {
                 "BEA-REAL-PCE-MOM",
                 "BEA-REAL-DPI-MOM",
                 "BEA-PERSONAL-SAVING-RATE",
+            }
+        ),
+        "federal-reserve-g19": frozenset(
+            {
+                "G19-CONSUMER-CREDIT-OUTSTANDING-SA",
+                "G19-REVOLVING-CREDIT-OUTSTANDING-SA",
+                "G19-NONREVOLVING-CREDIT-OUTSTANDING-SA",
+                "G19-CONSUMER-CREDIT-GROWTH-SAAR",
+                "G19-REVOLVING-CREDIT-GROWTH-SAAR",
+                "G19-NONREVOLVING-CREDIT-GROWTH-SAAR",
+            }
+        ),
+        "ny-fed-household-credit": frozenset(
+            {
+                "HHDC-TOTAL-DEBT-BALANCE",
+                "HHDC-CREDIT-CARD-BALANCE",
+                "HHDC-ALL-90D-DELINQUENT",
+                "HHDC-CREDIT-CARD-90D-DELINQUENT",
             }
         ),
     },
@@ -1189,6 +1215,35 @@ def publish_official_dashboards(
             _metric("BEA-REAL-PCE-MOM", "实际 PCE 环比", suffix="%"),
             _metric("BEA-PERSONAL-SAVING-RATE", "个人储蓄率", suffix="%"),
             _metric("BEA-REAL-DPI-MOM", "实际可支配收入环比", suffix="%"),
+            _metric(
+                "G19-CONSUMER-CREDIT-OUTSTANDING-SA",
+                "G.19 消费者信贷余额",
+                scale=Decimal("0.000001"),
+                suffix=" USD tn",
+            ),
+            _metric(
+                "G19-CONSUMER-CREDIT-GROWTH-SAAR",
+                "G.19 信贷增速",
+                suffix="%",
+            ),
+            _metric(
+                "G19-REVOLVING-CREDIT-GROWTH-SAAR",
+                "循环信贷增速",
+                suffix="%",
+            ),
+            _metric(
+                "G19-NONREVOLVING-CREDIT-GROWTH-SAAR",
+                "非循环信贷增速",
+                suffix="%",
+            ),
+            _metric("HHDC-TOTAL-DEBT-BALANCE", "家庭债务余额", suffix=" USD tn"),
+            _metric("HHDC-CREDIT-CARD-BALANCE", "信用卡余额", suffix=" USD tn"),
+            _metric("HHDC-ALL-90D-DELINQUENT", "全部债务 90+ 天逾期", suffix="%"),
+            _metric(
+                "HHDC-CREDIT-CARD-90D-DELINQUENT",
+                "信用卡 90+ 天逾期",
+                suffix="%",
+            ),
         )
         consumer_charts = [
             chart
@@ -1216,6 +1271,47 @@ def publish_official_dashboards(
                     description="个人储蓄占可支配个人收入，单位：%",
                     series={"BEA-PERSONAL-SAVING-RATE": "个人储蓄率"},
                     limit=120,
+                ),
+                _history_chart(
+                    key="consumer-credit-composition",
+                    title="G.19 消费者信贷结构",
+                    description=(
+                        "季调月度余额，单位：百万美元；"
+                        "不含以房地产抵押的贷款"
+                    ),
+                    series={
+                        "G19-REVOLVING-CREDIT-OUTSTANDING-SA": "循环信贷",
+                        "G19-NONREVOLVING-CREDIT-OUTSTANDING-SA": "非循环信贷",
+                    },
+                    limit=120,
+                ),
+                _history_chart(
+                    key="household-debt-composition",
+                    title="家庭债务结构",
+                    description=(
+                        "纽约联储 Consumer Credit Panel / Equifax 季度数据，"
+                        "单位：万亿美元"
+                    ),
+                    series={
+                        "HHDC-MORTGAGE-BALANCE": "抵押贷款",
+                        "HHDC-HELOC-BALANCE": "HELOC",
+                        "HHDC-AUTO-LOAN-BALANCE": "汽车贷款",
+                        "HHDC-CREDIT-CARD-BALANCE": "信用卡",
+                        "HHDC-STUDENT-LOAN-BALANCE": "学生贷款",
+                    },
+                    limit=96,
+                ),
+                _history_chart(
+                    key="household-debt-delinquency",
+                    title="90+ 天严重逾期率",
+                    description="占各类债务余额的比例，单位：%",
+                    series={
+                        "HHDC-ALL-90D-DELINQUENT": "全部债务",
+                        "HHDC-CREDIT-CARD-90D-DELINQUENT": "信用卡",
+                        "HHDC-AUTO-90D-DELINQUENT": "汽车贷款",
+                        "HHDC-MORTGAGE-90D-DELINQUENT": "抵押贷款",
+                    },
+                    limit=96,
                 ),
             )
             if chart is not None
@@ -1631,8 +1727,10 @@ def publish_official_dashboards(
             "summary": (
                 "零售与餐饮服务销售来自 Census MARTS 官方发布工作簿；实际 PCE、"
                 "实际可支配收入和个人储蓄率来自 BEA 月度 PIO Section 2 工作簿，"
-                "并与当月 Historical Comparisons 摘要交叉校验。消费者信心因公开"
-                "再发布许可未就绪，继续保留采购标记。"
+                "并与当月 Historical Comparisons 摘要交叉校验。消费者信贷来自"
+                "联储 G.19，家庭债务和逾期率来自 New York Fed Consumer Credit "
+                "Panel / Equifax；总量数据不用于推断特定收入群体的压力。消费者"
+                "信心因公开再发布许可未就绪，继续保留采购标记。"
             ),
             "metrics": consumer_metrics,
             "charts": consumer_charts,
@@ -1869,7 +1967,7 @@ def refresh_credit_official_data() -> dict[str, Any]:
 
 
 def refresh_macro_official_data(*, current_year: int | None = None) -> dict[str, Any]:
-    """Refresh keyless GDP, PIO and retail releases with page-level quality gates."""
+    """Refresh keyless growth and consumer releases with page-level quality gates."""
 
     _ = current_year  # Backward-compatible command/task signature.
     providers = [
@@ -1888,6 +1986,18 @@ def refresh_macro_official_data(*, current_year: int | None = None) -> dict[str,
         (
             BEAPIOReleaseProvider(),
             "personal_income_outlays",
+            {},
+            _store_release_workbook_observations,
+        ),
+        (
+            FederalReserveG19Provider(),
+            "consumer_credit",
+            {},
+            _store_release_workbook_observations,
+        ),
+        (
+            NYFedHouseholdDebtProvider(),
+            "household_debt",
             {},
             _store_release_workbook_observations,
         ),

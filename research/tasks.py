@@ -98,7 +98,7 @@ def refresh_credit_official_sources() -> dict[str, Any]:
     time_limit=300,
 )
 def refresh_macro_official_sources() -> dict[str, Any]:
-    """Refresh BEA GDP/PIO and Census retail series from keyless official releases."""
+    """Refresh BEA, Census, G.19 and NY Fed consumer releases as one gated batch."""
 
     return refresh_macro_official_data()
 

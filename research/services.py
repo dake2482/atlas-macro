@@ -249,6 +249,50 @@ SOURCE_CATALOG: dict[str, dict[str, Any]] = {
         "terms_url": "https://www.federalreserve.gov/disclaimer.htm",
         "attribution": "Board of Governors of the Federal Reserve System",
     },
+    "federal-reserve-g19": {
+        "name": "Federal Reserve Consumer Credit G.19",
+        "homepage": "https://www.federalreserve.gov/releases/g19/current/",
+        "kind": "official",
+        "license_status": Source.LicenseStatus.OPEN,
+        "license_scope": (
+            "Attributed Board-authored public-domain G.19 DDP data; "
+            "Federal Reserve seals and third-party material excluded"
+        ),
+        "redistribution_allowed": True,
+        "public_display_allowed": True,
+        "derived_display_allowed": True,
+        "historical_storage_allowed": True,
+        "ai_use_allowed": True,
+        "terms_url": "https://www.federalreserve.gov/disclaimer.htm",
+        "attribution": "Board of Governors of the Federal Reserve System",
+        "required_notice": (
+            "Source: Board of Governors of the Federal Reserve System, Consumer Credit G.19. "
+            "Atlas Macro is not affiliated with or endorsed by the Federal Reserve Board."
+        ),
+    },
+    "ny-fed-household-credit": {
+        "name": "New York Fed Household Debt and Credit",
+        "homepage": "https://www.newyorkfed.org/microeconomics/hhdc",
+        "kind": "official",
+        "license_status": Source.LicenseStatus.OPEN,
+        "license_scope": (
+            "Attributed Household Debt and Credit data under the New York Fed Terms of Use; "
+            "source attribution to New York Fed Consumer Credit Panel / Equifax required"
+        ),
+        "redistribution_allowed": True,
+        "public_display_allowed": True,
+        "derived_display_allowed": True,
+        "historical_storage_allowed": True,
+        "ai_use_allowed": True,
+        "terms_url": "https://www.newyorkfed.org/privacy/termsofuse",
+        "attribution": "New York Fed Consumer Credit Panel / Equifax",
+        "required_notice": (
+            f"© {date.today().year} Federal Reserve Bank of New York. Content from the New "
+            "York Fed subject to the Terms of Use at newyorkfed.org. Source: New York Fed "
+            "Consumer Credit Panel / Equifax. Atlas Macro is responsible for its analysis and "
+            "is not affiliated with or endorsed by the New York Fed."
+        ),
+    },
     "federal-reserve-sloos": {
         "name": "Federal Reserve Senior Loan Officer Opinion Survey",
         "homepage": "https://www.federalreserve.gov/data/sloos.htm",
@@ -770,6 +814,89 @@ SERIES_CATALOG = {
         "%",
         "monthly",
     ),
+    "G19-CONSUMER-CREDIT-GROWTH-SAAR": (
+        "Total Consumer Credit Growth, SAAR",
+        "% annual rate",
+        "monthly",
+    ),
+    "G19-REVOLVING-CREDIT-GROWTH-SAAR": (
+        "Revolving Consumer Credit Growth, SAAR",
+        "% annual rate",
+        "monthly",
+    ),
+    "G19-NONREVOLVING-CREDIT-GROWTH-SAAR": (
+        "Nonrevolving Consumer Credit Growth, SAAR",
+        "% annual rate",
+        "monthly",
+    ),
+    "G19-CONSUMER-CREDIT-OUTSTANDING-SA": (
+        "Total Consumer Credit Outstanding, Seasonally Adjusted",
+        "USD millions",
+        "monthly",
+    ),
+    "G19-REVOLVING-CREDIT-OUTSTANDING-SA": (
+        "Revolving Consumer Credit Outstanding, Seasonally Adjusted",
+        "USD millions",
+        "monthly",
+    ),
+    "G19-NONREVOLVING-CREDIT-OUTSTANDING-SA": (
+        "Nonrevolving Consumer Credit Outstanding, Seasonally Adjusted",
+        "USD millions",
+        "monthly",
+    ),
+    "G19-CONSUMER-CREDIT-FLOW-SA": (
+        "Total Consumer Credit Monthly Flow, Seasonally Adjusted",
+        "USD millions per month",
+        "monthly",
+    ),
+    "G19-REVOLVING-CREDIT-FLOW-SA": (
+        "Revolving Consumer Credit Monthly Flow, Seasonally Adjusted",
+        "USD millions per month",
+        "monthly",
+    ),
+    "G19-NONREVOLVING-CREDIT-FLOW-SA": (
+        "Nonrevolving Consumer Credit Monthly Flow, Seasonally Adjusted",
+        "USD millions per month",
+        "monthly",
+    ),
+    "HHDC-MORTGAGE-BALANCE": ("Household Mortgage Balance", "USD trillions", "quarterly"),
+    "HHDC-HELOC-BALANCE": ("Household HELOC Balance", "USD trillions", "quarterly"),
+    "HHDC-AUTO-LOAN-BALANCE": ("Household Auto Loan Balance", "USD trillions", "quarterly"),
+    "HHDC-CREDIT-CARD-BALANCE": (
+        "Household Credit Card Balance",
+        "USD trillions",
+        "quarterly",
+    ),
+    "HHDC-STUDENT-LOAN-BALANCE": (
+        "Household Student Loan Balance",
+        "USD trillions",
+        "quarterly",
+    ),
+    "HHDC-OTHER-BALANCE": ("Other Household Debt Balance", "USD trillions", "quarterly"),
+    "HHDC-TOTAL-DEBT-BALANCE": ("Total Household Debt Balance", "USD trillions", "quarterly"),
+    "HHDC-MORTGAGE-90D-DELINQUENT": (
+        "Mortgage Balance 90+ Days Delinquent",
+        "%",
+        "quarterly",
+    ),
+    "HHDC-HELOC-90D-DELINQUENT": ("HELOC Balance 90+ Days Delinquent", "%", "quarterly"),
+    "HHDC-AUTO-90D-DELINQUENT": (
+        "Auto Loan Balance 90+ Days Delinquent",
+        "%",
+        "quarterly",
+    ),
+    "HHDC-CREDIT-CARD-90D-DELINQUENT": (
+        "Credit Card Balance 90+ Days Delinquent",
+        "%",
+        "quarterly",
+    ),
+    "HHDC-STUDENT-LOAN-90D-DELINQUENT": (
+        "Student Loan Balance 90+ Days Delinquent",
+        "%",
+        "quarterly",
+    ),
+    "HHDC-OTHER-90D-DELINQUENT": ("Other Balance 90+ Days Delinquent", "%", "quarterly"),
+    "HHDC-ALL-90D-DELINQUENT": ("All Debt Balance 90+ Days Delinquent", "%", "quarterly"),
     "SUBLPDMBS_XWB_N.Q": (
         "Business-loan Lending Standards",
         "net percentage",

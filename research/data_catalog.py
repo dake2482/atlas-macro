@@ -351,12 +351,27 @@ DATA_REQUIREMENTS = [
         "key": "consumer-credit-official",
         "page_key": "consumer",
         "metric_name": "消费者信贷、家庭债务与偿债缓冲",
-        "status": NEEDS_SOURCE,
+        "status": LIVE,
         "source_name": "Federal Reserve G.19 and New York Fed Household Debt and Credit",
-        "source_url": "https://www.federalreserve.gov/releases/g19/about.htm",
+        "source_url": "https://www.federalreserve.gov/releases/g19/current/",
         "reason": (
-            "可免费接入 G.19 总量/流量及纽约联储家庭债务季度数据；仍需实现适配器、"
-            "频率对齐和口径说明，且不能用总量数据推断特定收入群体的压力。"
+            "已接入联储 G.19 全历史季调 CSV，以及纽约联储季度家庭债务"
+            "和 90+ 天逾期工作簿；保留文件哈希、原始序列 ID、发布日和"
+            "New York Fed Consumer Credit Panel / Equifax 归因。G.19 不含以"
+            "房地产抵押的信贷，总量数据不用于推断特定收入群体压力。"
+        ),
+        "priority": 1,
+    },
+    {
+        "key": "consumer-credit-vintage-trail",
+        "page_key": "consumer",
+        "metric_name": "G.19 与家庭债务各发布批次的可查询修订轨迹",
+        "status": NEEDS_SOURCE,
+        "source_name": "Federal Reserve and New York Fed archived releases",
+        "source_url": "https://www.federalreserve.gov/releases/g19/revisions.htm",
+        "reason": (
+            "当前库保留每次下载文件哈希，但同一来源与观测期的数值会更新为"
+            "最新官方历史。需增加独立 vintage 维度后才能发布批次间修订。"
         ),
         "priority": 2,
     },
