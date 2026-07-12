@@ -371,7 +371,10 @@ def test_bls_provider_normalizes_monthly_series():
                                     "period": "M06",
                                     "periodName": "June",
                                     "value": "4.2",
-                                    "footnotes": [],
+                                    "latest": "true",
+                                    "footnotes": [
+                                        {"code": "P", "text": "preliminary"}
+                                    ],
                                 }
                             ],
                         }
@@ -386,6 +389,48 @@ def test_bls_provider_normalizes_monthly_series():
     assert result.ok
     assert result.records[0]["date"] == "2026-06-01"
     assert result.records[0]["value"] == Decimal("4.2")
+    assert result.records[0]["quality_status"] == "estimated"
+    assert result.records[0]["metadata"]["preliminary"] is True
+    assert result.metadata["messages"] == []
+
+
+def test_bls_provider_marks_an_absent_requested_series_partial():
+    def handler(_request):
+        return httpx.Response(
+            200,
+            json={
+                "status": "REQUEST_SUCCEEDED",
+                "message": ["non-fatal catalog warning"],
+                "Results": {
+                    "series": [
+                        {
+                            "seriesID": "LNS14000000",
+                            "data": [
+                                {
+                                    "year": "2026",
+                                    "period": "M06",
+                                    "periodName": "June",
+                                    "value": "4.2",
+                                    "footnotes": [],
+                                }
+                            ],
+                        }
+                    ]
+                },
+            },
+        )
+
+    provider = BLSProvider(client=_client(handler))
+    result = provider.series(
+        ["LNS14000000", "LNS11300000"],
+        start_year=2026,
+        end_year=2026,
+    )
+
+    assert result.ok
+    assert result.metadata["quality_status"] == "partial"
+    assert result.metadata["missing_series"] == ["LNS11300000"]
+    assert result.metadata["messages"] == ["non-fatal catalog warning"]
 
 
 def test_cftc_provider_expands_trader_groups_and_keeps_tuesday_date():

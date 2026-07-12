@@ -12,7 +12,7 @@ import hashlib
 import json
 import uuid
 from collections.abc import Iterable
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -25,6 +25,17 @@ from .credit_official import FederalReserveSLOOSProvider, TreasuryHQMProvider
 from .fed_h10 import FederalReserveH10Provider
 from .fed_h41 import FederalReserveH41Provider
 from .fed_prates import FederalReservePRATESProvider
+from .labor_official import (
+    CONTINUED_4WK,
+    CONTINUED_SA,
+    INITIAL_4WK,
+    INITIAL_SA,
+    IUR_SA,
+    DOLWeeklyClaimsProvider,
+)
+from .labor_official import (
+    REQUIRED_SERIES as DOL_REQUIRED_SERIES,
+)
 from .macro_releases import (
     BEAGDPReleaseProvider,
     BEAPIOReleaseProvider,
@@ -61,8 +72,16 @@ from .services import (
 BLS_SERIES = (
     "CES0000000001",
     "LNS14000000",
+    "LNS11300000",
     "CES0500000003",
     "JTS000000000000000JOL",
+    "JTS000000000000000JOR",
+    "JTS000000000000000HIL",
+    "JTS000000000000000HIR",
+    "JTS000000000000000QUL",
+    "JTS000000000000000QUR",
+    "JTS000000000000000LDL",
+    "JTS000000000000000LDR",
     "CUSR0000SA0",
     "CUSR0000SA0L1E",
     "WPSFD4",
@@ -91,7 +110,6 @@ CORE_PUBLICATION_KEYS = frozenset(
         "subsurface",
         "auctions",
         "economy",
-        "employment",
         "inflation",
     }
 )
@@ -112,7 +130,44 @@ MACRO_PUBLICATION_GROUPS = {
         }
     ),
 }
+EMPLOYMENT_PUBLICATION_GROUPS = {
+    "employment": frozenset({"bls", "dol-eta-ui"}),
+}
+EMPLOYMENT_REQUIRED_METRIC_KEYS = frozenset(
+    {
+        "nonfarm-payroll-change",
+        "nonfarm-payroll-change-3m",
+        "average-hourly-earnings-yoy",
+        "lns14000000",
+        "lns11300000",
+        "jts000000000000000jol",
+        "jts000000000000000qur",
+        INITIAL_SA.lower(),
+        INITIAL_4WK.lower(),
+        CONTINUED_SA.lower(),
+        IUR_SA.lower(),
+    }
+)
 MACRO_REQUIRED_SERIES = {
+    "employment": {
+        "bls": frozenset(
+            {
+                "CES0000000001",
+                "LNS14000000",
+                "LNS11300000",
+                "CES0500000003",
+                "JTS000000000000000JOL",
+                "JTS000000000000000JOR",
+                "JTS000000000000000HIL",
+                "JTS000000000000000HIR",
+                "JTS000000000000000QUL",
+                "JTS000000000000000QUR",
+                "JTS000000000000000LDL",
+                "JTS000000000000000LDR",
+            }
+        ),
+        "dol-eta-ui": DOL_REQUIRED_SERIES,
+    },
     "gdp": {
         "bea-release": frozenset(
             {
@@ -262,9 +317,12 @@ def _keys_with_current_required_batches(
 def _mark_latest_dashboards_stale(
     page_keys: Iterable[str],
     runs: Iterable[IngestionRun],
+    *,
+    groups: dict[str, frozenset[str]] | None = None,
 ) -> None:
     """Keep the last complete snapshot but expose the failed refresh state."""
 
+    publication_groups = groups or MACRO_PUBLICATION_GROUPS
     runs_by_source = {run.source.key: run for run in runs}
     checked_at = timezone.now().isoformat()
     with transaction.atomic():
@@ -277,7 +335,7 @@ def _mark_latest_dashboards_stale(
             )
             if latest is None:
                 continue
-            required_sources = MACRO_PUBLICATION_GROUPS.get(page_key, frozenset())
+            required_sources = publication_groups.get(page_key, frozenset())
             source_states = []
             for source_key in sorted(required_sources):
                 run = runs_by_source.get(source_key)
@@ -308,15 +366,20 @@ def _fresh_until(observation: Observation) -> datetime:
 
     value_date = observation.value_date
     frequency = observation.series.frequency
-    release_date = (observation.metadata or {}).get("source_revision_date")
+    release_date = (observation.metadata or {}).get("source_release_time") or (
+        observation.metadata or {}
+    ).get("source_revision_date")
     release_freshness_days = (observation.metadata or {}).get(
         "release_freshness_days"
     )
     if release_date and release_freshness_days:
         try:
-            release_deadline = datetime.fromisoformat(str(release_date)).replace(
-                tzinfo=UTC
-            ) + timedelta(days=int(release_freshness_days))
+            released_at = datetime.fromisoformat(str(release_date))
+            if released_at.tzinfo is None:
+                released_at = released_at.replace(tzinfo=UTC)
+            release_deadline = released_at + timedelta(
+                days=int(release_freshness_days)
+            )
         except (TypeError, ValueError, OverflowError):
             release_deadline = None
         if release_deadline is not None:
@@ -622,6 +685,444 @@ def _history_chart(
         "fresh_until": min(deadlines).isoformat(),
         "quality_status": quality_status,
         "batch_ids": sorted({str(observation.batch_id) for observation in latest}),
+        "frequency": (
+            latest[0].series.frequency
+            if len({observation.series.frequency for observation in latest}) == 1
+            else ""
+        ),
+    }
+
+
+def _previous_month(period: date) -> date:
+    if period.month == 1:
+        return date(period.year - 1, 12, 1)
+    return date(period.year, period.month - 1, 1)
+
+
+def _employment_observation_map(
+    series_key: str, *, limit: int = 84
+) -> dict[date, Observation]:
+    return {
+        observation.value_date.date().replace(day=1): observation
+        for observation in _latest_observations_by_value_date(series_key, limit=limit)
+    }
+
+
+def _derived_employment_quality(current: Observation) -> tuple[str, datetime]:
+    fresh_until = _fresh_until(current)
+    if current.quality_status == Observation.Quality.ERROR:
+        return Observation.Quality.ERROR, fresh_until
+    if (
+        current.quality_status == Observation.Quality.STALE
+        or timezone.now() > fresh_until
+    ):
+        return Observation.Quality.STALE, fresh_until
+    if current.quality_status == Observation.Quality.FALLBACK:
+        return Observation.Quality.FALLBACK, fresh_until
+    return Observation.Quality.ESTIMATED, fresh_until
+
+
+def _employment_derived_payload(
+    *,
+    key: str,
+    label: str,
+    value: Decimal,
+    current: Observation,
+    inputs: Iterable[Observation],
+    formula: str,
+    display_value: str,
+    unit: str,
+) -> dict[str, Any]:
+    input_list = list(inputs)
+    quality_status, fresh_until = _derived_employment_quality(current)
+    input_source_keys = sorted(_observation_source_keys(*input_list))
+    input_batch_ids = sorted({str(item.batch_id) for item in input_list})
+    return {
+        "key": key,
+        "label": label,
+        "value": float(value),
+        "display_value": display_value,
+        "change": None,
+        "unit": unit,
+        "quality_status": quality_status,
+        "source": "Atlas Macro 计算：" + formula,
+        "source_key": "internal",
+        "source_keys": sorted({*input_source_keys, "internal"}),
+        "as_of": current.as_of.isoformat(),
+        "value_date": current.value_date.isoformat(),
+        "fetched_at": max(item.fetched_at for item in input_list).isoformat(),
+        "fresh_until": fresh_until.isoformat(),
+        "batch_id": ",".join(input_batch_ids),
+        "metadata": {
+            "formula": formula,
+            "input_series": sorted({item.series.key for item in input_list}),
+            "source_keys": input_source_keys,
+            "input_batch_ids": input_batch_ids,
+            "input_value_dates": sorted(
+                {item.value_date.isoformat() for item in input_list}
+            ),
+            "preliminary": bool((current.metadata or {}).get("preliminary")),
+        },
+    }
+
+
+def _employment_derived_data() -> tuple[
+    list[dict[str, Any]], list[dict[str, Any]]
+]:
+    """Build exact-month employment metrics and chart rows from BLS levels."""
+
+    payroll = _employment_observation_map("CES0000000001")
+    earnings = _employment_observation_map("CES0500000003")
+
+    changes: dict[date, tuple[Decimal, Observation, Observation]] = {}
+    for period, current in payroll.items():
+        previous = payroll.get(_previous_month(period))
+        if previous is not None:
+            changes[period] = (current.value - previous.value, current, previous)
+
+    payroll_rows: list[dict[str, Any]] = []
+    latest_change_metric = None
+    latest_average_metric = None
+    latest_payroll_period = max(payroll, default=None)
+    for period in sorted(changes):
+        value, current, previous = changes[period]
+        row: dict[str, Any] = {
+            "date": period.isoformat(),
+            "非农新增": float(value),
+            "_source_keys": ["bls", "internal"],
+            "_lineage": {},
+        }
+        change_payload = _employment_derived_payload(
+            key="nonfarm-payroll-change",
+            label="非农新增",
+            value=value,
+            current=current,
+            inputs=(current, previous),
+            formula="CES0000000001_t - CES0000000001_t-1",
+            display_value=f"{value:+,.0f}K",
+            unit="K",
+        )
+        row["_lineage"]["非农新增"] = {
+            **change_payload["metadata"],
+            "series_key": change_payload["key"],
+            "source_key": "internal",
+            "source_name": "Atlas Macro Derived Data",
+            "value_date": change_payload["value_date"],
+            "as_of": change_payload["as_of"],
+            "fetched_at": change_payload["fetched_at"],
+            "batch_id": change_payload["batch_id"],
+            "quality_status": change_payload["quality_status"],
+            "license_scope": "Original calculation from attributed BLS inputs",
+            "fallback_source": None,
+        }
+
+        previous_period = _previous_month(period)
+        third_period = _previous_month(previous_period)
+        average_points = [
+            changes.get(third_period),
+            changes.get(previous_period),
+            changes.get(period),
+        ]
+        if all(point is not None for point in average_points):
+            complete_points = [point for point in average_points if point is not None]
+            average = sum(
+                (point[0] for point in complete_points), Decimal("0")
+            ) / Decimal("3")
+            average_inputs: list[Observation] = []
+            for _, point_current, point_previous in complete_points:
+                average_inputs.extend((point_current, point_previous))
+            average_payload = _employment_derived_payload(
+                key="nonfarm-payroll-change-3m",
+                label="非农新增 3M 均值",
+                value=average,
+                current=current,
+                inputs=average_inputs,
+                formula="mean(最近 3 个自然月非农就业增量)",
+                display_value=f"{average:+,.0f}K",
+                unit="K",
+            )
+            row["3M 均值"] = float(average)
+            row["_lineage"]["3M 均值"] = {
+                **average_payload["metadata"],
+                "series_key": average_payload["key"],
+                "source_key": "internal",
+                "source_name": "Atlas Macro Derived Data",
+                "value_date": average_payload["value_date"],
+                "as_of": average_payload["as_of"],
+                "fetched_at": average_payload["fetched_at"],
+                "batch_id": average_payload["batch_id"],
+                "quality_status": average_payload["quality_status"],
+                "license_scope": "Original calculation from attributed BLS inputs",
+                "fallback_source": None,
+            }
+            if period == latest_payroll_period:
+                latest_average_metric = average_payload
+        payroll_rows.append(row)
+        if period == latest_payroll_period:
+            latest_change_metric = change_payload
+
+    wage_rows: list[dict[str, Any]] = []
+    latest_wage_metric = None
+    latest_earnings_period = max(earnings, default=None)
+    for period in sorted(earnings):
+        current = earnings[period]
+        prior_period = date(period.year - 1, period.month, 1)
+        prior = earnings.get(prior_period)
+        if prior is None or prior.value <= 0:
+            continue
+        value = (current.value / prior.value - Decimal("1")) * Decimal("100")
+        payload = _employment_derived_payload(
+            key="average-hourly-earnings-yoy",
+            label="平均时薪同比",
+            value=value,
+            current=current,
+            inputs=(current, prior),
+            formula="100 * (CES0500000003_t / CES0500000003_t-12 - 1)",
+            display_value=f"{value:+,.2f}%",
+            unit="%",
+        )
+        wage_rows.append(
+            {
+                "date": period.isoformat(),
+                "平均时薪同比": float(value),
+                "_source_keys": ["bls", "internal"],
+                "_lineage": {
+                    "平均时薪同比": {
+                        **payload["metadata"],
+                        "series_key": payload["key"],
+                        "source_key": "internal",
+                        "source_name": "Atlas Macro Derived Data",
+                        "value_date": payload["value_date"],
+                        "as_of": payload["as_of"],
+                        "fetched_at": payload["fetched_at"],
+                        "batch_id": payload["batch_id"],
+                        "quality_status": payload["quality_status"],
+                        "license_scope": (
+                            "Original calculation from attributed BLS inputs"
+                        ),
+                        "fallback_source": None,
+                    }
+                },
+            }
+        )
+        if period == latest_earnings_period:
+            latest_wage_metric = payload
+    metrics = [
+        item
+        for item in (
+            latest_change_metric,
+            latest_average_metric,
+            latest_wage_metric,
+        )
+        if item is not None
+    ]
+    return metrics, [payroll_rows, wage_rows]
+
+
+def _derived_employment_chart(
+    *,
+    key: str,
+    title: str,
+    description: str,
+    rows: list[dict[str, Any]],
+    series: list[dict[str, Any]] | None = None,
+) -> dict[str, Any] | None:
+    if not rows:
+        return None
+    latest_lineage = next(
+        (
+            lineage
+            for lineage in rows[-1].get("_lineage", {}).values()
+            if isinstance(lineage, dict)
+        ),
+        None,
+    )
+    if latest_lineage is None:
+        return None
+    chart_data: Any = rows
+    if series is not None:
+        chart_data = {
+            "labels": [row["date"] for row in rows],
+            "series": [
+                {
+                    **definition,
+                    "data": [row.get(definition["name"]) for row in rows],
+                }
+                for definition in series
+            ],
+            "_rows": rows,
+        }
+    return {
+        "key": key,
+        "title": title,
+        "description": description,
+        "kind": "line",
+        "data": chart_data,
+        "source_keys": ["bls", "internal"],
+        "as_of": latest_lineage["as_of"],
+        "fetched_at": latest_lineage["fetched_at"],
+        "fresh_until": _fresh_until(
+            _real_observations("CES0000000001").first()
+            if key == "payroll-change"
+            else _real_observations("CES0500000003").first()
+        ).isoformat(),
+        "quality_status": latest_lineage["quality_status"],
+        "batch_ids": list(latest_lineage.get("input_batch_ids", [])),
+        "frequency": "monthly",
+        "time_axis": "date",
+        "tab": "payroll",
+    }
+
+
+def _employment_page_data() -> tuple[
+    list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]
+]:
+    derived_metrics, (payroll_rows, wage_rows) = _employment_derived_data()
+    metrics = _existing(
+        *derived_metrics,
+        _metric("LNS14000000", "失业率", suffix="%"),
+        _metric("LNS11300000", "劳动参与率", suffix="%"),
+        _metric("JTS000000000000000JOL", "职位空缺", decimals=0, suffix="K"),
+        _metric("JTS000000000000000QUR", "主动离职率", suffix="%"),
+        _metric(
+            INITIAL_SA,
+            "初请失业金",
+            decimals=0,
+            scale=Decimal("0.001"),
+            suffix="K",
+        ),
+        _metric(
+            INITIAL_4WK,
+            "初请 4 周均值",
+            decimals=0,
+            scale=Decimal("0.001"),
+            suffix="K",
+        ),
+        _metric(
+            CONTINUED_SA,
+            "续请周数",
+            decimals=0,
+            scale=Decimal("0.001"),
+            suffix="K",
+        ),
+        _metric(IUR_SA, "受保失业率", suffix="%"),
+    )
+    charts = _existing(
+        _derived_employment_chart(
+            key="payroll-change",
+            title="非农月度增量与 3M 均值",
+            description="由 BLS 总非农就业水平按相邻自然月差分，单位：千人。",
+            rows=payroll_rows,
+            series=[
+                {"name": "非农新增", "type": "bar"},
+                {"name": "3M 均值", "type": "line", "smooth": True},
+            ],
+        ),
+        _derived_employment_chart(
+            key="average-hourly-earnings-yoy",
+            title="平均时薪同比",
+            description="总私营非农平均时薪与精确 t-12 自然月比较，单位：%。",
+            rows=wage_rows,
+        ),
+        _history_chart(
+            key="labor-slack",
+            title="失业率与劳动参与率",
+            description="BLS 家庭调查月度季调序列，单位：%。",
+            series={"LNS14000000": "失业率", "LNS11300000": "劳动参与率"},
+            limit=84,
+        ),
+        _history_chart(
+            key="jolts-rates",
+            title="JOLTS 劳动力周转率",
+            description=(
+                "直接使用 BLS 官方 rate 序列，不用四舍五入的 level 重算；"
+                "openings 是月末存量，其余是整月流量。单位：%。"
+            ),
+            series={
+                "JTS000000000000000JOR": "职位空缺率",
+                "JTS000000000000000HIR": "招聘率",
+                "JTS000000000000000QUR": "主动离职率",
+                "JTS000000000000000LDR": "裁员解雇率",
+            },
+            limit=84,
+        ),
+        _history_chart(
+            key="initial-claims",
+            title="初请失业金与官方 4 周均值",
+            description="DOL 全国季调受保失业申领，单位：份。最新周为 advance。",
+            series={INITIAL_SA: "初请", INITIAL_4WK: "4 周均值"},
+            limit=320,
+        ),
+        _history_chart(
+            key="continued-claims",
+            title="续请周数与官方 4 周均值",
+            description=(
+                "DOL 全国季调 continued weeks claimed，单位：周次；"
+                "不代表唯一领取人数。"
+            ),
+            series={CONTINUED_SA: "续请周数", CONTINUED_4WK: "4 周均值"},
+            limit=320,
+        ),
+    )
+    tab_by_key = {
+        "payroll-change": "payroll",
+        "average-hourly-earnings-yoy": "payroll",
+        "labor-slack": "slack",
+        "jolts-rates": "turnover",
+        "initial-claims": "claims",
+        "continued-claims": "claims",
+    }
+    for chart in charts:
+        chart["time_axis"] = "date"
+        chart["tab"] = tab_by_key[chart["key"]]
+        if chart["key"] == "continued-claims":
+            chart["panel_class"] = "lg:col-span-2"
+    jolts_rows = _existing(
+        _metric("JTS000000000000000JOL", "职位空缺水平", decimals=0, suffix="K"),
+        _metric("JTS000000000000000JOR", "职位空缺率", suffix="%"),
+        _metric("JTS000000000000000HIL", "招聘水平", decimals=0, suffix="K"),
+        _metric("JTS000000000000000HIR", "招聘率", suffix="%"),
+        _metric("JTS000000000000000QUL", "主动离职水平", decimals=0, suffix="K"),
+        _metric("JTS000000000000000QUR", "主动离职率", suffix="%"),
+        _metric("JTS000000000000000LDL", "裁员与解雇水平", decimals=0, suffix="K"),
+        _metric("JTS000000000000000LDR", "裁员与解雇率", suffix="%"),
+    )
+    sections = [
+        {
+            "title": "JOLTS 官方水平与比率",
+            "description": (
+                "职位空缺是月末最后一个工作日的存量；招聘、主动离职和"
+                "裁员解雇是整月流量。Rate 为 BLS 官方序列，不由 level 重算。"
+            ),
+            "rows": jolts_rows,
+            "full_width": True,
+        },
+        {
+            "title": "口径、修订与发布节奏",
+            "body": (
+                "非农新增与时薪同比是 Atlas Macro 对 BLS 官方水平序列的"
+                "透明派生；JOLTS rate 直接使用 BLS 发布值。CES 会经历两次月度"
+                "修订与年度基准修订，JOLTS 首发值为 preliminary。DOL 初请比续请"
+                "领先一个经济周；历史 XML 与当周不可变新闻稿 PDF 交叉校验，"
+                "重叠尾部以新闻稿当前 vintage 为准。"
+            ),
+            "full_width": True,
+        }
+    ]
+    return metrics, charts, sections
+
+
+def _employment_page_is_buildable() -> bool:
+    metrics, charts, _ = _employment_page_data()
+    metric_keys = {str(item.get("key") or "") for item in metrics}
+    chart_keys = {str(item.get("key") or "") for item in charts}
+    return EMPLOYMENT_REQUIRED_METRIC_KEYS <= metric_keys and chart_keys == {
+        "payroll-change",
+        "average-hourly-earnings-yoy",
+        "labor-slack",
+        "jolts-rates",
+        "initial-claims",
+        "continued-claims",
     }
 
 
@@ -1040,6 +1541,27 @@ def _store_board_archive_observations(result, source, run) -> int:
     return row_count
 
 
+def _store_series_with_artifacts(result, source, run) -> int:
+    """Persist normalized series and immutable response fingerprints."""
+
+    row_count = store_series_observations(result, source, run)
+    for artifact in result.metadata.get("artifacts", []):
+        url = str(artifact.get("url") or "")
+        digest = str(artifact.get("sha256") or "")
+        if not url or not digest:
+            continue
+        RawArtifact.objects.create(
+            run=run,
+            uri=f"{url}#sha256={digest}",
+            sha256=digest,
+            content_type=str(
+                artifact.get("content_type") or "application/octet-stream"
+            ),
+            size_bytes=int(artifact.get("size") or 0),
+        )
+    return row_count
+
+
 def _store_h41_observations(result, source, run) -> int:
     """Backward-compatible H.4.1 persistence entry point used by tests/jobs."""
 
@@ -1342,6 +1864,16 @@ def _publish_dashboard(
                 "metadata": {
                     "component_batch_id": item.get("batch_id"),
                     "formula": (item.get("metadata") or {}).get("formula"),
+                    "input_series": (item.get("metadata") or {}).get(
+                        "input_series", []
+                    ),
+                    "source_keys": item.get("source_keys", []),
+                    "input_batch_ids": (item.get("metadata") or {}).get(
+                        "input_batch_ids", []
+                    ),
+                    "input_value_dates": (item.get("metadata") or {}).get(
+                        "input_value_dates", []
+                    ),
                     "public_snapshot": True,
                 },
             },
@@ -1375,6 +1907,9 @@ def publish_official_dashboards(
     auction_metrics, auction_rows = _auction_snapshot_data()
     consumer_metrics: list[dict[str, Any]] = []
     consumer_charts: list[dict[str, Any]] = []
+    employment_metrics: list[dict[str, Any]] = []
+    employment_charts: list[dict[str, Any]] = []
+    employment_sections: list[dict[str, Any]] = []
     gdp_vintage_chart: dict[str, Any] | None = None
     gdp_vintage_section: dict[str, Any] | None = None
     if selected_keys is None or "gdp" in selected_keys:
@@ -1501,6 +2036,12 @@ def publish_official_dashboards(
             )
             if chart is not None
         ]
+    if selected_keys is None or "employment" in selected_keys:
+        (
+            employment_metrics,
+            employment_charts,
+            employment_sections,
+        ) = _employment_page_data()
     dashboards: list[DashboardSnapshot] = []
     definitions = [
         {
@@ -1893,17 +2434,15 @@ def publish_official_dashboards(
         {
             "key": "employment",
             "title": "就业",
-            "summary": "非农、失业率、时薪和职位空缺均直接来自 BLS 公共 API。",
-            "metrics": _existing(
-                _metric("CES0000000001", "非农就业", decimals=0, suffix="K"),
-                _metric("LNS14000000", "失业率", suffix="%"),
-                _metric("CES0500000003", "平均时薪", suffix=" USD"),
-                _metric("JTS000000000000000JOL", "职位空缺", decimals=0, suffix="K"),
+            "summary": (
+                "BLS 非农、家庭调查与 JOLTS 和 DOL 周度受保失业申领"
+                "分组发布。非农新增、3M 均值和时薪同比为可复算派生；"
+                "所有组件分别保留数值日、抓取时间、批次、初值/修订状态与来源。"
             ),
-            "chart_data": _history_rows(
-                {"LNS14000000": "失业率", "CES0500000003": "平均时薪"},
-                limit=36,
-            ),
+            "metrics": employment_metrics,
+            "charts": employment_charts,
+            "sections": employment_sections,
+            "required_metric_keys": EMPLOYMENT_REQUIRED_METRIC_KEYS,
         },
         {
             "key": "inflation",
@@ -1991,7 +2530,24 @@ def refresh_official_data(*, current_year: int | None = None) -> dict[str, Any]:
             (
                 (
                     "series",
-                    {"series_ids": BLS_SERIES, "start_year": max(year - 2, 2000), "end_year": year},
+                    {
+                        "series_ids": BLS_SERIES,
+                        "start_year": max(year - 5, 2000),
+                        "end_year": year,
+                    },
+                ),
+            ),
+        ),
+        (
+            DOLWeeklyClaimsProvider(),
+            (
+                (
+                    "weekly_claims",
+                    {
+                        "start_year": max(year - 5, 1967),
+                        "end_year": year,
+                    },
+                    _store_series_with_artifacts,
                 ),
             ),
         ),
@@ -2026,11 +2582,32 @@ def refresh_official_data(*, current_year: int | None = None) -> dict[str, Any]:
     finally:
         for provider, _ in providers:
             provider.close()
+    core_runs = [run for run in runs if run.source.key != "dol-eta-ui"]
     dashboards = (
         publish_official_dashboards(keys=CORE_PUBLICATION_KEYS)
-        if _has_publishable_run(runs)
+        if _has_publishable_run(core_runs)
         else []
     )
+    employment_completed = _publishable_keys_for_source_groups(
+        runs, EMPLOYMENT_PUBLICATION_GROUPS
+    )
+    employment_publishable = _keys_with_current_required_batches(
+        employment_completed, runs
+    )
+    if employment_publishable and not _employment_page_is_buildable():
+        employment_publishable = set()
+    stale_employment_keys = set(EMPLOYMENT_PUBLICATION_GROUPS) - set(
+        employment_publishable
+    )
+    _mark_latest_dashboards_stale(
+        stale_employment_keys,
+        runs,
+        groups=EMPLOYMENT_PUBLICATION_GROUPS,
+    )
+    if employment_publishable:
+        dashboards.extend(
+            publish_official_dashboards(keys=employment_publishable)
+        )
     return {
         "runs": [
             {
@@ -2043,6 +2620,7 @@ def refresh_official_data(*, current_year: int | None = None) -> dict[str, Any]:
             for run in runs
         ],
         "dashboard_keys": [dashboard.key for dashboard in dashboards],
+        "stale_dashboard_keys": sorted(stale_employment_keys),
     }
 
 

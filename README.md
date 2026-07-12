@@ -148,6 +148,9 @@ Treasury interest-rate and FiscalData APIs, BLS, CFTC PRE, Federal Reserve RSS,
 H.4.1, H.10, PRATES and Consumer Credit G.19; the consumer page also uses BEA
 Personal Income and Outlays, Census MARTS, and New York Fed Household Debt and
 Credit workbooks with the required Consumer Credit Panel / Equifax attribution.
+The employment page combines BLS CES/CPS/JOLTS with U.S. Department of Labor
+national weekly-claims XML and the current immutable weekly-release PDF. The PDF
+overrides the lagging XML tail, and advance/preliminary status remains visible.
 The fund-letter library also stores metadata-only links from Berkshire Hathaway's
 first-party index. FRED is not treated as a blanket redistribution licence. OKX and Deribit
 adapters are internal diagnostics only and never feed the public site without

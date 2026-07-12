@@ -6,6 +6,7 @@ from decimal import Decimal
 from xml.sax.saxutils import escape
 from zoneinfo import ZoneInfo
 
+from dateutil.relativedelta import relativedelta
 from django.conf import settings
 from django.contrib.postgres.search import (
     SearchQuery,
@@ -77,6 +78,114 @@ def _snapshot_source_keys(data):
             keys.update(_snapshot_source_keys(value))
         return keys
     return set()
+
+
+def _chart_date(value) -> date | None:
+    try:
+        return date.fromisoformat(str(value)[:10])
+    except (TypeError, ValueError):
+        return None
+
+
+def _slice_dashboard_chart(chart: dict, *, months: int) -> dict:
+    """Copy and calendar-slice an explicitly date-indexed chart."""
+
+    sliced = dict(chart)
+    if sliced.get("time_axis") != "date":
+        return sliced
+    data = sliced.get("data")
+    if isinstance(data, list):
+        dates = [_chart_date(row.get("date")) for row in data if isinstance(row, dict)]
+        if len(dates) != len(data) or not dates or any(item is None for item in dates):
+            return sliced
+        latest = max(item for item in dates if item is not None)
+        cutoff = latest - relativedelta(months=months)
+        sliced["data"] = [
+            dict(row)
+            for row, row_date in zip(data, dates, strict=True)
+            if row_date is not None and row_date >= cutoff
+        ]
+        return sliced
+    if not isinstance(data, dict) or not isinstance(data.get("_rows"), list):
+        return sliced
+    rows = data["_rows"]
+    dates = [_chart_date(row.get("date")) for row in rows if isinstance(row, dict)]
+    if len(dates) != len(rows) or not dates or any(item is None for item in dates):
+        return sliced
+    latest = max(item for item in dates if item is not None)
+    cutoff = latest - relativedelta(months=months)
+    indices = [
+        index
+        for index, row_date in enumerate(dates)
+        if row_date is not None and row_date >= cutoff
+    ]
+    copied_data = dict(data)
+    copied_data["_rows"] = [dict(rows[index]) for index in indices]
+    labels = data.get("labels")
+    if isinstance(labels, list) and len(labels) == len(rows):
+        copied_data["labels"] = [labels[index] for index in indices]
+    series = data.get("series")
+    if isinstance(series, list):
+        copied_series = []
+        for item in series:
+            copied = dict(item) if isinstance(item, dict) else item
+            values = copied.get("data") if isinstance(copied, dict) else None
+            if isinstance(values, list) and len(values) == len(rows):
+                copied["data"] = [values[index] for index in indices]
+            copied_series.append(copied)
+        copied_data["series"] = copied_series
+    sliced["data"] = copied_data
+    return sliced
+
+
+def _apply_dashboard_controls(request, config: dict, charts: list[dict]) -> list[dict]:
+    period_options = [
+        item
+        for item in config.get("period_options", [])
+        if isinstance(item, dict)
+        and item.get("value")
+        and isinstance(item.get("months"), int)
+    ]
+    tab_options = [
+        item
+        for item in config.get("tab_options", [])
+        if isinstance(item, dict) and item.get("value")
+    ]
+    valid_periods = {str(item["value"]): item for item in period_options}
+    valid_tabs = {str(item["value"]): item for item in tab_options}
+    default_period = str(config.get("default_period") or "")
+    default_tab = str(config.get("default_tab") or "")
+    if default_period not in valid_periods:
+        default_period = next(iter(valid_periods), "")
+    if default_tab not in valid_tabs:
+        default_tab = next(iter(valid_tabs), "")
+    requested_period = str(request.GET.get("period") or "")
+    requested_tab = str(request.GET.get("tab") or "")
+    selected_period = (
+        requested_period if requested_period in valid_periods else default_period
+    )
+    selected_tab = requested_tab if requested_tab in valid_tabs else default_tab
+    config["period_options"] = period_options
+    config["tab_options"] = tab_options
+    config["selected_period"] = selected_period
+    config["selected_tab"] = selected_tab
+
+    filtered = [dict(chart) for chart in charts]
+    if selected_period:
+        months = int(valid_periods[selected_period]["months"])
+        filtered = [
+            _slice_dashboard_chart(chart, months=months) for chart in filtered
+        ]
+    if selected_tab and selected_tab != default_tab:
+        allowed_keys = {
+            str(key) for key in valid_tabs[selected_tab].get("chart_keys", []) if key
+        }
+        tabbed = [chart for chart in filtered if chart.get("key") in allowed_keys]
+        if tabbed:
+            filtered = tabbed
+        else:
+            config["selected_tab"] = default_tab
+    return filtered
 
 
 def _public_theses():
@@ -641,6 +750,14 @@ def dashboard_page(request, page_key: str):
         config["source_notes"] = ["没有真实数据时显示空缺，不回退到演示或合成数值。"]
         config["required_notices"] = []
         config["refresh_failure"] = None
+    config["charts"] = _apply_dashboard_controls(
+        request,
+        config,
+        list(config.get("charts", [])),
+    )
+    config["chart_data"] = (
+        config["charts"][0].get("data", []) if config["charts"] else []
+    )
     config.update(
         {
             "page_key": page_key,

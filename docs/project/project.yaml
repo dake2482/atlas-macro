@@ -7,12 +7,12 @@ success_metrics:
   - Demo or fallback records are never presented as verified official data.
   - Django checks, lint, and deterministic tests remain green.
 current_milestone:
-  id: AI-RESEARCH-002
-  title: 发布可追溯的 GDP 修订轨迹
-  status: DONE
+  id: AI-RESEARCH-003
+  title: 修正并补齐官方就业数据页
+  status: IN_PROGRESS
 health: GREEN
-next_action: Start AI-RESEARCH-003 to correct the employment page with BLS and DOL official data.
-updated_at: '2026-07-12T22:19:38+08:00'
+next_action: Validate BLS series and DOL weekly-claims contracts, then implement the employment-page correction.
+updated_at: '2026-07-12T22:21:00+08:00'
 validation_commands:
   - .venv/bin/ruff check .
   - .venv/bin/pytest -q

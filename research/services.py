@@ -115,6 +115,33 @@ SOURCE_CATALOG: dict[str, dict[str, Any]] = {
             "Atlas Macro is not endorsed or certified by BLS."
         ),
     },
+    "dol-eta-ui": {
+        "name": "U.S. Department of Labor Weekly UI Claims",
+        "homepage": "https://oui.doleta.gov/unemploy/claims.asp",
+        "kind": "official",
+        "license_status": Source.LicenseStatus.OPEN,
+        "license_scope": (
+            "Federal-government public-domain unemployment-insurance data; "
+            "DOL seals, logos and third-party material excluded"
+        ),
+        "redistribution_allowed": True,
+        "public_display_allowed": True,
+        "derived_display_allowed": True,
+        "historical_storage_allowed": True,
+        "ai_use_allowed": True,
+        "terms_url": "https://www.dol.gov/general/aboutdol/copyright",
+        "attribution": (
+            "U.S. Department of Labor, Employment and Training Administration, "
+            "Office of Unemployment Insurance"
+        ),
+        "required_notice": (
+            "Source: U.S. Department of Labor, Employment and Training Administration. "
+            "Seasonally adjusted weekly unemployment-insurance claims; the latest week is "
+            "an advance estimate and may be revised. Continued claims are continued weeks "
+            "claimed, not a count of unique recipients. Atlas Macro is not endorsed by DOL; "
+            "DOL seals and logos are not used."
+        ),
+    },
     "bea": {
         "name": "U.S. Bureau of Economic Analysis Data API",
         "homepage": "https://apps.bea.gov/api/",
@@ -728,8 +755,41 @@ SERIES_CATALOG = {
     "TGA": ("Treasury General Account Closing Balance", "USD millions", "daily"),
     "CES0000000001": ("Total Nonfarm Payroll Employment", "thousands", "monthly"),
     "LNS14000000": ("Unemployment Rate", "%", "monthly"),
+    "LNS11300000": ("Labor Force Participation Rate", "%", "monthly"),
     "CES0500000003": ("Average Hourly Earnings, Total Private", "USD/hour", "monthly"),
     "JTS000000000000000JOL": ("Job Openings", "thousands", "monthly"),
+    "JTS000000000000000JOR": ("Job Openings Rate", "%", "monthly"),
+    "JTS000000000000000HIL": ("Hires", "thousands", "monthly"),
+    "JTS000000000000000HIR": ("Hires Rate", "%", "monthly"),
+    "JTS000000000000000QUL": ("Quits", "thousands", "monthly"),
+    "JTS000000000000000QUR": ("Quits Rate", "%", "monthly"),
+    "JTS000000000000000LDL": ("Layoffs and Discharges", "thousands", "monthly"),
+    "JTS000000000000000LDR": ("Layoffs and Discharges Rate", "%", "monthly"),
+    "DOL-UI-INITIAL-CLAIMS-SA": (
+        "Seasonally Adjusted Initial UI Claims",
+        "claims",
+        "weekly",
+    ),
+    "DOL-UI-INITIAL-CLAIMS-SA-4WK": (
+        "Seasonally Adjusted Initial UI Claims, 4-Week Average",
+        "claims",
+        "weekly",
+    ),
+    "DOL-UI-CONTINUED-CLAIMS-SA": (
+        "Seasonally Adjusted Continued Weeks Claimed",
+        "claims",
+        "weekly",
+    ),
+    "DOL-UI-CONTINUED-CLAIMS-SA-4WK": (
+        "Seasonally Adjusted Continued Weeks Claimed, 4-Week Average",
+        "claims",
+        "weekly",
+    ),
+    "DOL-UI-IUR-SA": (
+        "Seasonally Adjusted Insured Unemployment Rate",
+        "%",
+        "weekly",
+    ),
     "CUSR0000SA0": ("Consumer Price Index for All Urban Consumers", "index", "monthly"),
     "CUSR0000SA0L1E": ("Core CPI, All Items Less Food and Energy", "index", "monthly"),
     "WPSFD4": ("Producer Price Index: Final Demand", "index", "monthly"),
@@ -1019,7 +1079,12 @@ def store_series_observations(result: ProviderResult, source: Source, run: Inges
                     "as_of": value_date,
                     "fetched_at": fetched_at,
                     "batch_id": run.batch_id,
-                    "quality_status": Observation.Quality.FRESH,
+                    "quality_status": (
+                        record.get("quality_status")
+                        if record.get("quality_status")
+                        in Observation.Quality.values
+                        else Observation.Quality.FRESH
+                    ),
                     "metadata": metadata,
                 },
             )

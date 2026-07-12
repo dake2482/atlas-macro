@@ -255,6 +255,66 @@ DATA_REQUIREMENTS = [
         "priority": 1,
     },
     {
+        "key": "bls-employment-official",
+        "page_key": "employment",
+        "metric_name": "非农、失业率、劳动参与率与平均时薪",
+        "status": LIVE,
+        "source_name": "U.S. Bureau of Labor Statistics Public Data API",
+        "source_url": "https://www.bls.gov/developers/",
+        "reason": (
+            "官方 CES/CPS 月度季调序列；非农新增、3M 均值与时薪同比"
+            "由 Atlas Macro 按精确自然月透明派生，保留输入批次与 preliminary 标记。"
+        ),
+        "priority": 1,
+    },
+    {
+        "key": "bls-jolts-official",
+        "page_key": "employment",
+        "metric_name": "JOLTS 职位空缺、招聘、主动离职与裁员解雇",
+        "status": LIVE,
+        "source_name": "U.S. Bureau of Labor Statistics JOLTS",
+        "source_url": "https://www.bls.gov/jlt/",
+        "reason": (
+            "水平与 rate 均直接取官方季调序列；openings 是月末存量，"
+            "hires/quits/layoffs 是整月流量，不混合求和或用四舍五入水平重算 rate。"
+        ),
+        "priority": 1,
+    },
+    {
+        "key": "dol-weekly-claims",
+        "page_key": "employment",
+        "metric_name": "全国季调初请、续请与官方 4 周均值",
+        "status": LIVE,
+        "source_name": (
+            "U.S. Department of Labor, Employment and Training Administration"
+        ),
+        "source_url": "https://oui.doleta.gov/unemploy/claims.asp",
+        "reason": (
+            "ETA 539 全国 XML 负责长期历史，当周不可变新闻稿 PDF 负责"
+            "advance 值及修订尾部；两份原始响应均保留 SHA-256。续请表示"
+            "continued weeks claimed，不代表唯一领取人数。"
+        ),
+        "priority": 1,
+    },
+    {
+        "key": "employment-vintage-trail",
+        "page_key": "employment",
+        "metric_name": "CES/CPS/JOLTS/DOL 可查询发布 vintage 与历次修订路径",
+        "status": NEEDS_SOURCE,
+        "vendor": "BLS public-use vintage tables / ALFRED where applicable / internal archive",
+        "product": "Release-vintage observations with revision-round identifiers",
+        "reason": (
+            "当前已保留抓取批次和 DOL XML/PDF 指纹，但通用 Observation 仍会以"
+            "最新官方值覆盖同一经济期；尚未建立可查询的 CES/CPS/JOLTS 完整"
+            "发布轮次层，因此不宣称已完成 vintage 复现。"
+        ),
+        "proxy_description": (
+            "每次抓取保留响应哈希和当前批次；在可查询 vintage 层完成前，"
+            "页面只展示当前官方 vintage 及 preliminary/advance 状态。"
+        ),
+        "priority": 2,
+    },
+    {
         "key": "bea-gdp-pce",
         "page_key": "gdp",
         "metric_name": "GDP、GDI、PCE 与分项的最新修订口径",

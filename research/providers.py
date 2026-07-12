@@ -906,7 +906,12 @@ class FiscalDataProvider(HTTPProvider):
 
 
 class BLSProvider(HTTPProvider):
-    """BLS Public Data API v2 adapter; no registration key is required for small pulls."""
+    """BLS Public Data API adapter.
+
+    A free registration key raises the official request limits.  The basic
+    request signature is kept within the smaller unregistered limits when no
+    key is configured.
+    """
 
     key = "bls"
     base_url = "https://api.bls.gov"
@@ -952,15 +957,24 @@ class BLSProvider(HTTPProvider):
                 if value is None:
                     continue
                 month = int(period[1:])
+                footnotes = item.get("footnotes") or []
+                preliminary = any(
+                    str(footnote.get("code") or "").upper() == "P"
+                    or "preliminary" in str(footnote.get("text") or "").lower()
+                    for footnote in footnotes
+                    if isinstance(footnote, dict)
+                )
                 records.append(
                     {
                         "series_id": series_id,
                         "date": f"{int(item['year']):04d}-{month:02d}-01",
                         "value": value,
+                        "quality_status": "estimated" if preliminary else "fresh",
                         "metadata": {
                             "period_name": item.get("periodName"),
                             "latest": item.get("latest") == "true",
-                            "footnotes": item.get("footnotes", []),
+                            "footnotes": footnotes,
+                            "preliminary": preliminary,
                         },
                     }
                 )
@@ -974,6 +988,7 @@ class BLSProvider(HTTPProvider):
                 "requested_series": list(series_ids),
                 "returned_series": sorted(returned_series),
                 "missing_series": missing_series,
+                "messages": list(payload.get("message") or []),
                 "quality_status": "partial" if missing_series else "complete",
             },
         )

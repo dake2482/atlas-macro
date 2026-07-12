@@ -9,6 +9,18 @@
   {% endif %}
   {% if snapshot.quality_status == "stale" %}<div class="callout mb-4 !border-[var(--warning)] text-[12px]"><strong class="warning">数据已过期：</strong>{% if refresh_failure.reason %}{{ refresh_failure.reason }}{% else %}上游更新尚未通过完整性检查，当前保留上一批可用快照。{% endif %}</div>{% endif %}
   {% if required_notices %}<aside class="callout mb-4 text-[10px] leading-5" aria-label="数据授权声明">{% for notice in required_notices %}<p{% if not forloop.first %} class="mt-2"{% endif %}>{{ notice }}</p>{% endfor %}</aside>{% endif %}
+  {% if period_options or tab_options %}
+    <nav class="panel mb-4 px-4 py-3" aria-label="数据视图筛选">
+      <div class="flex flex-wrap items-center gap-x-5 gap-y-3 text-[11px]">
+        {% if period_options %}
+          <div class="flex flex-wrap items-center gap-2"><span class="font-semibold muted">时间范围</span>{% for option in period_options %}<a class="badge {% if selected_period == option.value %}badge-accent{% endif %}" href="?period={{ option.value|urlencode }}&amp;tab={{ selected_tab|urlencode }}"{% if selected_period == option.value %} aria-current="page"{% endif %}>{{ option.label }}</a>{% endfor %}</div>
+        {% endif %}
+        {% if tab_options %}
+          <div class="flex flex-wrap items-center gap-2"><span class="font-semibold muted">视图</span>{% for option in tab_options %}<a class="badge {% if selected_tab == option.value %}badge-accent{% endif %}" href="?period={{ selected_period|urlencode }}&amp;tab={{ option.value|urlencode }}"{% if selected_tab == option.value %} aria-current="page"{% endif %}>{{ option.label }}</a>{% endfor %}</div>
+        {% endif %}
+      </div>
+    </nav>
+  {% endif %}
   {% if metrics %}<section class="mb-4 grid grid-cols-1 gap-3 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-6" aria-label="关键指标">{% for metric in metrics %}{% include "research/includes/metric_card.html" with metric=metric %}{% endfor %}</section>{% endif %}
   <div class="grid gap-4 xl:grid-cols-[minmax(0,1.5fr)_minmax(18rem,.65fr)]">
     {% if charts %}

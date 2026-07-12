@@ -323,6 +323,36 @@ PAGE_CONFIGS = {
         "title": "就业",
         "eyebrow": "Labor Market",
         "description": "非农、失业率、时薪、职位空缺与初请共同判断供需平衡。",
+        "period_options": [
+            {"value": "1y", "label": "1 年", "months": 12},
+            {"value": "3y", "label": "3 年", "months": 36},
+            {"value": "5y", "label": "5 年", "months": 60},
+        ],
+        "default_period": "3y",
+        "tab_options": [
+            {"value": "overview", "label": "总览", "chart_keys": []},
+            {
+                "value": "payroll",
+                "label": "非农与工资",
+                "chart_keys": ["payroll-change", "average-hourly-earnings-yoy"],
+            },
+            {
+                "value": "slack",
+                "label": "劳动闲置",
+                "chart_keys": ["labor-slack"],
+            },
+            {
+                "value": "turnover",
+                "label": "JOLTS 周转",
+                "chart_keys": ["jolts-rates"],
+            },
+            {
+                "value": "claims",
+                "label": "失业申领",
+                "chart_keys": ["initial-claims", "continued-claims"],
+            },
+        ],
+        "default_tab": "overview",
         "metrics": [
             metric("非农新增", "+176K", "低于 3M 均值", source="BLS"),
             metric("失业率", "4.1%", "+0.1pp"),
