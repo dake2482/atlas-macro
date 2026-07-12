@@ -3,15 +3,15 @@ schema_version: 1
 id: AI-RESEARCH-004
 project_id: AI-RESEARCH
 title: 发布官方通胀变化率与短期动能
-status: REVIEW
+status: DONE
 priority: P1
 executor: codex
 task_id: atlas-inflation-official-20260712
 branch: main
 worktree: local
 dependencies: []
-updated_at: '2026-07-13T00:06:00+08:00'
-next_action: Run the AI-RESEARCH closeout gate, then mark the validated local-only delivery DONE.
+updated_at: '2026-07-13T00:10:00+08:00'
+next_action: Start AI-RESEARCH-005 to align the Fed Funds policy corridor on one common effective date.
 evidence:
 - Production currently publishes headline CPI, core CPI and final-demand PPI index levels, which are not the
   month-over-month or year-over-year inflation rates expected by the page contract.
@@ -31,6 +31,8 @@ evidence:
   0.44-0.47 seconds. All public route smokes returned HTTP 200 and port 3080 remains the only host listener.
 - The validated pre-release PostgreSQL backup is
   `/srv/atlasmacro/backups/pre-114d75b-20260712T155837Z.dump` with SHA-256 sidecar and container pg_restore listing check.
+- Portfolio closeout passed on commit 64da0f3 with Ruff, the complete pytest suite, Django checks, strict
+  portfolio validation and the explicitly local-only Git delivery boundary verified.
 started_at: '2026-07-12T23:24:28+08:00'
 ---
 

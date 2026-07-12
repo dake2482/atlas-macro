@@ -7,12 +7,12 @@ success_metrics:
   - Demo or fallback records are never presented as verified official data.
   - Django checks, lint, and deterministic tests remain green.
 current_milestone:
-  id: AI-RESEARCH-004
-  title: 发布官方通胀变化率与短期动能
-  status: REVIEW
+  id: AI-RESEARCH-005
+  title: 修正 Fed Funds 政策走廊的同日对齐
+  status: IN_PROGRESS
 health: GREEN
-next_action: Run the AI-RESEARCH closeout gate, then mark the validated local-only delivery DONE.
-updated_at: '2026-07-13T00:06:00+08:00'
+next_action: Audit NY Fed and PRATES effective-date semantics and design the two-source publication coordinator.
+updated_at: '2026-07-13T00:10:00+08:00'
 validation_commands:
   - .venv/bin/ruff check .
   - .venv/bin/pytest -q

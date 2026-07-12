@@ -4,9 +4,9 @@
 
 - Purpose: Build a clean-room macro-research and AI supply-chain intelligence platform with traceable public sources, explicit data-quality labels, and original presentation.
 - Health: `GREEN`
-- Milestone: `AI-RESEARCH-004` — 发布官方通胀变化率与短期动能 (`REVIEW`)
-- Next action: Run the AI-RESEARCH closeout gate, then mark the validated local-only delivery DONE.
-- Updated: `2026-07-13T00:06:00+08:00`
+- Milestone: `AI-RESEARCH-005` — 修正 Fed Funds 政策走廊的同日对齐 (`IN_PROGRESS`)
+- Next action: Audit NY Fed and PRATES effective-date semantics and design the two-source publication coordinator.
+- Updated: `2026-07-13T00:10:00+08:00`
 - Git boundary: branch `main`; run `portfolio closeout AI-RESEARCH` for live delivery state.
 - Execution metadata: Codex 0/0 active/total; ZCode 0/0 active/total
 
@@ -14,7 +14,7 @@
 
 | Requirement | State | Priority | Executor | Task | Branch / worktree | Next action |
 |---|---|---|---|---|---|---|
-| AI-RESEARCH-004 | REVIEW | P1 | codex | atlas-inflation-official-20260712 | main / local | Run the AI-RESEARCH closeout gate, then mark the validated local-only delivery DONE. |
+| AI-RESEARCH-005 | IN_PROGRESS | P1 | codex | atlas-fed-funds-alignment-20260713 | main / local | Audit NY Fed and PRATES effective-date semantics and design the two-source publication coordinator. |
 
 ## Blockers
 
@@ -22,4 +22,4 @@
 
 ## Latest verification evidence
 
-- The validated pre-release PostgreSQL backup is `/srv/atlasmacro/backups/pre-114d75b-20260712T155837Z.dump` with SHA-256 sidecar and container pg_restore listing check.
+- Portfolio closeout passed on commit 64da0f3 with Ruff, the complete pytest suite, Django checks, strict portfolio validation and the explicitly local-only Git delivery boundary verified.
