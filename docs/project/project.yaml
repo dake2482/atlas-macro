@@ -7,12 +7,12 @@ success_metrics:
   - Demo or fallback records are never presented as verified official data.
   - Django checks, lint, and deterministic tests remain green.
 current_milestone:
-  id: AI-RESEARCH-003
-  title: 修正并补齐官方就业数据页
-  status: DONE
+  id: AI-RESEARCH-004
+  title: 发布官方通胀变化率与短期动能
+  status: IN_PROGRESS
 health: GREEN
-next_action: Start AI-RESEARCH-004 to replace inflation index levels with official monthly and annual rates.
-updated_at: '2026-07-12T23:21:07+08:00'
+next_action: Audit the public inflation-page contract and validate BLS rate formulas before implementation.
+updated_at: '2026-07-12T23:24:28+08:00'
 validation_commands:
   - .venv/bin/ruff check .
   - .venv/bin/pytest -q
