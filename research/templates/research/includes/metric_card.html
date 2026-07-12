@@ -16,11 +16,11 @@
     <p class="metric-delta text-[var(--faint)]">暂无可比前值</p>
   {% endif %}
   {% if metric.as_of or metric.source %}
-    <div class="source-line absolute bottom-3 left-4 right-4 pr-8">
-      {% if metric.source %}<span>{% if metric.source.name %}{{ metric.source.name }}{% else %}{{ metric.source }}{% endif %}</span>{% endif %}
-      <span class="text-right">
-        {% if metric.as_of %}<time class="block" datetime="{{ metric.as_of|date:'c'|default:metric.as_of }}">数值 {{ metric.as_of|date:"Y-m-d"|default:metric.as_of }}</time>{% endif %}
-        {% if metric.fetched_at %}<time class="block" datetime="{{ metric.fetched_at|date:'c'|default:metric.fetched_at }}">抓取 {{ metric.fetched_at|date:"m-d H:i"|default:metric.fetched_at }}</time>{% endif %}
+    <div class="source-line absolute bottom-3 left-4 right-4">
+      {% if metric.source %}<span class="metric-source">{% if metric.source.name %}{{ metric.source.name }}{% else %}{{ metric.source }}{% endif %}</span>{% endif %}
+      <span class="metric-times text-right">
+        {% if metric.value_date %}<time class="block" datetime="{{ metric.value_date }}">数值 {{ metric.value_date|slice:":10" }}</time>{% elif metric.as_of %}<time class="block" datetime="{{ metric.as_of }}">数值 {{ metric.as_of|slice:":10" }}</time>{% endif %}
+        {% if metric.fetched_at %}<time class="block" datetime="{{ metric.fetched_at }}">抓取 {{ metric.fetched_at|slice:"5:16" }}</time>{% endif %}
       </span>
     </div>
   {% endif %}

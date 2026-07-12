@@ -9,7 +9,7 @@
   {% endif %}
   {% if snapshot.quality_status == "stale" %}<div class="callout mb-4 !border-[var(--warning)] text-[12px]"><strong class="warning">数据已过期：</strong>上游更新尚未通过完整性检查，当前保留上一批可用快照。</div>{% endif %}
   {% if required_notices %}<aside class="callout mb-4 text-[10px] leading-5" aria-label="数据授权声明">{% for notice in required_notices %}<p{% if not forloop.first %} class="mt-2"{% endif %}>{{ notice }}</p>{% endfor %}</aside>{% endif %}
-  {% if metrics %}<section class="mb-4 grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6" aria-label="关键指标">{% for metric in metrics %}{% include "research/includes/metric_card.html" with metric=metric %}{% endfor %}</section>{% endif %}
+  {% if metrics %}<section class="mb-4 grid grid-cols-1 gap-3 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-6" aria-label="关键指标">{% for metric in metrics %}{% include "research/includes/metric_card.html" with metric=metric %}{% endfor %}</section>{% endif %}
   <div class="grid gap-4 xl:grid-cols-[minmax(0,1.5fr)_minmax(18rem,.65fr)]">
     {% if snapshot %}
       {% include "research/includes/chart_panel.html" with chart_id="dashboard-primary-chart" chart_title="核心趋势" chart_data=chart_data chart_kind="line" chart_class="chart-tall" source=snapshot.source as_of=snapshot.as_of %}
