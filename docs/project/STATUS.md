@@ -7,7 +7,7 @@
 - Milestone: `AI-RESEARCH-001` — 接入统一项目控制面 (`REVIEW`)
 - Next action: Review and commit the onboarding files, then run `portfolio closeout AI-RESEARCH`.
 - Updated: `2026-07-12T20:35:00+08:00`
-- Git: branch `main`, dirty files `12`, head `6c342ecc896b`
+- Git boundary: branch `main`; run `portfolio closeout AI-RESEARCH` for live delivery state.
 - Execution metadata: Codex 0/0 active/total; ZCode 0/0 active/total
 
 ## Current work
