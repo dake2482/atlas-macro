@@ -821,6 +821,9 @@ def test_release_workbooks_persist_lineage_and_publish_gdp_and_consumer_pages(cl
     }
     assert source_states["census"]["status"] == "partial"
     assert source_states["census"]["error"] == "CENSUS_API_KEY is not configured"
+    missing_key_body = client.get("/economy/consumer/").content.decode()
+    assert "partial" in missing_key_body
+    assert "CENSUS_API_KEY is not configured" in missing_key_body
 
 
 @pytest.mark.django_db
