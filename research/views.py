@@ -176,14 +176,19 @@ def _apply_dashboard_controls(request, config: dict, charts: list[dict]) -> list
         filtered = [
             _slice_dashboard_chart(chart, months=months) for chart in filtered
         ]
-    if selected_tab and selected_tab != default_tab:
+    if selected_tab:
         allowed_keys = {
             str(key) for key in valid_tabs[selected_tab].get("chart_keys", []) if key
         }
-        tabbed = [chart for chart in filtered if chart.get("key") in allowed_keys]
-        if tabbed:
-            filtered = tabbed
-        else:
+        if allowed_keys:
+            tabbed = [
+                chart for chart in filtered if chart.get("key") in allowed_keys
+            ]
+            if tabbed:
+                filtered = tabbed
+            else:
+                config["selected_tab"] = default_tab
+        elif selected_tab != default_tab:
             config["selected_tab"] = default_tab
     return filtered
 

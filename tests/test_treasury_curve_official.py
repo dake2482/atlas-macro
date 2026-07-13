@@ -337,6 +337,12 @@ def test_treasury_routes_and_assets_overview_use_yields_not_etf_prices(client, m
     runs = _record_curve_history()
     _coordinate_treasury_curve_dashboards(runs, end_year=2026)
 
+    default_curve = client.get("/rates/yield-curve/")
+    assert default_curve.context["selected_tab"] == "curve"
+    assert [item["key"] for item in default_curve.context["charts"]] == [
+        "nominal-curve-comparison"
+    ]
+
     response = client.get("/assets/bonds/?period=1y&tab=spreads")
     body = response.content.decode()
     assert response.status_code == 200
