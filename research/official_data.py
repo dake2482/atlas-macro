@@ -13,7 +13,7 @@ import json
 import uuid
 from collections.abc import Iterable
 from copy import deepcopy
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -568,6 +568,15 @@ def _fresh_until(observation: Observation) -> datetime:
         period_end = value_date.replace(month=quarter_end_month, day=day)
     elif frequency == "annual":
         period_end = value_date.replace(month=12, day=31)
+    elif frequency == "daily":
+        deadline_date = value_date.date() + timedelta(
+            days=FRESHNESS_DAYS["daily"]
+        )
+        return datetime.combine(
+            deadline_date,
+            time(hour=10),
+            tzinfo=ZoneInfo("America/New_York"),
+        ).astimezone(UTC)
     else:
         period_end = value_date
     return period_end + timedelta(days=FRESHNESS_DAYS.get(frequency, 4))

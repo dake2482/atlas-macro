@@ -759,6 +759,29 @@ def test_monthly_and_quarterly_freshness_start_from_period_end():
 
 
 @pytest.mark.django_db
+def test_daily_freshness_keeps_weekend_data_valid_until_new_york_release_window():
+    source = _licensed_source("daily-release-window")
+    series = SeriesDefinition.objects.create(
+        key="daily-release-window",
+        name="Daily release window",
+        unit="%",
+        frequency="daily",
+        source=source,
+    )
+    value_date = datetime(2026, 7, 9, tzinfo=UTC)
+    observation = Observation.objects.create(
+        series=series,
+        value="3.62",
+        value_date=value_date,
+        as_of=value_date,
+        fetched_at=datetime(2026, 7, 10, 13, tzinfo=UTC),
+        source=source,
+    )
+
+    assert _fresh_until(observation) == datetime(2026, 7, 13, 14, tzinfo=UTC)
+
+
+@pytest.mark.django_db
 @pytest.mark.parametrize("decision", ["restricted", "expired"])
 def test_current_restricted_or_expired_licence_suppresses_old_dashboard(client, decision):
     expired_at = timezone.localdate() - timedelta(days=1) if decision == "expired" else None
