@@ -466,7 +466,19 @@ def _mark_latest_dashboards_stale(
                         "source": source_key,
                         "status": run.status if run else "missing",
                         "row_count": run.row_count if run else 0,
-                        "error": (run.error if run else "source run missing")[:240],
+                        "error": (
+                            (
+                                run.error
+                                or str((run.metadata or {}).get("reason") or "")
+                                or (
+                                    "source run did not produce a complete batch"
+                                    if run.status != IngestionRun.Status.SUCCESS
+                                    else ""
+                                )
+                            )
+                            if run
+                            else "source run missing"
+                        )[:240],
                     }
                 )
             data = dict(latest.data or {})

@@ -808,6 +808,20 @@ def test_release_workbooks_persist_lineage_and_publish_gdp_and_consumer_pages(cl
     recovered = DashboardSnapshot.objects.get(pk=stale.pk)
     assert "refresh_failure" not in recovered.data
 
+    census_api_run.status = IngestionRun.Status.PARTIAL
+    census_api_run.row_count = 0
+    census_api_run.metadata = {"reason": "CENSUS_API_KEY is not configured"}
+    census_api_run.save(
+        update_fields=["status", "row_count", "metadata", "updated_at"]
+    )
+    _mark_latest_dashboards_stale({"consumer"}, runs)
+    missing_key = DashboardSnapshot.objects.get(pk=stale.pk)
+    source_states = {
+        item["source"]: item for item in missing_key.data["refresh_failure"]["sources"]
+    }
+    assert source_states["census"]["status"] == "partial"
+    assert source_states["census"]["error"] == "CENSUS_API_KEY is not configured"
+
 
 @pytest.mark.django_db
 def test_dashboard_deduplicates_same_date_across_provider_sources():
