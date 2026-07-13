@@ -22,6 +22,7 @@ from research.macro_releases import (
     BEA_PIO_PAGE,
     BEA_PIO_SECTION2_WORKBOOK,
     BEA_VINTAGE_WORKBOOK,
+    CENSUS_MARTS_CURRENT_WORKBOOK,
     CENSUS_MARTS_INDEX,
     XLSX_CONTENT_TYPE,
     BEAGDPReleaseProvider,
@@ -231,6 +232,38 @@ def _census_workbook() -> bytes:
     return _workbook_bytes(workbook)
 
 
+def _census_current_workbook() -> bytes:
+    workbook = Workbook()
+    sales = workbook.active
+    sales.title = "Table 1."
+    sales.cell(6, 10, "Adjusted2")
+    sales.cell(7, 10, 2026)
+    sales.cell(7, 13, 2025)
+    for column, label in enumerate(("May.3", "Apr.", "Mar.", "May.", "Apr."), start=10):
+        sales.cell(8, column, label)
+    for column, status in enumerate(("(a)", "(r)", "(r)", "(r)", "(r)"), start=10):
+        sales.cell(9, column, status)
+    sales.cell(11, 2, "Retail & food services, ")
+    sales.cell(12, 2, "  total")
+    for column, value in enumerate((763705, 757036, 754013, 714568, 721903), start=10):
+        sales.cell(12, column, value)
+
+    changes = workbook.create_sheet("Table 2.")
+    changes.cell(8, 3, "May. 2026 Advance")
+    changes.cell(8, 5, "Apr. 2026 Revised")
+    changes.cell(11, 3, "Apr. 2026")
+    changes.cell(11, 4, "May. 2025")
+    changes.cell(11, 5, "Mar. 2026")
+    changes.cell(11, 6, "Apr. 2025")
+    changes.cell(14, 2, "Retail & food services, ")
+    changes.cell(15, 2, "  total")
+    changes.cell(15, 3, 0.9)
+    changes.cell(15, 4, 6.9)
+    changes.cell(15, 5, 0.4)
+    changes.cell(15, 6, 4.8)
+    return _workbook_bytes(workbook)
+
+
 def _bea_pio_summary_workbook(*, real_pce: float = 0.3) -> bytes:
     workbook = Workbook()
     sheet = workbook.active
@@ -391,11 +424,22 @@ def _bea_client(vintage: bytes, comparisons: bytes) -> httpx.Client:
     return httpx.Client(transport=httpx.MockTransport(handler), follow_redirects=True)
 
 
-def _census_client(workbook: bytes) -> httpx.Client:
+def _census_client(workbook: bytes, *, current_status: int = 403) -> httpx.Client:
     latest = f"{CENSUS_MARTS_INDEX}rs2604.xlsx"
 
     def handler(request: httpx.Request) -> httpx.Response:
         url = str(request.url)
+        if url == CENSUS_MARTS_CURRENT_WORKBOOK:
+            if current_status == 200:
+                return httpx.Response(
+                    200,
+                    content=workbook,
+                    headers={
+                        "content-type": XLSX_CONTENT_TYPE,
+                        "last-modified": "June 17, 2026",
+                    },
+                )
+            return httpx.Response(current_status, text="current workbook unavailable")
         if url == CENSUS_MARTS_INDEX:
             return httpx.Response(
                 200,
@@ -577,12 +621,46 @@ def test_bea_pio_provider_fails_closed_on_inconsistent_workbooks(
     assert message in result.error
 
 
-def test_census_release_provider_selects_latest_calendar_file_and_preserves_status():
+def test_census_release_provider_prefers_current_workbook_and_preserves_status():
+    workbook = _census_current_workbook()
+    result = CensusMARTSReleaseProvider(
+        client=_census_client(workbook, current_status=200)
+    ).monthly_retail_sales()
+
+    assert result.ok
+    assert result.metadata["workbook_url"] == CENSUS_MARTS_CURRENT_WORKBOOK
+    assert result.metadata["workbook_scope"] == "current"
+    assert result.metadata["latest_value_date"] == "2026-05-01"
+    assert result.metadata["artifacts"][0]["sha256"] == hashlib.sha256(
+        workbook
+    ).hexdigest()
+    by_series_and_date = {
+        (item["series_id"], item["date"]): item for item in result.records
+    }
+    latest = by_series_and_date[("CENSUS-MRTS-44X72-SM-SA", "2026-05-01")]
+    assert latest["value"] == 763705
+    assert latest["metadata"]["estimate_status"] == "(a)"
+    assert by_series_and_date[("CENSUS-MRTS-44X72-SM-SA", "2026-04-01")][
+        "value"
+    ] == 757036
+    assert by_series_and_date[("CENSUS-MRTS-44X72-SM-SA-MOM", "2026-05-01")][
+        "value"
+    ] == Decimal("0.9")
+    assert by_series_and_date[("CENSUS-MRTS-44X72-SM-SA-YOY", "2026-05-01")][
+        "value"
+    ] == Decimal("6.9")
+    assert by_series_and_date[("CENSUS-MRTS-44X72-SM-SA-MOM", "2026-04-01")][
+        "value"
+    ] == Decimal("0.4")
+
+
+def test_census_release_provider_falls_back_to_latest_archive_file():
     workbook = _census_workbook()
     result = CensusMARTSReleaseProvider(client=_census_client(workbook)).monthly_retail_sales()
 
     assert result.ok
     assert result.metadata["workbook_url"].endswith("rs2604.xlsx")
+    assert result.metadata["workbook_scope"] == "historical_archive"
     assert result.metadata["latest_value_date"] == "2026-04-01"
     assert result.metadata["artifacts"][1]["sha256"] == hashlib.sha256(workbook).hexdigest()
     by_series_and_date = {
@@ -605,7 +683,7 @@ def test_census_release_provider_selects_latest_calendar_file_and_preserves_stat
 @pytest.mark.django_db
 def test_consumer_dashboard_refuses_partial_metric_set():
     census = CensusMARTSReleaseProvider(
-        client=_census_client(_census_workbook())
+        client=_census_client(_census_current_workbook(), current_status=200)
     ).monthly_retail_sales()
     record_provider_result(census, persist=_store_release_workbook_observations)
 
@@ -619,7 +697,7 @@ def test_release_workbooks_persist_lineage_and_publish_gdp_and_consumer_pages(cl
     ).gdp_pce()
     census_api = _census_api_result()
     census = CensusMARTSReleaseProvider(
-        client=_census_client(_census_workbook())
+        client=_census_client(_census_current_workbook(), current_status=200)
     ).monthly_retail_sales()
     pio = BEAPIOReleaseProvider(
         client=_bea_pio_client(
@@ -655,17 +733,11 @@ def test_release_workbooks_persist_lineage_and_publish_gdp_and_consumer_pages(cl
     assert g19_run.status == "success"
     assert household_run.status == "success"
     witness = census_api_run.metadata["legacy_revision_witness"]
-    assert witness["latest_value_date"] == "2026-04-01"
-    assert witness["overlap_count"] == 6
-    differences = {
-        (item["series_key"], item["value_date"]): item
-        for item in witness["differences"]
-    }
-    assert differences[("census-mrts-44x72-sm-sa", "2026-04-01")][
-        "revision_delta"
-    ] == "-49.00000000"
+    assert witness["latest_value_date"] == "2026-05-01"
+    assert witness["overlap_count"] == 7
+    assert witness["differences"] == []
     assert RawArtifact.objects.filter(run=bea_run).count() == 3
-    assert RawArtifact.objects.filter(run=census_run).count() == 2
+    assert RawArtifact.objects.filter(run=census_run).count() == 1
     assert RawArtifact.objects.filter(run=pio_run).count() == 3
     assert ReleaseVintageObservation.objects.filter(batch_id=bea_run.batch_id).count() == 12
     second_estimate = ReleaseVintageObservation.objects.get(
@@ -708,8 +780,8 @@ def test_release_workbooks_persist_lineage_and_publish_gdp_and_consumer_pages(cl
     assert revision_section["title"] == "GDP 发布轮次与修订路径"
     assert revision_section["rows"][0]["display_value"] == "1.60% → 2.10%"
     assert "累计修订 +0.50pp" in revision_section["rows"][0]["status"]
-    assert consumer["census-mrts-44x72-sm-sa"]["display_value"] == "757,085 USD mn"
-    assert consumer["census-mrts-44x72-sm-sa-mom"]["display_value"] == "0.50%"
+    assert consumer["census-mrts-44x72-sm-sa"]["display_value"] == "763,705 USD mn"
+    assert consumer["census-mrts-44x72-sm-sa-mom"]["display_value"] == "0.90%"
     assert consumer["census-mrts-44x72-sm-sa-mom"]["change_unit"] == "pp"
     assert consumer["bea-real-pce-mom"]["display_value"] == "0.30%"
     assert consumer["bea-real-dpi-mom"]["display_value"] == "0.30%"

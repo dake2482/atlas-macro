@@ -31,6 +31,10 @@ BEA_VINTAGE_WORKBOOK = (
     "https://apps.bea.gov/national/xls/gdp-gdi-vintage-history.xlsx"
 )
 CENSUS_MARTS_INDEX = "https://www2.census.gov/retail/releases/historical/marts/"
+CENSUS_MARTS_RELEASE_PAGE = "https://www.census.gov/retail/sales.html"
+CENSUS_MARTS_CURRENT_WORKBOOK = (
+    "https://www.census.gov/retail/marts/www/marts_current.xlsx"
+)
 XLSX_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 
@@ -1034,9 +1038,60 @@ class CensusMARTSReleaseProvider(_ReleaseWorkbookProvider):
 
     key = "census-release"
     base_url = "https://www2.census.gov"
-    allowed_hosts = frozenset({"www2.census.gov"})
+    allowed_hosts = frozenset({"www2.census.gov", "www.census.gov"})
 
     def monthly_retail_sales(self) -> ProviderResult:
+        dataset = "marts:retail-food-services"
+        current_error: Exception | None = None
+        try:
+            workbook_url = CENSUS_MARTS_CURRENT_WORKBOOK
+            content, content_type, last_modified = self._download(
+                workbook_url, expected="xlsx"
+            )
+            records, metadata = self._parse_workbook(content)
+            artifacts = [_artifact(workbook_url, content, content_type)]
+            source_url = CENSUS_MARTS_RELEASE_PAGE
+            workbook_scope = "current"
+        except Exception as exc:
+            current_error = exc
+            try:
+                index, index_type, _ = self._download(CENSUS_MARTS_INDEX, expected="html")
+                workbook_url = self._latest_workbook_url(index)
+                content, content_type, last_modified = self._download(
+                    workbook_url, expected="xlsx"
+                )
+                records, metadata = self._parse_workbook(content)
+                artifacts = [
+                    _artifact(CENSUS_MARTS_INDEX, index, index_type),
+                    _artifact(workbook_url, content, content_type),
+                ]
+                source_url = CENSUS_MARTS_INDEX
+                workbook_scope = "historical_archive"
+            except Exception as fallback_exc:
+                reason = (
+                    f"current {type(current_error).__name__}: {current_error}; "
+                    f"archive {type(fallback_exc).__name__}: {fallback_exc}"
+                )
+                return ProviderResult.failure(self.key, dataset, reason)
+        return ProviderResult(
+            provider=self.key,
+            dataset=dataset,
+            records=records,
+            metadata={
+                "source_url": source_url,
+                "workbook_url": workbook_url,
+                "workbook_last_modified": last_modified,
+                "workbook_scope": workbook_scope,
+                "artifacts": artifacts,
+                "unit": "USD millions",
+                "vintage_policy": "latest official advance/preliminary/revised release workbook",
+                "attribution": "U.S. Census Bureau",
+                **metadata,
+            },
+        )
+
+    def historical_monthly_retail_sales(self) -> ProviderResult:
+        """Parse the latest archived MARTS workbook; used only for diagnostics/tests."""
         dataset = "marts:retail-food-services"
         try:
             index, index_type, _ = self._download(CENSUS_MARTS_INDEX, expected="html")
@@ -1057,6 +1112,7 @@ class CensusMARTSReleaseProvider(_ReleaseWorkbookProvider):
                 "source_url": CENSUS_MARTS_INDEX,
                 "workbook_url": workbook_url,
                 "workbook_last_modified": last_modified,
+                "workbook_scope": "historical_archive",
                 "artifacts": artifacts,
                 "unit": "USD millions",
                 "vintage_policy": "latest official advance/preliminary/revised release workbook",
