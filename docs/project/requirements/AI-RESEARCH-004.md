@@ -10,8 +10,8 @@ task_id: atlas-inflation-official-20260712
 branch: main
 worktree: local
 dependencies: []
-updated_at: '2026-07-13T00:10:00+08:00'
-next_action: Start AI-RESEARCH-005 to align the Fed Funds policy corridor on one common effective date.
+updated_at: '2026-07-13T14:56:18+08:00'
+next_action: PCE inflation follow-up is deployed; remaining inflation gaps are detailed CPI/service components, market expectations and full release vintage.
 evidence:
 - Production currently publishes headline CPI, core CPI and final-demand PPI index levels, which are not the
   month-over-month or year-over-year inflation rates expected by the page contract.
@@ -33,6 +33,18 @@ evidence:
   `/srv/atlasmacro/backups/pre-114d75b-20260712T155837Z.dump` with SHA-256 sidecar and container pg_restore listing check.
 - Portfolio closeout passed on commit 64da0f3 with Ruff, the complete pytest suite, Django checks, strict
   portfolio validation and the explicitly local-only Git delivery boundary verified.
+- '2026-07-13 PCE follow-up: commit 7816d24 extends BEA PIO Section 2 parsing to T20804-M
+  DPCERG and DPCCRG, adds PCE and core PCE price-index MoM, YoY and 3M/6M annualized metrics
+  to the inflation page, and changes the inflation publication gate from BLS-only to BLS plus
+  bea-pio-release. The data catalogue now marks bea-pce-inflation as LIVE.'
+- 'Mina release 7816d24 was deployed on port 3080 after backup
+  /srv/atlasmacro/backups/pre-7816d2479b62-20260713T065025Z.dump, SHA-256
+  be302ebe5ae99ed3f40f27caa37972299945a41f86a0bb3c8ce7b8d54c007ead. Production
+  sync_data_requirements moved live from 33 to 34 and needs_source from 15 to 14; refresh_official_data
+  completed with BEA PIO success row_count=6,702 and published inflation.'
+- 'Production inflation snapshot 133 has five charts: headline CPI, core CPI, final-demand PPI,
+  PCE price and core PCE price. Public /economy/inflation/?tab=pce returns 200 and displays
+  PCE +4.1% YoY and core PCE +3.4% YoY from U.S. Bureau of Economic Analysis Personal Income and Outlays.'
 started_at: '2026-07-12T23:24:28+08:00'
 ---
 
@@ -47,6 +59,7 @@ started_at: '2026-07-12T23:24:28+08:00'
 - [x] 通胀页按总体、核心与生产者价格分组图表，支持可分享的 1y/3y/5y GET 时间窗口，不展示不兼容单位。
 - [x] 通胀页使用独立 BLS 同批发布门；与通胀无关的 Treasury/Fed/DOL 失败不阻断新快照，BLS 必需输入失败则保留上版并标 stale。
 - [x] 官方序列未覆盖的通胀分项、PCE 或修订 vintage 保持明确的数据源/采购状态，不用演示数值填充。
+- [x] 后续补齐：PCE 与核心 PCE 价格指数使用 BEA PIO Section 2 官方工作簿发布；剩余未覆盖层只保留分项、市场预期与完整 vintage。
 - [x] 公式、精度、缺月、批次、stale 保留、路由、血缘、响应式和生产刷新验收通过。
 
 ## Verification plan

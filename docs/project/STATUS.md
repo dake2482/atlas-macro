@@ -6,7 +6,7 @@
 - Health: `YELLOW`
 - Milestone: `AI-RESEARCH-008` — 分层补齐 Census 零售发布与完整历史 (`IN_PROGRESS`)
 - Next action: Provision CENSUS_API_KEY to backfill the complete 1992-present MARTS history; current retail publication is live from Census marts_current.xlsx on Mina.
-- Updated: `2026-07-13T14:39:57+08:00`
+- Updated: `2026-07-13T14:56:18+08:00`
 - Git boundary: branch `main`; run `portfolio closeout AI-RESEARCH` for live delivery state.
 - Execution metadata: Codex 0/0 active/total; ZCode 0/0 active/total
 
@@ -24,4 +24,4 @@
 
 ## Latest verification evidence
 
-- 2026-07-13 correction: live Mina probing now returns HTTP 200 and a valid Excel file for https://www.census.gov/retail/marts/www/marts_current.xlsx. Commit bbf7fff makes the release provider prefer the current Census workbook and fall back to the historical www2 archive only when the current workbook is unavailable.
+- Mina release 7816d24 was deployed on port 3080 after backup /srv/atlasmacro/backups/pre-7816d2479b62-20260713T065025Z.dump, SHA-256 be302ebe5ae99ed3f40f27caa37972299945a41f86a0bb3c8ce7b8d54c007ead. Production sync_data_requirements moved live from 33 to 34 and needs_source from 15 to 14; refresh_official_data completed with BEA PIO success row_count=6,702 and published inflation.
