@@ -31,7 +31,8 @@ from .official_news import (
     TreasuryPressReleaseProvider,
     store_official_news,
 )
-from .providers import CFTCProvider, GitHubProvider, ProviderResult, SECProvider
+from .providers import CFTCProvider, GitHubProvider, ProviderResult
+from .sec_company_facts import refresh_sec_company_data
 from .services import (
     record_provider_result,
     store_cftc_positions,
@@ -136,18 +137,7 @@ def refresh_crypto_sources() -> dict[str, Any]:
 
 @shared_task(name="research.tasks.refresh_filing_sources")
 def refresh_filing_sources() -> dict[str, Any]:
-    ciks = _setting_list("SEC_CIKS")
-    if not ciks:
-        return summarize_runs([_skip("sec", "filings", "SEC_CIKS is not configured")])
-    provider = SECProvider()
-    runs = []
-    try:
-        for cik in ciks:
-            runs.append(record_provider_result(provider.submissions(cik)))
-            runs.append(record_provider_result(provider.company_facts(cik)))
-    finally:
-        provider.close()
-    return summarize_runs(runs)
+    return refresh_sec_company_data()
 
 
 @shared_task(name="research.tasks.refresh_github_sources")

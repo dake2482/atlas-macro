@@ -1,11 +1,20 @@
 from __future__ import annotations
 
+import uuid
 from datetime import date
 
 import pytest
 from django.utils import timezone
 
-from research.models import Company, FundLetter, NewsItem, ResearchMention, SupplyChainNode
+from research.models import (
+    Company,
+    FundLetter,
+    NewsItem,
+    ResearchMention,
+    Source,
+    SourceLicense,
+    SupplyChainNode,
+)
 
 
 def page_text(response) -> str:
@@ -152,6 +161,8 @@ def test_fund_letter_filters_are_shareable_and_composable(client):
 
 @pytest.mark.django_db
 def test_market_map_filters_nodes_and_companies(client):
+    source = Source.objects.create(key="fixture-map-sec", name="SEC fixture", license_status="open")
+    SourceLicense.objects.create(source=source, status="open", scope="Fixture", public_display_allowed=True)
     node_match = SupplyChainNode.objects.create(
         slug="fixture-filter-node",
         name="MAPNODE-ALPHA Composed Match",
@@ -175,6 +186,13 @@ def test_market_map_filters_nodes_and_companies(client):
         primary_node=node_match,
         description="Unique company fixture",
         data_source_note="SEC EDGAR",
+        source=source,
+        sec_cik="0000000004",
+        publication_batch_id=uuid.uuid4(),
+        fetched_at=timezone.now(),
+        license_scope="Fixture",
+        is_published=True,
+        quality_status="fresh",
     )
     Company.objects.create(
         slug="fixture-decoy-company",
@@ -183,6 +201,13 @@ def test_market_map_filters_nodes_and_companies(client):
         primary_node=node_decoy,
         description="Company decoy",
         data_source_note="SEC EDGAR",
+        source=source,
+        sec_cik="0000000005",
+        publication_batch_id=uuid.uuid4(),
+        fetched_at=timezone.now(),
+        license_scope="Fixture",
+        is_published=True,
+        quality_status="fresh",
     )
 
     body = page_text(

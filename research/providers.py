@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
@@ -34,6 +35,7 @@ class ProviderResult:
     error: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
     supplemental_records: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
+    raw_bytes: bytes | None = None
 
     @property
     def ok(self) -> bool:
@@ -1252,13 +1254,29 @@ class SECProvider(HTTPProvider):
 
     key = "sec"
     base_url = "https://data.sec.gov"
+    min_request_interval = 0.2
+    max_retries = 3
 
-    def __init__(self, user_agent: str | None = None, **kwargs: Any) -> None:
-        self.user_agent = user_agent or os.getenv("SEC_USER_AGENT", "")
+    def __init__(
+        self,
+        user_agent: str | None = None,
+        *,
+        clock: Any = time.monotonic,
+        sleep: Any = time.sleep,
+        now: Any = lambda: datetime.now(UTC),
+        **kwargs: Any,
+    ) -> None:
+        configured_user_agent = os.getenv("SEC_USER_AGENT", "") if user_agent is None else user_agent
+        self.user_agent = str(configured_user_agent or "").strip()
+        self._clock = clock
+        self._sleep = sleep
+        self._now = now
+        self._last_request_at: float | None = None
         headers = dict(kwargs.pop("headers", {}) or {})
         if self.user_agent:
             headers["User-Agent"] = self.user_agent
         headers.setdefault("Accept-Encoding", "gzip, deflate")
+        self._request_headers = headers
         super().__init__(headers=headers, **kwargs)
 
     def _require_identity(self, dataset: str) -> ProviderResult | None:
@@ -1267,7 +1285,7 @@ class SECProvider(HTTPProvider):
         return ProviderResult.skip(
             self.key,
             dataset,
-            "SEC_USER_AGENT is not configured (use 'product contact@example.com')",
+            "SEC_USER_AGENT is not configured; the SEC job is skipped",
         )
 
     @staticmethod
@@ -1282,20 +1300,89 @@ class SECProvider(HTTPProvider):
         dataset = f"submissions:{normalized}"
         if skipped := self._require_identity(dataset):
             return skipped
-        payload, failure = self._get_json(dataset, f"/submissions/CIK{normalized}.json")
-        if failure:
-            return failure
-        return ProviderResult(provider=self.key, dataset=dataset, records=[payload])
+        return self._sec_json(dataset, f"/submissions/CIK{normalized}.json")
 
     def company_facts(self, cik: str | int) -> ProviderResult:
         normalized = self.normalize_cik(cik)
         dataset = f"companyfacts:{normalized}"
         if skipped := self._require_identity(dataset):
             return skipped
-        payload, failure = self._get_json(dataset, f"/api/xbrl/companyfacts/CIK{normalized}.json")
-        if failure:
-            return failure
-        return ProviderResult(provider=self.key, dataset=dataset, records=[payload])
+        return self._sec_json(dataset, f"/api/xbrl/companyfacts/CIK{normalized}.json")
+
+    def _sec_json(self, dataset: str, path: str) -> ProviderResult:
+        """Fetch JSON while retaining the exact response bytes for audit storage."""
+
+        base_url = str(getattr(self.client, "base_url", "") or "")
+        request_path = path if base_url else f"{self.base_url}{path}"
+        response = None
+        retryable_statuses = {403, 429, 500, 502, 503, 504}
+        for attempt in range(self.max_retries + 1):
+            elapsed = (
+                self._clock() - self._last_request_at
+                if self._last_request_at is not None
+                else self.min_request_interval
+            )
+            if elapsed < self.min_request_interval:
+                self._sleep(self.min_request_interval - elapsed)
+            self._last_request_at = self._clock()
+            try:
+                response = self.client.get(request_path, headers=self._request_headers)
+            except httpx.TransportError as exc:
+                if attempt >= self.max_retries:
+                    return ProviderResult.failure(
+                        self.key, dataset, f"{type(exc).__name__}: {exc}"
+                    )
+                self._sleep(self._retry_delay(None, attempt))
+                continue
+            if response.status_code not in retryable_statuses or attempt >= self.max_retries:
+                break
+            self._sleep(self._retry_delay(response, attempt))
+        if response is None:
+            return ProviderResult.failure(self.key, dataset, "SEC request returned no response")
+        try:
+            response.raise_for_status()
+        except httpx.HTTPError as exc:
+            return ProviderResult.failure(self.key, dataset, f"{type(exc).__name__}: {exc}")
+        try:
+            payload = response.json()
+        except (TypeError, ValueError) as exc:
+            # Parse/validation errors are deterministic input failures and are
+            # deliberately not retried.
+            return ProviderResult.failure(self.key, dataset, f"{type(exc).__name__}: {exc}")
+        raw = bytes(response.content)
+        return ProviderResult(
+            provider=self.key,
+            dataset=dataset,
+            records=[payload],
+            fetched_at=self._now(),
+            raw_bytes=raw,
+            metadata={
+                "endpoint": str(response.url),
+                "content_type": response.headers.get("content-type", ""),
+                "byte_length": len(raw),
+                "sha256": hashlib.sha256(raw).hexdigest(),
+            },
+        )
+
+    def _retry_delay(self, response: httpx.Response | None, attempt: int) -> float:
+        """Return a bounded Retry-After/backoff delay for retryable failures."""
+
+        retry_after = response.headers.get("retry-after") if response is not None else None
+        if retry_after:
+            try:
+                return min(8.0, max(0.2, float(retry_after)))
+            except ValueError:
+                try:
+                    retry_at = parsedate_to_datetime(retry_after)
+                    if retry_at.tzinfo is None:
+                        retry_at = retry_at.replace(tzinfo=UTC)
+                    now = self._now()
+                    if now.tzinfo is None:
+                        now = now.replace(tzinfo=UTC)
+                    return min(8.0, max(0.2, (retry_at - now).total_seconds()))
+                except (TypeError, ValueError, OverflowError):
+                    pass
+        return min(8.0, max(0.2, 0.5 * (2**attempt)))
 
 
 class GitHubProvider(HTTPProvider):

@@ -370,8 +370,8 @@ SOURCE_CATALOG: dict[str, dict[str, Any]] = {
         "attribution": "Federal Reserve Bank of Chicago",
     },
     "sec": {
-        "name": "SEC EDGAR",
-        "homepage": "https://www.sec.gov/edgar",
+        "name": "U.S. Securities and Exchange Commission EDGAR",
+        "homepage": "https://www.sec.gov/search-filings/edgar-application-programming-interfaces",
         "kind": "official",
         "license_status": Source.LicenseStatus.OPEN,
         "license_scope": (
@@ -383,7 +383,9 @@ SOURCE_CATALOG: dict[str, dict[str, Any]] = {
         "derived_display_allowed": True,
         "historical_storage_allowed": True,
         "ai_use_allowed": True,
+        "terms_url": "https://www.sec.gov/os/accessing-edgar-data",
         "attribution": "U.S. Securities and Exchange Commission",
+        "required_notice": "Source: U.S. Securities and Exchange Commission EDGAR. Atlas Macro is not affiliated with, sponsored by, or endorsed by the SEC; SEC data is shown with the original filing period and retrieval time.",
     },
     "us-treasury-news": {
         "name": "U.S. Treasury Official Press Releases",

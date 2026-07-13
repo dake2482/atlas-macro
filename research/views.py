@@ -51,7 +51,15 @@ from .models import (
 )
 from .page_registry import get_page_config
 from .public_ai_contract import is_pending_ai_company_contract_slug
+from .sec_company_facts import (
+    REVIEWED_COMPANIES,
+    REVIEWED_COMPANY_CIKS,
+    REVIEWED_COMPANY_SLUGS,
+    is_exact_reviewed_sec_company,
+    select_public_supply_chain_demand_snapshot,
+)
 from .services import (
+    derived_display_license_q,
     public_display_license_q,
     public_source_notices,
     publicly_displayable_source_keys,
@@ -89,7 +97,7 @@ def _chart_date(value) -> date | None:
         return None
 
 
-def _slice_dashboard_chart(chart: dict, *, months: int) -> dict:
+def _slice_dashboard_chart(chart: dict, *, months: int, fiscal_years: int | None = None) -> dict:
     """Copy and calendar-slice an explicitly date-indexed chart."""
 
     sliced = dict(chart)
@@ -111,31 +119,39 @@ def _slice_dashboard_chart(chart: dict, *, months: int) -> dict:
     if not isinstance(data, dict) or not isinstance(data.get("_rows"), list):
         return sliced
     rows = data["_rows"]
+    if fiscal_years and all(isinstance(row, dict) and row.get("fiscal_year") is not None for row in rows):
+        selected_years = sorted({int(row["fiscal_year"]) for row in rows}, reverse=True)[:fiscal_years]
+        indices = [index for index, row in enumerate(rows) if int(row["fiscal_year"]) in selected_years]
+    else:
+        indices = None
     dates = [_chart_date(row.get("date")) for row in rows if isinstance(row, dict)]
-    if len(dates) != len(rows) or not dates or any(item is None for item in dates):
+    if (indices is None and (len(dates) != len(rows) or not dates or any(item is None for item in dates))):
         return sliced
-    latest = max(item for item in dates if item is not None)
-    cutoff = latest - relativedelta(months=months)
-    indices = [
-        index
-        for index, row_date in enumerate(dates)
-        if row_date is not None and row_date >= cutoff
-    ]
+    if indices is None:
+        latest = max(item for item in dates if item is not None)
+        cutoff = latest - relativedelta(months=months)
+        indices = [index for index, row_date in enumerate(dates) if row_date is not None and row_date >= cutoff]
     copied_data = dict(data)
     copied_data["_rows"] = [dict(rows[index]) for index in indices]
+    if isinstance(data.get("series"), list):
+        copied_series = []
+        for item in data["series"]:
+            if not isinstance(item, dict):
+                continue
+            copied = dict(item)
+            values = copied.get("data")
+            if isinstance(values, list):
+                copied["data"] = [values[index] for index in indices if index < len(values)]
+            lineage = copied.get("lineage")
+            if isinstance(lineage, list):
+                copied["lineage"] = [
+                    lineage[index] for index in indices if index < len(lineage)
+                ]
+            copied_series.append(copied)
+        copied_data["series"] = copied_series
     labels = data.get("labels")
     if isinstance(labels, list) and len(labels) == len(rows):
         copied_data["labels"] = [labels[index] for index in indices]
-    series = data.get("series")
-    if isinstance(series, list):
-        copied_series = []
-        for item in series:
-            copied = dict(item) if isinstance(item, dict) else item
-            values = copied.get("data") if isinstance(copied, dict) else None
-            if isinstance(values, list) and len(values) == len(rows):
-                copied["data"] = [values[index] for index in indices]
-            copied_series.append(copied)
-        copied_data["series"] = copied_series
     sliced["data"] = copied_data
     return sliced
 
@@ -175,9 +191,8 @@ def _apply_dashboard_controls(request, config: dict, charts: list[dict]) -> list
     filtered = [dict(chart) for chart in charts]
     if selected_period:
         months = int(valid_periods[selected_period]["months"])
-        filtered = [
-            _slice_dashboard_chart(chart, months=months) for chart in filtered
-        ]
+        fiscal_years = valid_periods[selected_period].get("fiscal_years")
+        filtered = [_slice_dashboard_chart(chart, months=months, fiscal_years=fiscal_years) for chart in filtered]
     if selected_tab:
         allowed_keys = {
             str(key) for key in valid_tabs[selected_tab].get("chart_keys", []) if key
@@ -379,11 +394,30 @@ def _public_supply_chain_nodes():
 
 
 def _public_companies():
+    reviewed_identity = Q(
+        slug__in=REVIEWED_COMPANY_SLUGS
+    ) | Q(sec_cik__in=REVIEWED_COMPANY_CIKS)
+    exact_reviewed_identity = Q()
+    for spec in REVIEWED_COMPANIES:
+        exact_reviewed_identity |= Q(
+            slug=spec.slug,
+            sec_cik=spec.normalized_cik,
+            source__key="sec",
+        )
     return (
-        Company.objects.exclude(data_source_note="")
+        Company.objects.filter(
+            is_published=True,
+            publication_batch_id__isnull=False,
+            source__isnull=False,
+        )
+        .filter(public_display_license_q("source__licenses"))
+        .exclude(data_source_note="")
         .exclude(slug__startswith="clean-room-company-")
         .exclude(data_source_note__icontains="合成演示")
         .exclude(investor_relations_url__icontains="example.com")
+        .exclude(quality_status=Observation.Quality.ERROR)
+        .filter(~reviewed_identity | exact_reviewed_identity)
+        .distinct()
     )
 
 
@@ -869,19 +903,28 @@ def dashboard_page(request, page_key: str):
     snapshot = None
     snapshot_source_keys: set[str] = set()
     blocked_refresh_failure = None
-    for candidate in snapshot_candidates[:50]:
-        candidate_failure = (candidate.data or {}).get("refresh_failure")
-        if blocked_refresh_failure is None and isinstance(
-            candidate_failure, dict
-        ):
-            blocked_refresh_failure = candidate_failure
-        candidate_source_keys = _snapshot_source_keys(candidate.data)
-        if candidate.source_id:
-            candidate_source_keys.add(candidate.source.key)
-        if publicly_displayable_source_keys(candidate_source_keys):
-            snapshot = candidate
-            snapshot_source_keys = candidate_source_keys
-            break
+    if snapshot_key == "supply-chain-demand":
+        for candidate in snapshot_candidates[:50]:
+            candidate_failure = (candidate.data or {}).get("refresh_failure")
+            if blocked_refresh_failure is None and isinstance(candidate_failure, dict):
+                blocked_refresh_failure = candidate_failure
+        snapshot = select_public_supply_chain_demand_snapshot(snapshot_candidates[:50])
+        if snapshot is not None:
+            snapshot_source_keys = {"sec"}
+    else:
+        for candidate in snapshot_candidates[:50]:
+            candidate_failure = (candidate.data or {}).get("refresh_failure")
+            if blocked_refresh_failure is None and isinstance(
+                candidate_failure, dict
+            ):
+                blocked_refresh_failure = candidate_failure
+            candidate_source_keys = _snapshot_source_keys(candidate.data)
+            if candidate.source_id:
+                candidate_source_keys.add(candidate.source.key)
+            if publicly_displayable_source_keys(candidate_source_keys):
+                snapshot = candidate
+                snapshot_source_keys = candidate_source_keys
+                break
     if snapshot:
         snapshot_data = dict(snapshot.data or {})
         metrics = [dict(item) for item in snapshot_data.get("metrics", [])]
@@ -2072,7 +2115,10 @@ def ai_node(request, slug: str):
 
 def ai_company(request, slug: str):
     company = (
-        _public_companies().select_related("primary_node").filter(slug=slug).first()
+        _public_companies()
+        .select_related("primary_node", "source")
+        .filter(slug=slug)
+        .first()
     )
     if company is None:
         if not is_pending_ai_company_contract_slug(slug):
@@ -2091,19 +2137,46 @@ def ai_company(request, slug: str):
                 ),
             },
         )
-    financials = (
-        company.financials.select_related("source").filter(public_display_license_q()).distinct()
-    )
-    latest_fact = financials.first()
-    chart_data = list(
-        MarketBar.objects.filter(
-            instrument__symbol=company.ticker,
+    reviewed_sec = is_exact_reviewed_sec_company(company)
+    derived_allowed = False
+    if reviewed_sec and company.source_id:
+        derived_allowed = Source.objects.filter(pk=company.source_id).filter(
+            derived_display_license_q("licenses")
+        ).exists()
+    if reviewed_sec:
+        financials = (
+            company.financials.select_related("source", "capex_source_fact")
+            .filter(
+                publication_batch_id=company.publication_batch_id,
+                source__key="sec",
+            )
+            .exclude(quality_status=Observation.Quality.ERROR)
+            .filter(derived_display_license_q())
+            .distinct()
+            .order_by("-fiscal_year")[:3]
+            if derived_allowed
+            else company.financials.none()
         )
-        .filter(public_display_license_q())
-        .exclude(source__key="demo-market")
-        .order_by("value_date")
-        .values_list("close", flat=True)[:240]
-    )
+    else:
+        financials = (
+            company.financials.select_related("source")
+            .filter(public_display_license_q())
+            .exclude(source__key="demo-market")
+            .exclude(quality_status=Observation.Quality.ERROR)
+            .distinct()
+        )
+    latest_fact = financials.first()
+    if reviewed_sec:
+        chart_data = []
+    else:
+        chart_data = list(
+            MarketBar.objects.filter(instrument__symbol=company.ticker)
+            .filter(public_display_license_q())
+            .exclude(source__key="demo-market")
+            .exclude(quality_status=Observation.Quality.ERROR)
+            .order_by("value_date")
+            .values_list("close", flat=True)[:240]
+        )
     related = (
         _public_companies().filter(primary_node=company.primary_node).exclude(pk=company.pk)[:8]
     )
@@ -2119,6 +2192,8 @@ def ai_company(request, slug: str):
             "latest_fact": latest_fact,
             "related": related,
             "chart_data": chart_data,
+            "reviewed_sec": reviewed_sec,
+            "sec_projection_allowed": derived_allowed,
             "breadcrumbs": _breadcrumbs(
                 ("首页", "/"),
                 ("AI 产业观察", "/ai-industry/"),

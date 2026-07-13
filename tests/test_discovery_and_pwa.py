@@ -2,13 +2,15 @@ from __future__ import annotations
 
 import json
 import re
+import uuid
 from pathlib import Path
 from xml.etree import ElementTree
 
 import pytest
 from django.contrib.staticfiles import finders
+from django.utils import timezone
 
-from research.models import Company, FundLetter, SupplyChainNode
+from research.models import Company, FundLetter, Source, SourceLicense, SupplyChainNode
 
 
 @pytest.mark.django_db
@@ -22,6 +24,8 @@ def test_sitemap_is_xml_and_contains_static_and_dynamic_urls(client, seeded_plat
         description="Reviewed fixture",
         source_note="Company IR",
     )
+    source = Source.objects.create(key="fixture-sitemap-sec", name="SEC fixture", license_status="open")
+    SourceLicense.objects.create(source=source, status="open", scope="Fixture", public_display_allowed=True)
     company = Company.objects.create(
         slug="sitemap-verified-company",
         name="Sitemap Verified Company",
@@ -29,6 +33,13 @@ def test_sitemap_is_xml_and_contains_static_and_dynamic_urls(client, seeded_plat
         primary_node=node,
         description="Reviewed fixture",
         data_source_note="SEC EDGAR",
+        source=source,
+        sec_cik="0000000002",
+        publication_batch_id=uuid.uuid4(),
+        fetched_at=timezone.now(),
+        license_scope="Fixture",
+        is_published=True,
+        quality_status="fresh",
     )
     letter = FundLetter.objects.create(
         fund_name="Sitemap Verified Fund",

@@ -39,7 +39,7 @@ RUN pip install --upgrade pip \
 
 RUN addgroup --system django \
     && adduser --system --ingroup django django \
-    && mkdir -p /app/staticfiles /app/media \
+    && mkdir -p /app/staticfiles /app/media /app/data/artifacts \
     && chown -R django:django /app
 
 USER django

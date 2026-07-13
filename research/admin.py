@@ -6,6 +6,22 @@ from . import models
 from .thesis_publication import publish_theses, unpublish_theses
 
 
+class ImmutableSnapshotAdmin(admin.ModelAdmin):
+    """Snapshots are written by coordinators and inspected read-only in Admin."""
+
+    def get_readonly_fields(self, request, obj=None):
+        return tuple(field.name for field in self.model._meta.fields)
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+    def save_model(self, request, obj, form, change):  # pragma: no cover - defence in depth
+        raise PermissionDenied("快照只能由经过验证的数据发布器写入。")
+
+
 @admin.register(models.Source)
 class SourceAdmin(admin.ModelAdmin):
     list_display = ("name", "kind", "license_status", "redistribution_allowed")
@@ -159,10 +175,38 @@ class NewsItemAdmin(admin.ModelAdmin):
 
 @admin.register(models.Company)
 class CompanyAdmin(admin.ModelAdmin):
-    list_display = ("name", "ticker", "primary_node", "rating", "quality_grade", "data_as_of")
-    list_filter = ("primary_node__layer", "rating", "quality_grade")
-    search_fields = ("name", "name_en", "ticker")
+    list_display = ("name", "ticker", "sec_cik", "is_published", "quality_status", "data_as_of")
+    list_filter = ("is_published", "quality_status", "primary_node__layer", "rating", "quality_grade")
+    search_fields = ("name", "name_en", "ticker", "sec_cik")
     prepopulated_fields = {"slug": ("name_en",)}
+
+    def get_readonly_fields(self, request, obj=None):
+        if obj is not None and obj.is_published:
+            return tuple(field.name for field in self.model._meta.fields)
+        return ()
+
+    def has_change_permission(self, request, obj=None):
+        if obj is not None and obj.is_published:
+            return False
+        return super().has_change_permission(request, obj)
+
+    def has_delete_permission(self, request, obj=None):
+        if obj is not None and obj.is_published:
+            return False
+        return super().has_delete_permission(request, obj)
+
+
+@admin.register(models.SECCompanyFact)
+class SECCompanyFactAdmin(ImmutableSnapshotAdmin):
+    list_display = ("company", "concept", "fiscal_year", "value", "filed_at", "accession_number")
+    list_filter = ("taxonomy", "form", "quality_status", "source")
+    search_fields = ("company__name", "concept", "accession_number", "identity_hash")
+
+
+@admin.register(models.FinancialFact)
+class FinancialFactAdmin(ImmutableSnapshotAdmin):
+    list_display = ("company", "fiscal_year", "capital_expenditures_usd_m", "publication_batch_id", "quality_status")
+    list_filter = ("quality_status", "form", "capex_definition")
 
 
 @admin.register(models.SupplyChainNode)
@@ -170,22 +214,6 @@ class SupplyChainNodeAdmin(admin.ModelAdmin):
     list_display = ("name", "layer", "quadrant", "narrative_score", "revenue_growth")
     list_filter = ("layer", "quadrant")
     search_fields = ("name", "description")
-
-
-class ImmutableSnapshotAdmin(admin.ModelAdmin):
-    """Snapshots are written by coordinators and inspected read-only in Admin."""
-
-    def get_readonly_fields(self, request, obj=None):
-        return tuple(field.name for field in self.model._meta.fields)
-
-    def has_add_permission(self, request):
-        return False
-
-    def has_delete_permission(self, request, obj=None):
-        return False
-
-    def save_model(self, request, obj, form, change):  # pragma: no cover - defence in depth
-        raise PermissionDenied("快照只能由经过验证的数据发布器写入。")
 
 
 @admin.register(models.MetricSnapshot)
@@ -269,7 +297,6 @@ for model in [
     models.ResearchMention,
     models.FundLetter,
     models.FedDocument,
-    models.FinancialFact,
     models.SupplyChainEdge,
     models.ModelProfile,
     models.CodingAgentProfile,

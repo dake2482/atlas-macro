@@ -89,6 +89,7 @@ USE_TZ = True
 
 STATIC_URL = "/static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
+RAW_ARTIFACT_ROOT = Path(os.getenv("RAW_ARTIFACT_ROOT", str(BASE_DIR / "data" / "artifacts")))
 STORAGES = {
     "default": {"BACKEND": "django.core.files.storage.FileSystemStorage"},
     "staticfiles": {"BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage"},
@@ -101,7 +102,6 @@ SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 X_FRAME_OPTIONS = "DENY"
 SITE_NAME = os.getenv("SITE_NAME", "Atlas Macro")
 SITE_URL = os.getenv("SITE_URL", "http://localhost:8000").rstrip("/")
-SEC_CIKS = os.getenv("SEC_CIKS", "")
 GITHUB_REPOSITORIES = os.getenv("GITHUB_REPOSITORIES", "")
 NEWS_RSS_FEEDS = os.getenv("NEWS_RSS_FEEDS", "")
 

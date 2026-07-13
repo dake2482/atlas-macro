@@ -59,6 +59,14 @@ docker compose run --rm web python manage.py sync_ai_supply_chain_catalog
 docker compose up -d
 ```
 
+The default configuration leaves `SEC_USER_AGENT` blank, so the base Quick
+Start never makes an unidentified SEC request. After setting a real product
+identity and monitored contact email, run the reviewed four-company refresh:
+
+```bash
+docker compose run --rm web python manage.py refresh_sec_financials
+```
+
 Open <http://localhost:3080>. The admin is at <http://localhost:3080/admin/>. Create its
 first user with:
 
@@ -133,6 +141,7 @@ Important settings are:
 | `BLS_REGISTRATION_KEY` | Optional higher BLS public API quota |
 | `BEA_API_KEY` / `CENSUS_API_KEY` | BEA API is reserved for explicit backfills; Census key is required for the current 1992-present MARTS retail batch, while archived workbooks remain revision witnesses |
 | `SEC_USER_AGENT` | Required descriptive identity for SEC requests |
+| `RAW_ARTIFACT_ROOT` | Private content-addressed storage for immutable SEC response bytes; defaults to `data/artifacts/` |
 | `MARKET_DATA_PROVIDER` | Redistribution-approved provider; default `none` |
 | `MARKET_DATA_API_KEY` | Credential for a redistribution-approved provider |
 | `AI_PROVIDER` / `AI_API_KEY` | Optional evidence-bound analysis provider |
@@ -167,6 +176,19 @@ required rights are recorded.
 This is a research interface, not an order-entry or automated-trading system.
 Estimates such as GEX, DEX, Vanna, Charm, gamma flip, walls, max pain, and proxy
 credit metrics must retain their on-page method labels.
+
+The SEC annual-financials integration is intentionally narrower: it covers only
+Microsoft, Alphabet, Amazon, and Meta, requires five consecutive annual USD
+`10-K`/`10-K/A` periods, and publishes one atomic `supply-chain-demand` batch.
+The values are company-level cash capital-spend facts or proxies, not AI-only
+CapEx. Amazon's productive-assets tag is broader and is not fully comparable;
+GPU counts, leases, and project-level AI splits are not inferred. Raw EDGAR
+responses remain in the private ignored artifact volume and are never served by
+nginx.
+
+SEC access requires a real product identity and a monitored contact email in
+`SEC_USER_AGENT`; the scheduled job skips without it. Do not use a placeholder
+or an unmonitored address.
 
 ## Service topology and production notes
 

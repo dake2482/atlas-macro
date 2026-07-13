@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import uuid
 from datetime import date
 
 import pytest
@@ -12,6 +13,8 @@ from research.models import (
     FedDocument,
     FundLetter,
     ModelProfile,
+    Source,
+    SourceLicense,
     SupplyChainNode,
 )
 from tests.thesis_factories import build_complete_thesis
@@ -152,6 +155,8 @@ def test_dynamic_detail_routes_render(client, seeded_platform):
         description="Reviewed public evidence fixture",
         source_note="Company IR",
     )
+    source = Source.objects.create(key="fixture-route-sec", name="SEC fixture", license_status="open")
+    SourceLicense.objects.create(source=source, status="open", scope="Fixture", public_display_allowed=True)
     company = Company.objects.create(
         slug="verified-fixture-company",
         name="Verified Fixture Company",
@@ -159,6 +164,13 @@ def test_dynamic_detail_routes_render(client, seeded_platform):
         primary_node=node,
         description="Reviewed public company fixture",
         data_source_note="SEC EDGAR",
+        source=source,
+        sec_cik="0000000003",
+        publication_batch_id=uuid.uuid4(),
+        fetched_at=timezone.now(),
+        license_scope="Fixture",
+        is_published=True,
+        quality_status="fresh",
     )
     objects = [
         thesis,

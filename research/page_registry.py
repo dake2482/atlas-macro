@@ -861,18 +861,30 @@ PAGE_CONFIGS = {
     "supply-chain-demand": {
         "title": "AI 下游需求",
         "eyebrow": "Hyperscaler and Enterprise Demand",
-        "description": "跟踪云厂商与企业 AI 资本开支、算力部署、库存吸收和变现效率。",
+        "description": "跟踪四家云服务商披露的公司层面现金资本开支与财务承载能力。",
+        "snapshot_contract_version": 1,
+        "period_options": [
+            {"value": "3y", "label": "3 年", "months": 36, "fiscal_years": 3},
+            {"value": "5y", "label": "5 年", "months": 60, "fiscal_years": 5},
+        ],
+        "default_period": "5y",
+        "tab_options": [
+            {"value": "reported-capex", "label": "披露资本开支", "chart_keys": ["reported-capex"]},
+            {"value": "capex-intensity", "label": "资本开支强度", "chart_keys": ["capex-intensity"]},
+            {"value": "financial-capacity", "label": "财务承载能力", "chart_keys": ["financial-capacity"]},
+        ],
+        "default_tab": "reported-capex",
         "metrics": [],
         "chart_data": [],
         "analysis": "下游需求拆分尚未形成可比口径，在公司披露与研究估计未分层前不发布总需求数值。",
         "sections": [
             {
-                "title": "可免费补齐",
-                "body": "云厂商 CapEx、管理层指引、数据中心在建项目、电力合同、AI 相关收入披露与 SEC 分部数据。",
+            "title": "披露边界",
+            "body": "页面展示公司层面的 SEC 现金资本开支事实/代理指标，不是 AI-only CapEx。Amazon 使用更宽的 productive-assets 标签；GPU 数量、租赁和项目级 AI 拆分不作推断。",
             },
             {
                 "title": "目标字段",
-                "body": "company、period、total_capex、ai_capex、capex_guidance_low、capex_guidance_high、data_center_capacity_mw、accelerator_deployments、ai_revenue、backlog、source_id、estimate_flag、confidence。",
+            "body": "company、period、capital_expenditures、capex_definition、revenue、gross_profit、net_income、operating_cash_flow、source_fact_id、accession_number、fetched_at、quality_status。",
             },
         ],
         "source_notes": [

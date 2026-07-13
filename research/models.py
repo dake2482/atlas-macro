@@ -143,6 +143,14 @@ class RawArtifact(TimestampedModel):
     content_type = models.CharField(max_length=120, blank=True)
     size_bytes = models.PositiveBigIntegerField(default=0)
 
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["run", "sha256"], name="raw_artifact_run_sha256"
+            )
+        ]
+        indexes = [models.Index(fields=["sha256"])]
+
 
 class Instrument(TimestampedModel):
     symbol = models.CharField(max_length=40, unique=True)
@@ -667,14 +675,67 @@ class Company(TimestampedModel):
     gross_margin = models.DecimalField(max_digits=8, decimal_places=2, null=True, blank=True)
     pe = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
     ps = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
-    rating = models.CharField(max_length=40, default="中性")
-    quality_grade = models.CharField(max_length=10, default="B+")
+    rating = models.CharField(max_length=40, default="", blank=True)
+    quality_grade = models.CharField(max_length=10, default="", blank=True)
     data_source_note = models.CharField(max_length=240, blank=True)
     investor_relations_url = models.URLField(max_length=800, blank=True)
     data_as_of = models.DateField(null=True, blank=True)
+    sec_cik = models.CharField(max_length=10, blank=True, db_index=True)
+    source = models.ForeignKey(
+        Source, on_delete=models.PROTECT, related_name="companies", null=True, blank=True
+    )
+    fallback_source = models.ForeignKey(
+        Source,
+        on_delete=models.PROTECT,
+        related_name="fallback_companies",
+        null=True,
+        blank=True,
+    )
+    publication_batch_id = models.UUIDField(null=True, blank=True, db_index=True)
+    fetched_at = models.DateTimeField(null=True, blank=True)
+    quality_status = models.CharField(
+        max_length=20, choices=Observation.Quality.choices, default=Observation.Quality.ERROR
+    )
+    license_scope = models.CharField(max_length=240, blank=True)
+    is_published = models.BooleanField(default=False, db_index=True)
 
     class Meta:
         ordering = ["name"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["sec_cik"],
+                condition=~models.Q(sec_cik=""),
+                name="company_nonblank_sec_cik_unique",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    models.Q(is_published=False)
+                    | (
+                        models.Q(source__isnull=False)
+                        & models.Q(publication_batch_id__isnull=False)
+                        & models.Q(fetched_at__isnull=False)
+                        & ~models.Q(license_scope="")
+                        & models.Q(fallback_source__isnull=True)
+                        & ~models.Q(quality_status=Observation.Quality.ERROR)
+                    )
+                ),
+                name="published_company_publication_contract",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    models.Q(is_published=False)
+                    | (
+                        ~models.Q(slug__in=("microsoft", "alphabet", "amazon", "meta"))
+                        & ~models.Q(sec_cik__in=("0000789019", "0001652044", "0001018724", "0001326801"))
+                    )
+                    | models.Q(slug="microsoft", sec_cik="0000789019")
+                    | models.Q(slug="alphabet", sec_cik="0001652044")
+                    | models.Q(slug="amazon", sec_cik="0001018724")
+                    | models.Q(slug="meta", sec_cik="0001326801")
+                ),
+                name="published_reviewed_company_identity",
+            ),
+        ]
 
     def get_absolute_url(self) -> str:
         return reverse("ai-company", kwargs={"slug": self.slug})
@@ -690,13 +751,121 @@ class FinancialFact(TimestampedModel):
     operating_cash_flow_usd_m = models.DecimalField(
         max_digits=18, decimal_places=2, null=True, blank=True
     )
+    period_start = models.DateField(null=True, blank=True)
+    period_end = models.DateField(null=True, blank=True)
+    fiscal_period = models.CharField(max_length=12, blank=True)
+    gross_profit_usd_m = models.DecimalField(max_digits=18, decimal_places=2, null=True, blank=True)
+    capital_expenditures_usd_m = models.DecimalField(
+        max_digits=18, decimal_places=2, null=True, blank=True
+    )
+    capex_intensity = models.DecimalField(max_digits=8, decimal_places=4, null=True, blank=True)
+    capex_definition = models.CharField(max_length=80, blank=True)
+    capex_source_url = models.URLField(max_length=800, blank=True)
+    capex_source_fact = models.ForeignKey(
+        "SECCompanyFact",
+        on_delete=models.PROTECT,
+        related_name="financial_projections",
+        null=True,
+        blank=True,
+    )
+    accession_number = models.CharField(max_length=40, blank=True)
+    form = models.CharField(max_length=20, blank=True)
+    source_url = models.URLField(max_length=800, blank=True)
+    publication_batch_id = models.UUIDField(null=True, blank=True, db_index=True)
+    fetched_at = models.DateTimeField(null=True, blank=True)
+    quality_status = models.CharField(
+        max_length=20, choices=Observation.Quality.choices, default=Observation.Quality.ERROR
+    )
+    license_scope = models.CharField(max_length=240, blank=True)
+    fallback_source = models.ForeignKey(
+        Source,
+        on_delete=models.PROTECT,
+        related_name="fallback_financial_facts",
+        null=True,
+        blank=True,
+    )
+    metadata = models.JSONField(default=dict, blank=True)
     source = models.ForeignKey(Source, on_delete=models.PROTECT)
     filed_at = models.DateField(null=True, blank=True)
 
     class Meta:
         ordering = ["-fiscal_year"]
         constraints = [
-            models.UniqueConstraint(fields=["company", "fiscal_year"], name="company_fiscal_year")
+            models.UniqueConstraint(
+                fields=["company", "fiscal_year"],
+                condition=models.Q(publication_batch_id__isnull=True),
+                name="company_fiscal_year_unbatched_unique",
+            ),
+            models.UniqueConstraint(
+                fields=["company", "fiscal_year", "publication_batch_id"],
+                name="company_fiscal_year_publication_batch",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    models.Q(publication_batch_id__isnull=True)
+                    | (
+                        models.Q(period_start__isnull=False)
+                        & models.Q(period_end__isnull=False)
+                        & models.Q(capital_expenditures_usd_m__isnull=False)
+                        & models.Q(capex_source_fact__isnull=False)
+                        & models.Q(fetched_at__isnull=False)
+                        & ~models.Q(license_scope="")
+                        & models.Q(fallback_source__isnull=True)
+                        & models.Q(capital_expenditures_usd_m__gte=0)
+                    )
+                ),
+                name="published_financial_fact_contract",
+            ),
+        ]
+
+
+class SECCompanyFact(TimestampedModel):
+    """Immutable, narrow SEC XBRL fact retained before publication projection."""
+
+    company = models.ForeignKey(Company, on_delete=models.PROTECT, related_name="sec_facts")
+    source = models.ForeignKey(Source, on_delete=models.PROTECT, related_name="sec_company_facts")
+    source_license = models.ForeignKey(
+        SourceLicense, on_delete=models.PROTECT, related_name="sec_company_facts"
+    )
+    ingestion_run = models.ForeignKey(
+        IngestionRun, on_delete=models.PROTECT, related_name="sec_company_facts"
+    )
+    raw_artifact = models.ForeignKey(
+        RawArtifact, on_delete=models.PROTECT, related_name="sec_company_facts"
+    )
+    taxonomy = models.CharField(max_length=40)
+    concept = models.CharField(max_length=180)
+    unit = models.CharField(max_length=40)
+    value = models.DecimalField(max_digits=28, decimal_places=4)
+    period_start = models.DateField()
+    period_end = models.DateField()
+    fiscal_year = models.PositiveSmallIntegerField()
+    fiscal_period = models.CharField(max_length=12, default="FY")
+    form = models.CharField(max_length=20)
+    filed_at = models.DateField()
+    accession_number = models.CharField(max_length=40)
+    frame = models.CharField(max_length=40, blank=True)
+    fetched_at = models.DateTimeField()
+    quality_status = models.CharField(
+        max_length=20, choices=Observation.Quality.choices, default=Observation.Quality.FRESH
+    )
+    license_scope = models.CharField(max_length=240)
+    fallback_source = models.ForeignKey(
+        Source,
+        on_delete=models.PROTECT,
+        related_name="fallback_sec_company_facts",
+        null=True,
+        blank=True,
+    )
+    identity_hash = models.CharField(max_length=64, unique=True)
+    metadata = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        ordering = ["company", "fiscal_year", "concept", "filed_at", "accession_number"]
+        indexes = [
+            models.Index(fields=["company", "concept", "period_end"]),
+            models.Index(fields=["ingestion_run", "concept"]),
+            models.Index(fields=["accession_number"]),
         ]
 
 

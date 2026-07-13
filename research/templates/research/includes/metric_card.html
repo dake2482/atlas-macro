@@ -21,6 +21,7 @@
       <span class="metric-times text-right">
         {% if metric.value_date %}<time class="block" datetime="{{ metric.value_date }}">数值 {{ metric.value_date|slice:":10" }}</time>{% elif metric.as_of %}<time class="block" datetime="{{ metric.as_of }}">数值 {{ metric.as_of|slice:":10" }}</time>{% endif %}
         {% if metric.fetched_at %}<time class="block" datetime="{{ metric.fetched_at }}">抓取 {{ metric.fetched_at|slice:"5:16" }}</time>{% endif %}
+        {% if metric.publication_batch_id %}<span class="block">批次 {{ metric.publication_batch_id }}</span><span class="block">许可 {{ metric.license_scope|default:"—" }}</span><span class="block">fallback {{ metric.fallback_source|default:"—" }}</span>{% endif %}
       </span>
     </div>
   {% endif %}
