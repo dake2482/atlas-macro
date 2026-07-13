@@ -4,9 +4,9 @@
 
 - Purpose: Build a clean-room macro-research and AI supply-chain intelligence platform with traceable public sources, explicit data-quality labels, and original presentation.
 - Health: `YELLOW`
-- Milestone: `AI-RESEARCH-010` — 首页与每日报告官方证据发布安全闭环 (`IN_PROGRESS`)
-- Next action: Implement one shared public-thesis eligibility gate and prove every public consumer excludes future, incomplete, demo, stale or unlicensed research.
-- Updated: `2026-07-13T10:00:47+08:00`
+- Milestone: `AI-RESEARCH-010` — 首页与每日报告官方证据发布安全闭环 (`REVIEW`)
+- Next action: Provision a free CENSUS_API_KEY in Mina's protected shared environment, recreate the app services, rerun refresh_macro_data, and complete the May 2026 production audit.
+- Updated: `2026-07-13T14:12:00+08:00`
 - Git boundary: branch `main`; run `portfolio closeout AI-RESEARCH` for live delivery state.
 - Execution metadata: Codex 0/0 active/total; ZCode 0/0 active/total
 
@@ -14,9 +14,9 @@
 
 | Requirement | State | Priority | Executor | Task | Branch / worktree | Next action |
 |---|---|---|---|---|---|---|
-| AI-RESEARCH-010 | IN_PROGRESS | P0 | codex | atlas-daily-evidence-publication-safety-20260713 | main / local | Implement one shared public-thesis eligibility gate and prove every public consumer excludes future, incomplete, demo, stale or unlicensed research. |
 | AI-RESEARCH-008 | BLOCKED | P1 | codex | atlas-census-retail-alignment-20260713 | main / local | Provision a free CENSUS_API_KEY in Mina's protected shared environment, recreate the app services, rerun refresh_macro_data, and complete the May 2026 production audit. |
 | AI-RESEARCH-009 | REVIEW | P1 | codex | atlas-treasury-curve-alignment-20260713 | main / local | Run the project closeout gate after the pre-existing untracked docs/guides ownership is resolved; do not mix those user files into this requirement. |
+| AI-RESEARCH-010 | REVIEW | P0 | codex | atlas-daily-evidence-publication-safety-20260713 | main / local | Commit the verified deployment evidence and run portfolio closeout AI-RESEARCH. |
 
 ## Blockers
 
@@ -24,4 +24,4 @@
 
 ## Latest verification evidence
 
-- Ruff, the full 343-test pytest suite and Django check passed. Mina loopback route smoke tests passed for rates, yield curve, real rates, bonds and asset overview; final 1440px and 390px Playwright checks passed without overflow, stale labels or JavaScript errors, and each selected chart rendered exactly one Canvas after entering the viewport.
+- verification: commits 7dd83ef, b99f8e7 and f7d2ad8 passed Ruff, 409 tests, Django checks, Mina migration and immutable deployment, route smoke, production PARTIAL safety audit, and 1440px/390px browser checks.

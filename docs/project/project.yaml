@@ -9,10 +9,10 @@ success_metrics:
 current_milestone:
   id: AI-RESEARCH-010
   title: 首页与每日报告官方证据发布安全闭环
-  status: IN_PROGRESS
+  status: REVIEW
 health: YELLOW
-next_action: Implement one shared public-thesis eligibility gate and prove every public consumer excludes future, incomplete, demo, stale or unlicensed research.
-updated_at: '2026-07-13T10:00:47+08:00'
+next_action: Run the AI-RESEARCH closeout gate against immutable Mina release f7d2ad8b41bc, then mark AI-RESEARCH-010 DONE while retaining the Census blocker.
+updated_at: '2026-07-13T14:12:00+08:00'
 validation_commands:
   - .venv/bin/ruff check .
   - .venv/bin/pytest -q
