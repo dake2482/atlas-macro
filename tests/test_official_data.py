@@ -12,6 +12,7 @@ from django.utils import timezone
 from research.models import (
     DashboardSnapshot,
     IngestionRun,
+    MetricSnapshot,
     Observation,
     SeriesDefinition,
     Source,
@@ -21,6 +22,7 @@ from research.official_data import (
     _fresh_until,
     _has_publishable_run,
     _metric,
+    _publish_dashboard,
     publish_official_dashboards,
 )
 from research.providers import (
@@ -30,7 +32,7 @@ from research.providers import (
     ProviderResult,
     TreasuryRatesProvider,
 )
-from research.services import record_provider_result, store_series_observations
+from research.services import ensure_source, record_provider_result, store_series_observations
 
 
 def _client(handler):
@@ -1107,3 +1109,62 @@ def test_legacy_chart_data_footer_uses_chart_lineage_not_all_page_sources(client
     )[0]
     assert chart_source.name in chart_footer
     assert metric_source.name not in chart_footer
+
+
+def _dashboard_metric_contract(*, source_key: str | None) -> dict:
+    now = timezone.now()
+    payload = {
+        "key": "verified-metric",
+        "label": "Verified metric",
+        "value": "1.0000000000000002",
+        "display_value": "1.00",
+        "unit": "index",
+        "value_date": now.isoformat(),
+        "as_of": now.isoformat(),
+        "fetched_at": now.isoformat(),
+        "batch_id": str(uuid.uuid4()),
+        "quality_status": Observation.Quality.FRESH,
+        "source_keys": [source_key] if source_key else [],
+        "fresh_until": (now + timedelta(days=1)).isoformat(),
+    }
+    if source_key is not None:
+        payload["source_key"] = source_key
+    return payload
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("source_key", [None, "unknown-source-key"])
+def test_dashboard_publisher_rejects_missing_or_unknown_metric_source(source_key):
+    ensure_source("internal")
+
+    with pytest.raises(ValueError, match="source"):
+        _publish_dashboard(
+            key="strict-source-contract",
+            title="Strict source contract",
+            summary="Fixture",
+            metrics=[_dashboard_metric_contract(source_key=source_key)],
+            batch_id=uuid.uuid4(),
+        )
+
+
+@pytest.mark.django_db
+def test_dashboard_publisher_injects_exact_source_licence_scope():
+    source = ensure_source("internal")
+
+    snapshot = _publish_dashboard(
+        key="licence-scope-contract",
+        title="Licence scope contract",
+        summary="Fixture",
+        metrics=[_dashboard_metric_contract(source_key=source.key)],
+        batch_id=uuid.uuid4(),
+    )
+
+    assert snapshot is not None
+    assert snapshot.data["metrics"][0]["license_scope"] == source.license_scope[:120]
+    metric = snapshot.data["metrics"][0]
+    normalized = MetricSnapshot.objects.get(
+        key="licence-scope-contract-verified-metric",
+        batch_id=snapshot.batch_id,
+    )
+    assert metric["source_key"] == source.key
+    assert normalized.license_scope == source.license_scope[:120]

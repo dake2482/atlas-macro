@@ -6718,6 +6718,34 @@ def _publish_dashboard(
 ) -> DashboardSnapshot | None:
     if not metrics:
         return None
+    source = ensure_source("internal")
+    metric_source_keys = {
+        str(item.get("source_key") or "internal")
+        for item in metrics
+        if isinstance(item, dict)
+    }
+    source_scopes = {
+        item.key: item.license_scope[:120]
+        for item in Source.objects.filter(key__in=metric_source_keys)
+    }
+    normalized_metrics: list[dict[str, Any]] = []
+    for raw_metric in metrics:
+        metric = deepcopy(raw_metric)
+        declared_source_key = str(metric.get("source_key") or "")
+        if not declared_source_key:
+            raise ValueError("dashboard metric lacks an explicit source key")
+        metric_source_key = declared_source_key
+        if metric_source_key not in source_scopes:
+            raise ValueError(
+                f"dashboard metric declares unknown source key: {metric_source_key}"
+            )
+        metric["source_key"] = metric_source_key
+        metric["license_scope"] = source_scopes.get(
+            metric_source_key,
+            source.license_scope[:120],
+        )
+        normalized_metrics.append(metric)
+    metrics = normalized_metrics
     if required_metric_keys and not required_metric_keys <= {
         str(item.get("key") or "") for item in metrics
     }:
@@ -6787,7 +6815,6 @@ def _publish_dashboard(
         quality = Observation.Quality.FRESH
     else:
         quality = Observation.Quality.ESTIMATED
-    source = ensure_source("internal")
     component_batches = sorted(
         _payload_batch_ids([metrics, normalized_charts, sections or []])
     )

@@ -593,17 +593,57 @@ def public_display_license_q(prefix: str = "source__licenses") -> Q:
     )
 
 
+def derived_display_license_q(prefix: str = "source__licenses") -> Q:
+    """Return the current public-and-derived display licence predicate."""
+
+    return public_display_license_q(prefix) & Q(
+        **{f"{prefix}__derived_display_allowed": True}
+    )
+
+
+def current_display_source_key_sets(
+    keys: Iterable[str] | None = None,
+) -> tuple[set[str], set[str]]:
+    """Load effective public and derived source decisions in one query.
+
+    The returned derived set is deliberately a subset of the public set: a
+    source cannot authorize a public derived display while denying the public
+    display that carries its attribution and provenance.
+    """
+
+    requested = {str(key) for key in keys or () if key}
+    today = timezone.localdate()
+    decisions = SourceLicense.objects.filter(
+        is_current=True,
+        status__in=(Source.LicenseStatus.OPEN, Source.LicenseStatus.LICENSED),
+    ).filter(
+        Q(valid_from__isnull=True) | Q(valid_from__lte=today),
+        Q(valid_until__isnull=True) | Q(valid_until__gte=today),
+    )
+    if requested:
+        decisions = decisions.filter(source__key__in=requested)
+    public: set[str] = set()
+    derived: set[str] = set()
+    for source_key, public_allowed, derived_allowed in decisions.values_list(
+        "source__key",
+        "public_display_allowed",
+        "derived_display_allowed",
+    ):
+        if not public_allowed:
+            continue
+        public.add(source_key)
+        if derived_allowed:
+            derived.add(source_key)
+    return public, derived
+
+
 def publicly_displayable_source_keys(keys: Iterable[str]) -> bool:
     """Return True only when every source has one current effective licence."""
 
     required = {str(key) for key in keys if key}
     if not required:
         return False
-    allowed = set(
-        Source.objects.filter(key__in=required)
-        .filter(public_display_license_q("licenses"))
-        .values_list("key", flat=True)
-    )
+    allowed, _derived = current_display_source_key_sets(required)
     return allowed == required
 
 

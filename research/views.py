@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from datetime import date, datetime, timedelta
 from decimal import Decimal
+from typing import Any
 from xml.sax.saxutils import escape
 from zoneinfo import ZoneInfo
 
@@ -55,6 +56,7 @@ from .services import (
     public_source_notices,
     publicly_displayable_source_keys,
 )
+from .thesis_publication import public_theses
 
 
 def _breadcrumbs(*items):
@@ -193,15 +195,140 @@ def _apply_dashboard_controls(request, config: dict, charts: list[dict]) -> list
     return filtered
 
 
-def _public_theses():
-    """Return only explicitly published, non-demonstration research reports."""
+def _public_theses(*, limit: int | None = None):
+    """Return only reports that pass the shared publication-safety contract."""
 
-    return (
-        Thesis.objects.filter(is_published=True)
-        .exclude(summary__startswith="演示日报 ")
-        .exclude(source_snapshot__source__key="demo-market")
-        .exclude(source_snapshot__data__demo=True)
+    return public_theses(limit=limit)
+
+
+def _thesis_evidence_rows(thesis: Thesis | None) -> list[dict[str, Any]]:
+    if thesis is None:
+        return []
+    snapshot_data = (
+        thesis.source_snapshot.data
+        if thesis.source_snapshot_id and isinstance(thesis.source_snapshot.data, dict)
+        else {}
     )
+    frozen_items = snapshot_data.get("evidence_items")
+    frozen_by_id: dict[int, dict[str, Any]] = {}
+    if isinstance(frozen_items, list):
+        for frozen in frozen_items:
+            if not isinstance(frozen, dict):
+                continue
+            metric_id = frozen.get("metric_id")
+            if isinstance(metric_id, bool):
+                continue
+            try:
+                normalized_id = int(metric_id)
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if 0 < normalized_id <= (2**63) - 1:
+                frozen_by_id[normalized_id] = frozen
+    rows: list[dict[str, Any]] = []
+    for item in thesis.evidence_items.all():
+        if item.snapshot_id is None:
+            continue
+        frozen = frozen_by_id.get(item.snapshot_id)
+        if frozen is None:
+            continue
+        frozen_display = frozen.get("display_value")
+        if frozen_display not in (None, ""):
+            display_value = str(frozen_display)
+        elif frozen.get("value") is not None:
+            display_value = str(frozen["value"])
+        else:
+            display_value = "—"
+        rows.append(
+            {
+                "label": item.label,
+                "body": item.body,
+                "value": display_value,
+                "value_date": _public_datetime(frozen.get("value_date")),
+                "fetched_at": _public_datetime(frozen.get("fetched_at")),
+                "batch_id": frozen.get("batch_id"),
+                "quality_status": frozen.get("quality_status"),
+                "license_scope": frozen.get("license_scope"),
+                "source_key": frozen.get("source_key"),
+                "source_name": item.source.name,
+                "source_url": item.source_url,
+            }
+        )
+    return rows
+
+
+def _public_datetime(value: Any) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(str(value))
+    except (TypeError, ValueError):
+        return None
+    if timezone.is_naive(parsed):
+        return timezone.make_aware(parsed, ZoneInfo("UTC"))
+    return parsed
+
+
+def _thesis_source_keys(thesis: Thesis | None) -> set[str]:
+    if thesis is None or thesis.source_snapshot_id is None:
+        return set()
+    data = thesis.source_snapshot.data
+    keys = {thesis.source_snapshot.source.key}
+    if isinstance(data, dict) and isinstance(data.get("source_keys"), list):
+        keys.update(str(item) for item in data["source_keys"] if isinstance(item, str) and item)
+    if isinstance(data, dict) and isinstance(data.get("evidence_items"), list):
+        keys.update(
+            str(item["source_key"])
+            for item in data["evidence_items"]
+            if isinstance(item, dict) and isinstance(item.get("source_key"), str)
+        )
+    return keys
+
+
+def _thesis_snapshot_metadata(thesis: Thesis) -> dict[str, Any]:
+    snapshot = thesis.source_snapshot
+    data = snapshot.data if isinstance(snapshot.data, dict) else {}
+    deadlines: list[datetime] = []
+    evidence_items = data.get("evidence_items")
+    stack: list[tuple[Any, int]] = [
+        (data.get("component_snapshots"), 0),
+        (evidence_items, 0),
+    ]
+    visited = 0
+    while stack and visited < 20_000:
+        current, depth = stack.pop()
+        visited += 1
+        if depth > 32:
+            continue
+        if isinstance(current, dict):
+            if "fresh_until" in current:
+                deadline = _public_datetime(current.get("fresh_until"))
+                if deadline is not None:
+                    deadlines.append(deadline)
+            stack.extend(
+                (nested, depth + 1)
+                for nested in current.values()
+                if isinstance(nested, (dict, list))
+            )
+        elif isinstance(current, list):
+            stack.extend(
+                (nested, depth + 1)
+                for nested in current
+                if isinstance(nested, (dict, list))
+            )
+    licence_scopes = sorted(
+        {
+            str(item.get("license_scope"))
+            for item in evidence_items or []
+            if isinstance(item, dict) and item.get("license_scope")
+        }
+    ) if isinstance(evidence_items, list) else []
+    return {
+        "id": snapshot.pk,
+        "batch_id": snapshot.batch_id,
+        "as_of": snapshot.as_of,
+        "quality_status": snapshot.quality_status,
+        "source_name": snapshot.source.name,
+        "license_scope": "；".join(licence_scopes),
+        "stale": bool(deadlines and min(deadlines) < timezone.now()),
+    }
 
 
 def _public_news_items():
@@ -363,12 +490,8 @@ def _market_card(symbol: str, fallback_name: str):
 
 
 def home(request):
-    thesis = (
-        _public_theses()
-        .select_related("source_snapshot", "source_snapshot__source")
-        .order_by("-date")
-        .first()
-    )
+    theses = _public_theses(limit=1)
+    thesis = theses[0] if theses else None
     market_cards = [
         _market_card("SPY", "标普 500 ETF"),
         _market_card("QQQ", "纳斯达克 100 ETF"),
@@ -377,20 +500,27 @@ def home(request):
         _market_card("CL=F", "WTI 原油"),
         _market_card("BTC-USD", "比特币"),
     ]
-    evidence = thesis.evidence[:3] if thesis and isinstance(thesis.evidence, list) else []
-    normalized_evidence = []
-    for item in evidence:
-        if isinstance(item, dict):
-            normalized_evidence.append(item)
-        else:
-            normalized_evidence.append({"label": "已审核证据", "value": "—", "detail": str(item)})
+    evidence_rows = _thesis_evidence_rows(thesis)
+    trigger_items = list(thesis.trigger_items.all()) if thesis else []
+    invalidation_record = thesis.invalidation_record if thesis else None
     source_snapshot = thesis.source_snapshot if thesis else None
+    snapshot_metadata = _thesis_snapshot_metadata(thesis) if thesis else None
     context = {
         "title": "今日跨资产判断",
         "today": timezone.localdate(),
         "thesis": thesis,
         "current_thesis": thesis,
-        "evidence": normalized_evidence,
+        "evidence": [
+            {
+                "label": item["label"],
+                "value": item["value"],
+                "detail": item["body"],
+            }
+            for item in evidence_rows[:3]
+        ],
+        "evidence_items": evidence_rows,
+        "trigger_items": trigger_items,
+        "invalidation_record": invalidation_record,
         "market_cards": market_cards,
         "news_items": _public_news_items()[:5],
         "research_items": _public_research_mentions()[:4],
@@ -399,43 +529,72 @@ def home(request):
         "data_sources": Source.objects.exclude(key="demo-market").order_by("name")[:8],
         "as_of": source_snapshot.as_of if source_snapshot else None,
         "source": source_snapshot.source if source_snapshot else None,
+        "snapshot_metadata": snapshot_metadata,
+        "source_notices": public_source_notices(_thesis_source_keys(thesis)),
     }
     return render(request, "research/home.html", context)
 
 
 def regime_log(request):
-    theses = _public_theses().order_by("-date")
-    reviewed = theses.exclude(hit_rate__isnull=True)
-    aggregates = reviewed.aggregate(avg_hit=Avg("hit_rate"), avg_return=Avg("simulated_return"))
+    theses = _public_theses()
+    reviewed = [item for item in theses if item.hit_rate is not None]
+    returns = [
+        item.simulated_return for item in reviewed if item.simulated_return is not None
+    ]
     context = {
         "title": "判断复盘账本",
-        "current": theses.first(),
+        "current": theses[0] if theses else None,
         "theses": theses[:60],
-        "sample_count": reviewed.count(),
-        "avg_hit": aggregates["avg_hit"],
-        "avg_return": aggregates["avg_return"],
+        "sample_count": len(reviewed),
+        "avg_hit": (
+            sum((item.hit_rate for item in reviewed), Decimal("0")) / len(reviewed)
+            if reviewed
+            else None
+        ),
+        "avg_return": sum(returns, Decimal("0")) / len(returns) if returns else None,
         "breadcrumbs": _breadcrumbs(("首页", "/"), ("复盘账本", "")),
     }
     return render(request, "research/regime_log.html", context)
 
 
 def daily_list(request):
-    queryset = _public_theses().order_by("-date")
+    reports = list(_public_theses())
     query = request.GET.get("q", "").strip()
     status = request.GET.get("status", "").strip()
     if query:
-        queryset = queryset.filter(Q(regime__icontains=query) | Q(summary__icontains=query))
-    if status:
-        queryset = queryset.filter(status=status)
-    page_obj = Paginator(queryset, 20).get_page(request.GET.get("page"))
+        needle = query.casefold()
+        reports = [
+            item
+            for item in reports
+            if needle
+            in " ".join(
+                [
+                    item.regime,
+                    item.summary,
+                    *(evidence.label for evidence in item.evidence_items.all()),
+                    *(evidence.body for evidence in item.evidence_items.all()),
+                    *(trigger.name for trigger in item.trigger_items.all()),
+                    *(trigger.condition for trigger in item.trigger_items.all()),
+                ]
+            ).casefold()
+        ]
+    valid_statuses = {value for value, _label in Thesis.Status.choices}
+    if status in valid_statuses:
+        reports = [item for item in reports if item.status == status]
+    else:
+        status = ""
+    for item in reports:
+        item.publication_metadata = _thesis_snapshot_metadata(item)
+    page_obj = Paginator(reports, 20).get_page(request.GET.get("page"))
     return render(
         request,
         "research/daily_list.html",
         {
             "title": "每日宏观研究报告",
             "page_obj": page_obj,
-            "total_count": queryset.count(),
+            "total_count": len(reports),
             "filters": {"q": query, "status": status},
+            "status_choices": Thesis.Status.choices,
             "breadcrumbs": _breadcrumbs(("首页", "/"), ("每日报告", "")),
         },
     )
@@ -446,12 +605,15 @@ def daily_detail(request, report_date: str):
         parsed_date = date.fromisoformat(report_date)
     except ValueError as exc:
         raise Http404("无效报告日期") from exc
-    thesis = get_object_or_404(
-        _public_theses(),
-        date=parsed_date,
+    public = _public_theses()
+    thesis = next((item for item in public if item.date == parsed_date), None)
+    if thesis is None:
+        raise Http404("报告不存在或未通过发布安全门")
+    previous = next((item for item in public if item.date < thesis.date), None)
+    following = next(
+        (item for item in reversed(public) if item.date > thesis.date),
+        None,
     )
-    previous = _public_theses().filter(date__lt=thesis.date).order_by("-date").first()
-    following = _public_theses().filter(date__gt=thesis.date).order_by("date").first()
     return render(
         request,
         "research/daily_detail.html",
@@ -462,6 +624,11 @@ def daily_detail(request, report_date: str):
             "thesis": thesis,
             "previous": previous,
             "following": following,
+            "evidence_items": _thesis_evidence_rows(thesis),
+            "trigger_items": list(thesis.trigger_items.all()),
+            "invalidation_record": thesis.invalidation_record,
+            "snapshot_metadata": _thesis_snapshot_metadata(thesis),
+            "source_notices": public_source_notices(_thesis_source_keys(thesis)),
             "breadcrumbs": _breadcrumbs(
                 ("首页", "/"), ("每日报告", "/daily-report/"), (str(thesis.date), "")
             ),

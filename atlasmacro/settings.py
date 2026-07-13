@@ -172,9 +172,13 @@ CELERY_BEAT_SCHEDULE = {
         "task": "research.tasks.refresh_github_sources",
         "schedule": crontab(hour=10, minute=20),
     },
-    "generate-daily-research": {
+    "publish-daily-evidence-every-2h": {
+        "task": "research.tasks.publish_daily_evidence",
+        "schedule": crontab(hour="*/2", minute=40),
+    },
+    "generate-daily-research-every-2h": {
         "task": "research.tasks.generate_daily_research",
-        "schedule": crontab(hour=8, minute=0),
+        "schedule": crontab(hour="*/2", minute=45),
     },
 }
 

@@ -17,13 +17,14 @@
       {% if active_thesis %}
         <div class="panel-body !p-5">
           <p class="max-w-3xl text-[15px] leading-8 text-[var(--ink)]">{{ active_thesis.summary }}</p>
+          <div class="mt-3 flex flex-wrap gap-2 text-[10px] text-[var(--muted)]"><span>daily-evidence v1 · 快照 <span class="mono">#{{ snapshot_metadata.id }}</span></span><span>批次 <span class="mono">{{ snapshot_metadata.batch_id }}</span></span><span>质量 {{ snapshot_metadata.quality_status }}</span>{% if snapshot_metadata.stale %}<span class="badge badge-warning">历史冻结</span>{% endif %}</div>
           <div class="mt-6 grid gap-5 md:grid-cols-2">
             <div>
               <p class="eyebrow !text-[var(--muted)]">Evidence / 核心证据</p>
               <ol class="mt-3 grid gap-3">
-                {% for item in active_thesis.evidence %}
+                {% for item in evidence_items %}
                   <li class="flex gap-3 rounded-lg border hairline bg-[var(--surface-2)] p-3 text-[12px] leading-5">
-                    <span class="mono positive">0{{ forloop.counter }}</span><span>{{ item.text|default:item }}</span>
+                    <span class="mono positive">0{{ forloop.counter }}</span><span><strong>{{ item.label }}</strong> · {{ item.body }} <span class="mono">{{ item.value }}</span></span>
                   </li>
                 {% empty %}<li class="muted">尚无已审核证据。</li>{% endfor %}
               </ol>
@@ -31,14 +32,14 @@
             <div>
               <p class="eyebrow !text-[var(--muted)]">Triggers / 触发器</p>
               <ul class="mt-3 grid gap-3">
-                {% for trigger in active_thesis.triggers %}
-                  <li class="rounded-lg border hairline p-3 text-[12px] leading-5"><span class="mr-2 positive" aria-hidden="true">↗</span>{{ trigger.text|default:trigger }}</li>
+                {% for trigger in trigger_items %}
+                  <li class="rounded-lg border hairline p-3 text-[12px] leading-5"><span class="mr-2 positive" aria-hidden="true">↗</span><strong>{{ trigger.name }}</strong> · {{ trigger.condition }}</li>
                 {% empty %}<li class="muted">尚无触发器。</li>{% endfor %}
               </ul>
-              {% if active_thesis.invalidation %}
+              {% if invalidation_record %}
                 <div class="mt-4 rounded-lg border border-[color-mix(in_srgb,var(--negative)_25%,transparent)] bg-[color-mix(in_srgb,var(--negative)_7%,transparent)] p-3">
                   <p class="eyebrow !text-[var(--negative)]">Invalidation / 证伪条件</p>
-                  <p class="mt-2 text-[12px] leading-5">{{ active_thesis.invalidation }}</p>
+                  <p class="mt-2 text-[12px] leading-5">{{ invalidation_record.condition }}</p>
                 </div>
               {% endif %}
             </div>
@@ -47,6 +48,7 @@
       {% else %}
         {% include "research/includes/empty_state.html" with empty_title="今日判断尚未发布" empty_message="研究批次完整并通过质量检查后，判断才会原子发布。" %}
       {% endif %}
+      {% for notice in source_notices %}<div class="mx-5 mb-4 callout text-[10px] leading-5">{{ notice }}</div>{% endfor %}
     </section>
 
     <aside class="grid content-start gap-4">
@@ -64,10 +66,10 @@
         </div>
       </section>
       <section class="panel">
-        <header class="panel-header"><div><h2 class="section-title">今日行动</h2><p class="section-deck">研究观察，不连接交易账户</p></div><span class="badge">Read only</span></header>
+        <header class="panel-header"><div><h2 class="section-title">观察触发器</h2><p class="section-deck">研究观察，不连接交易账户</p></div><span class="badge">Read only</span></header>
         <ul class="panel-body grid gap-3">
-          {% for action in active_thesis.triggers %}
-            <li class="flex gap-3 text-[12px]"><span class="positive">□</span><span>{% if action.text %}{{ action.text }}{% else %}{{ action }}{% endif %}</span></li>
+          {% for action in trigger_items %}
+            <li class="flex gap-3 text-[12px]"><span class="positive">□</span><span>{{ action.name }} · {{ action.condition }}</span></li>
           {% empty %}<li class="muted">暂无行动项。</li>{% endfor %}
         </ul>
       </section>
@@ -81,9 +83,13 @@
   {% endif %}
 
   <div class="mt-4 grid gap-4 xl:grid-cols-[minmax(0,1.5fr)_minmax(18rem,.65fr)]">
-    {% include "research/includes/chart_panel.html" with chart_id="home-market-chart" chart_title="市场主线与关键变量" chart_description="同批次数据对齐后的标准化走势" chart_data=chart_data chart_kind="line" chart_class="chart-tall" source=source as_of=as_of %}
+    {% if chart_data %}
+      {% include "research/includes/chart_panel.html" with chart_id="home-market-chart" chart_title="市场主线与关键变量" chart_description="同批次数据对齐后的标准化走势" chart_data=chart_data chart_kind="line" chart_class="chart-tall" source=source as_of=as_of %}
+    {% else %}
+      <section class="panel">{% include "research/includes/empty_state.html" with empty_title="市场主线图等待完整批次" empty_message="只有同批次、可追溯且许可有效的数据才会进入图表。" %}</section>
+    {% endif %}
     <section class="panel">
-      <header class="panel-header"><div><h2 class="section-title">未来事件</h2><p class="section-deck">可能改变当前判断的日历节点</p></div></header>
+      <header class="panel-header"><div><h2 class="section-title">最新官方动态</h2><p class="section-deck">已发布的官方新闻与公告，不冒充未来事件日历</p></div></header>
       <div class="panel-body">
         <div class="timeline">
           {% for event in news_items|slice:":4" %}

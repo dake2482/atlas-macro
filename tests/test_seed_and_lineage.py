@@ -48,6 +48,13 @@ def test_seed_platform_creates_full_product_shape(seeded_platform):
 
     assert SupplyChainNode.objects.values("layer").distinct().count() == 9
     assert not Company.objects.filter(primary_node__isnull=True).exists()
+    assert not Thesis.objects.filter(is_published=True).exists()
+    assert not Thesis.objects.exclude(review_status=Thesis.ReviewStatus.DRAFT).exists()
+    assert not Thesis.objects.filter(published_at__isnull=False).exists()
+    assert not Thesis.objects.filter(reviewed_at__isnull=False).exists()
+    assert not Thesis.objects.exclude(reviewed_by="").exists()
+    assert not Thesis.objects.exclude(publication_fingerprint="").exists()
+    assert not Thesis.objects.filter(source_snapshot__isnull=False).exists()
 
 
 @pytest.mark.django_db
@@ -57,6 +64,10 @@ def test_seed_platform_is_idempotent(seeded_platform):
     call_command("seed_platform", allow_demo_data=True, verbosity=0)
 
     assert {model: model.objects.count() for model in BASELINE_COUNTS} == before
+    assert not Thesis.objects.filter(is_published=True).exists()
+    assert not Thesis.objects.exclude(review_status=Thesis.ReviewStatus.DRAFT).exists()
+    assert not Thesis.objects.exclude(publication_fingerprint="").exists()
+    assert not Thesis.objects.filter(source_snapshot__isnull=False).exists()
 
 
 @pytest.mark.django_db

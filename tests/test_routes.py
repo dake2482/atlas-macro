@@ -13,8 +13,8 @@ from research.models import (
     FundLetter,
     ModelProfile,
     SupplyChainNode,
-    Thesis,
 )
+from tests.thesis_factories import build_complete_thesis
 
 STATIC_PUBLIC_PATHS = [
     "/",
@@ -131,15 +131,9 @@ def test_no_public_route_leaks_seeded_demo_content(client, seeded_platform):
 
 @pytest.mark.django_db
 def test_dynamic_detail_routes_render(client, seeded_platform):
-    thesis = Thesis.objects.create(
-        date=date(2030, 1, 1),
-        regime="verified fixture",
-        summary="Reviewed evidence fixture",
-        evidence=[],
-        triggers=[],
-        invalidation="fixture invalidation",
-        is_published=True,
-        published_at=timezone.now(),
+    thesis = build_complete_thesis(
+        "verified fixture",
+        report_date=date(1900, 6, 1),
     )
     letter = FundLetter.objects.create(
         fund_name="Verified Fixture Fund",

@@ -481,6 +481,13 @@ class Command(BaseCommand):
                     "simulated_return": None
                     if status == Thesis.Status.PENDING
                     else Decimal(str(round(-1.2 + (index % 17) * 0.23, 3))),
+                    "review_status": Thesis.ReviewStatus.DRAFT,
+                    "reviewed_by": "",
+                    "reviewed_at": None,
+                    "publication_fingerprint": "",
+                    "is_published": False,
+                    "published_at": None,
+                    "source_snapshot": None,
                 },
             )
 

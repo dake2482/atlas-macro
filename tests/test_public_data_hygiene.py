@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 
 import pytest
 from django.core.management import call_command
@@ -24,6 +24,7 @@ from research.models import (
     Thesis,
 )
 from research.page_registry import get_page_config
+from tests.thesis_factories import build_complete_thesis
 
 
 def _licensed_source(key: str) -> Source:
@@ -113,44 +114,35 @@ def test_example_com_content_is_not_public(client):
 
 @pytest.mark.django_db
 def test_demo_theses_do_not_leak_through_adjacent_links_or_sitemap(client):
-    public = Thesis.objects.create(
-        date=date(2040, 1, 2),
-        regime="PUBLIC-THESIS",
-        summary="Reviewed public thesis",
-        evidence=[],
-        triggers=[],
-        invalidation="Reviewed invalidation",
-        is_published=True,
-        published_at=timezone.now(),
+    center_date = date(1900, 7, 2)
+    public = build_complete_thesis(
+        "PUBLIC-THESIS",
+        report_date=center_date,
     )
     Thesis.objects.create(
-        date=date(2040, 1, 1),
+        date=center_date - timedelta(days=1),
         regime="LEAKED-DEMO-PREVIOUS",
         summary="演示日报 2040-01-01：不应公开",
         evidence=[],
         triggers=[],
         invalidation="demo",
-        is_published=True,
-        published_at=timezone.now(),
     )
     Thesis.objects.create(
-        date=date(2040, 1, 3),
+        date=center_date + timedelta(days=1),
         regime="LEAKED-DEMO-FOLLOWING",
         summary="演示日报 2040-01-03：不应公开",
         evidence=[],
         triggers=[],
         invalidation="demo",
-        is_published=True,
-        published_at=timezone.now(),
     )
 
     detail = client.get(public.get_absolute_url()).content.decode()
     sitemap = client.get("/sitemap.xml").content.decode()
 
     assert "LEAKED-DEMO" not in detail
-    assert "2040-01-01" not in sitemap
-    assert "2040-01-03" not in sitemap
-    assert "2040-01-02" in sitemap
+    assert (center_date - timedelta(days=1)).isoformat() not in sitemap
+    assert (center_date + timedelta(days=1)).isoformat() not in sitemap
+    assert center_date.isoformat() in sitemap
 
 
 @pytest.mark.django_db

@@ -420,6 +420,11 @@ class GeneratedAnalysis(TimestampedModel):
 
 
 class Thesis(TimestampedModel):
+    class ReviewStatus(models.TextChoices):
+        DRAFT = "draft", "草稿"
+        REVIEWED = "reviewed", "已审核"
+        REJECTED = "rejected", "已拒绝"
+
     class Status(models.TextChoices):
         PENDING = "pending", "待复盘"
         HIT = "hit", "命中"
@@ -436,6 +441,15 @@ class Thesis(TimestampedModel):
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)
     hit_rate = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
     simulated_return = models.DecimalField(max_digits=7, decimal_places=3, null=True, blank=True)
+    review_status = models.CharField(
+        max_length=20,
+        choices=ReviewStatus.choices,
+        default=ReviewStatus.DRAFT,
+        db_index=True,
+    )
+    reviewed_by = models.CharField(max_length=160, blank=True)
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+    publication_fingerprint = models.CharField(max_length=64, blank=True)
     is_published = models.BooleanField(default=False, db_index=True)
     published_at = models.DateTimeField(null=True, blank=True)
     source_snapshot = models.ForeignKey(
@@ -448,6 +462,29 @@ class Thesis(TimestampedModel):
 
     class Meta:
         ordering = ["-date"]
+        permissions = [
+            ("publish_thesis", "Can review and publish thesis"),
+            ("withdraw_thesis", "Can withdraw published thesis"),
+        ]
+        constraints = [
+            models.CheckConstraint(
+                condition=(
+                    models.Q(is_published=False, published_at__isnull=True)
+                    | (
+                        models.Q(
+                            is_published=True,
+                            published_at__isnull=False,
+                            review_status="reviewed",
+                            reviewed_at__isnull=False,
+                            source_snapshot__isnull=False,
+                        )
+                        & ~models.Q(reviewed_by="")
+                        & ~models.Q(publication_fingerprint="")
+                    )
+                ),
+                name="thesis_publication_review_state_consistent",
+            )
+        ]
 
     def get_absolute_url(self) -> str:
         return reverse("daily-detail", kwargs={"report_date": self.date.isoformat()})
