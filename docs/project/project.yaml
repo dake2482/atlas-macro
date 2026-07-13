@@ -11,8 +11,8 @@ current_milestone:
   title: 分层补齐 Census 零售发布与完整历史
   status: IN_PROGRESS
 health: YELLOW
-next_action: Deploy the Census release-workbook retail fallback to Mina, rerun refresh_macro_data, audit the consumer/economy/daily-evidence impact, then keep CENSUS_API_KEY as the remaining complete-history action.
-updated_at: '2026-07-13T14:21:11+08:00'
+next_action: Find a Mina-accessible current MARTS workbook path or provision CENSUS_API_KEY; the deployed release-workbook fallback is real but still stale because www2 historical files stop at April 2026.
+updated_at: '2026-07-13T14:29:00+08:00'
 validation_commands:
   - .venv/bin/ruff check .
   - .venv/bin/pytest -q

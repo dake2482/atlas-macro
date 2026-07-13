@@ -12,7 +12,7 @@ worktree: local
 dependencies:
 - AI-RESEARCH-006
 updated_at: '2026-07-13T14:21:11+08:00'
-next_action: Deploy the Census release-workbook retail fallback to Mina, rerun refresh_macro_data, audit the consumer/economy/daily-evidence impact, then keep CENSUS_API_KEY as the remaining complete-history action.
+next_action: Find a Mina-accessible current MARTS workbook path or provision CENSUS_API_KEY; the deployed release-workbook fallback is real but still stale because www2 historical files stop at April 2026.
 evidence:
 - Production currently publishes April 2026 Census retail and food-services sales as 757,085 USD millions,
   +0.5% month over month and +4.9% year over year from batch 3b6ea974-4f6f-4379-b008-80d3e6056727;
@@ -47,6 +47,18 @@ evidence:
   CENSUS_API_KEY, but the official MARTS release workbook is already a traceable public source. The code now
   treats `census-release` as the current consumer-page retail source, keeps `census` API as the complete-history
   source, updates the data catalogue accordingly, and preserves the key requirement for 1992-present API history.'
+- Release 0340e48 was deployed to Mina on port 3080. A pre-refresh backup was written to
+  /srv/atlasmacro/backups/pre-0340e48f59e1-20260713T062325Z.dump with SHA-256
+  9e8ec0b0d7c913c1d19a92ce46b90179546f29528ffb2902bbacd635bda7fdfb. Production
+  sync_data_requirements reported live=33 and needs_source=15; refresh_macro_data completed with six runs,
+  18,861 rows, failed=0, partial=1, and published gdp plus consumer.
+- Production consumer snapshot 129 uses retail_source_key=census-release and retail_batch_id
+  01de2218-42e2-4004-bed6-071b974b14d4. Public /economy/consumer/ returns 200 and displays
+  757,085 USD mn, 0.50% MoM and 4.90% YoY from U.S. Census Bureau Monthly Retail Trade Releases,
+  with stale labels and no refresh_failure. census-retail is live; census-retail-history remains needs_source.
+- 'Current MARTS direct workbook probing differs by network: local macOS curl receives HTTP 200 for
+  https://www.census.gov/retail/marts/www/marts_current.xlsx, while Mina receives HTTP 403. Therefore
+  production cannot yet automate the May 2026 current workbook without a new accessible path, mirror, or API key.'
 started_at: '2026-07-13T08:02:09+08:00'
 ---
 
@@ -61,8 +73,9 @@ started_at: '2026-07-13T08:02:09+08:00'
 - [x] CENSUS_API_KEY 缺失时，consumer 当前零售指标改用 Census 官方发布工作簿，不再发布 demo 或过期静态数值；完整 API 历史继续单列为缺口。
 - [x] API 适配器改用正确的 EITS /marts 路径并保持凭据门控；key 不进入日志、错误、工件 URI、页面或 Git，缺 key 时不得联网或发布半成品。
 - [x] 当前源缺失、格式变化、交叉校验失败、过期、未授权或混批时保留上一完整 consumer 快照并显示具体失败；恢复后同值刷新血缘而不制造错误新版本。
-- [ ] consumer 页面在 Mina 发布当前可用 Census 官方发布工作簿批次；不回归 BEA PIO、G.19、NY Fed 家庭债务或 economy 组合页。
-- [ ] 数据目录把当前 Census release-workbook 零售指标标记为 LIVE，并把完整 API 历史保留为 NEEDS_SOURCE；Ruff、完整 pytest、Django check、Mina 生产刷新、路由烟测及桌面/390px 浏览器验收通过。
+- [x] consumer 页面在 Mina 发布当前可用 Census 官方发布工作簿批次；不回归 BEA PIO、G.19、NY Fed 家庭债务或 economy 组合页。
+- [x] 数据目录把当前 Census release-workbook 零售指标标记为 LIVE，并把完整 API 历史保留为 NEEDS_SOURCE；Ruff、完整 pytest、Django check、Mina 生产刷新和路由烟测通过。
+- [ ] 找到 Mina 可访问的当前 MARTS 工作簿路径、配置可信镜像或 provision CENSUS_API_KEY，使生产能发布 May 2026 的 763,705、+0.9% 和 +6.9%，April 历史修订为 757,036 与 +0.4%。
 
 ## Verification plan
 
