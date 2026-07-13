@@ -27,7 +27,7 @@ from research.official_data import (
     refresh_official_data,
 )
 from research.providers import ProviderResult
-from research.services import record_provider_result, store_series_observations
+from research.services import ensure_source, record_provider_result, store_series_observations
 
 INFLATION_SERIES = (
     "CUSR0000SA0",
@@ -178,6 +178,139 @@ def _pce_inflation_run():
             },
         ),
         persist=store_series_observations,
+    )
+
+
+def _real_rates_snapshot():
+    source = ensure_source("internal")
+    ensure_source("us-treasury-rates")
+    nominal_batch = uuid.uuid4()
+    real_batch = uuid.uuid4()
+    metric_common = {
+        "unit": "%",
+        "source": "Atlas Macro 计算（U.S. Treasury 输入）",
+        "source_key": "internal",
+        "source_keys": ["internal", "us-treasury-rates"],
+        "quality_status": "estimated",
+        "as_of": "2026-07-10T00:00:00+00:00",
+        "value_date": "2026-07-10T00:00:00+00:00",
+        "fetched_at": "2026-07-13T06:52:50+00:00",
+        "fresh_until": "2026-07-14T14:00:00+00:00",
+        "license_scope": "Original calculations derived from attributed inputs",
+        "fallback_source": None,
+    }
+    metrics = [
+        {
+            **metric_common,
+            "key": "5y-bei",
+            "label": "5Y 盈亏平衡通胀",
+            "value": 2.28,
+            "display_value": "2.28%",
+            "change": 0.0,
+            "change_unit": "bp",
+            "batch_id": f"{nominal_batch},{real_batch}",
+            "metadata": {
+                "formula": "UST-5Y - TIPS-5Y",
+                "input_series": ["ust-5y", "tips-5y"],
+                "input_batch_ids": [str(nominal_batch), str(real_batch)],
+                "input_lineage": [
+                    {
+                        "series_key": "ust-5y",
+                        "source_key": "us-treasury-rates",
+                        "source_name": "U.S. Treasury Daily Interest Rates",
+                        "license_scope": "Attributed U.S. government data",
+                        "value_date": "2026-07-10T00:00:00+00:00",
+                        "as_of": "2026-07-10T00:00:00+00:00",
+                        "fetched_at": "2026-07-13T06:52:40+00:00",
+                        "batch_id": str(nominal_batch),
+                        "quality_status": "fresh",
+                        "fallback_source": None,
+                    }
+                ],
+            },
+        },
+        {
+            **metric_common,
+            "key": "10y-bei",
+            "label": "10Y 盈亏平衡通胀",
+            "value": 2.24,
+            "display_value": "2.24%",
+            "change": 1.0,
+            "change_unit": "bp",
+            "batch_id": f"{nominal_batch},{real_batch}",
+            "metadata": {
+                "formula": "UST-10Y - TIPS-10Y",
+                "input_series": ["ust-10y", "tips-10y"],
+                "input_batch_ids": [str(nominal_batch), str(real_batch)],
+                "input_lineage": [
+                    {
+                        "series_key": "ust-10y",
+                        "source_key": "us-treasury-rates",
+                        "source_name": "U.S. Treasury Daily Interest Rates",
+                        "license_scope": "Attributed U.S. government data",
+                        "value_date": "2026-07-10T00:00:00+00:00",
+                        "as_of": "2026-07-10T00:00:00+00:00",
+                        "fetched_at": "2026-07-13T06:52:40+00:00",
+                        "batch_id": str(nominal_batch),
+                        "quality_status": "fresh",
+                        "fallback_source": None,
+                    }
+                ],
+            },
+        },
+    ]
+    chart = {
+        "key": "nominal-real-breakeven-history",
+        "title": "名义、实际与盈亏平衡通胀",
+        "description": "BEI 为 Atlas Macro 用同期限 Treasury par curve 名义减实际的近似，单位：%。",
+        "kind": "line",
+        "time_axis": "date",
+        "tab": "decomposition",
+        "source_keys": ["internal", "us-treasury-rates"],
+        "batch_ids": [str(nominal_batch), str(real_batch)],
+        "quality_status": "estimated",
+        "as_of": "2026-07-10T00:00:00+00:00",
+        "fetched_at": "2026-07-13T06:52:50+00:00",
+        "fresh_until": "2026-07-14T14:00:00+00:00",
+        "data": [
+            {
+                "date": "2026-07-09",
+                "5Y BEI": 2.27,
+                "10Y BEI": 2.23,
+                "_source_keys": ["us-treasury-rates", "internal"],
+                "_batch_ids": [str(nominal_batch), str(real_batch)],
+            },
+            {
+                "date": "2026-07-10",
+                "5Y BEI": 2.28,
+                "10Y BEI": 2.24,
+                "_source_keys": ["us-treasury-rates", "internal"],
+                "_batch_ids": [str(nominal_batch), str(real_batch)],
+            },
+        ],
+    }
+    return DashboardSnapshot.objects.create(
+        key="real-rates",
+        title="实际利率",
+        as_of=datetime(2026, 7, 10, tzinfo=UTC),
+        batch_id=uuid.uuid4(),
+        quality_status="estimated",
+        summary="Treasury real rates fixture",
+        source=source,
+        is_published=True,
+        data={
+            "demo": False,
+            "contract_version": 1,
+            "metrics": metrics,
+            "charts": [chart],
+            "chart_data": chart["data"],
+            "sections": [],
+            "component_batches": [str(nominal_batch), str(real_batch)],
+            "source_keys": ["internal", "us-treasury-rates"],
+            "fresh_until": "2026-07-14T14:00:00+00:00",
+            "fingerprint": "real-rates-fixture",
+            "publication_batch_id": "real-rates-fixture",
+        },
     )
 
 
@@ -483,6 +616,40 @@ def test_inflation_get_controls_slice_group_and_sanitize(client):
     assert "alert%281%29" not in invalid.content.decode()
 
 
+@pytest.mark.django_db
+def test_inflation_reuses_real_rates_breakeven_proxy_when_available(client):
+    _real_rates_snapshot()
+    run = _inflation_run()
+    pce_run = _pce_inflation_run()
+    publish_official_dashboards(
+        keys={"inflation"},
+        source_batches={
+            "bls": run.batch_id,
+            "bea-pio-release": pce_run.batch_id,
+        },
+    )
+
+    snapshot = DashboardSnapshot.objects.get(key="inflation")
+    metrics = {item["key"]: item for item in snapshot.data["metrics"]}
+    assert metrics["market-5y-bei"]["display_value"] == "2.28%"
+    assert metrics["market-10y-bei"]["display_value"] == "2.24%"
+    assert metrics["market-10y-bei"]["metadata"]["component_page_key"] == "real-rates"
+    assert "not traded breakeven" in metrics["market-10y-bei"]["metadata"]["model_label"]
+    assert "market-breakeven-inflation" in {
+        item["key"] for item in snapshot.data["charts"]
+    }
+
+    response = client.get("/economy/inflation/", {"tab": "expectations"})
+    assert response.status_code == 200
+    assert response.context["selected_tab"] == "expectations"
+    assert [item["key"] for item in response.context["charts"]] == [
+        "market-breakeven-inflation"
+    ]
+    body = html.unescape(response.content.decode())
+    assert "Treasury 曲线派生盈亏平衡通胀" in body
+    assert "不是可交易 breakeven" in body
+
+
 def test_inflation_catalog_marks_official_inputs_and_missing_layers():
     requirements = {
         item["key"]: item
@@ -492,9 +659,7 @@ def test_inflation_catalog_marks_official_inputs_and_missing_layers():
     assert requirements["bls-inflation-official"]["status"] == "live"
     assert requirements["bea-pce-inflation"]["status"] == "live"
     assert requirements["bls-inflation-components"]["status"] == "needs_source"
-    assert requirements["inflation-market-expectations"]["status"] == (
-        "needs_source"
-    )
+    assert requirements["inflation-market-expectations"]["status"] == "live"
     assert requirements["inflation-vintage-trail"]["status"] == "needs_source"
     assert all(item["page_key"] == "inflation" for item in requirements.values())
 

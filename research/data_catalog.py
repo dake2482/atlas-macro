@@ -390,19 +390,19 @@ DATA_REQUIREMENTS = [
         "key": "inflation-market-expectations",
         "page_key": "inflation",
         "metric_name": "5Y/10Y 盈亏平衡通胀与远期通胀预期",
-        "status": NEEDS_SOURCE,
+        "status": LIVE,
         "source_name": "U.S. Treasury nominal and real yield curves",
         "source_url": (
             "https://home.treasury.gov/resource-center/data-chart-center/interest-rates/"
         ),
         "reason": (
-            "实际利率页已能透明计算最新名义 Treasury 减 TIPS，但通胀页"
-            "尚无同日历史配对和独立发布门；接入后应明确标记为财政部"
-            "曲线派生代理，而非实时可交易的 BEI。"
+            "通胀页复用 real-rates 同一 Treasury 名义与 TIPS par curve 快照，"
+            "发布 5Y/10Y 名义减实际的 BEI 代理，并明确不是实时可交易"
+            " breakeven 或 5Y5Y。"
         ),
         "proxy_description": (
-            "先接入同日 5Y/10Y Treasury−TIPS 历史代理；5Y5Y 远期口径"
-            "另行验证 FRED/授权市场源。"
+            "已接入同日 5Y/10Y Treasury−TIPS 历史代理；5Y5Y 远期口径"
+            "仍需另行验证 FRED/授权市场源。"
         ),
         "priority": 3,
     },

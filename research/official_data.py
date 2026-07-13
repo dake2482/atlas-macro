@@ -1773,6 +1773,118 @@ def _select_lineage_chart_rows(
     return selected
 
 
+def _inflation_market_expectations_from_real_rates() -> tuple[
+    list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]
+]:
+    """Reuse the audited real-rates Treasury/TIPS snapshot for inflation BEI."""
+
+    snapshot = _latest_treasury_contract_snapshot("real-rates")
+    if snapshot is None:
+        return [], [], []
+    data = dict(snapshot.data or {})
+    if (
+        snapshot.source.key == "demo-market"
+        or data.get("demo") is not False
+        or data.get("refresh_failure")
+        or snapshot.quality_status
+        in {Observation.Quality.ERROR, Observation.Quality.STALE}
+    ):
+        return [], [], []
+    fresh_until_raw = data.get("fresh_until")
+    if fresh_until_raw:
+        try:
+            fresh_until = datetime.fromisoformat(str(fresh_until_raw))
+            if fresh_until.tzinfo is None:
+                fresh_until = fresh_until.replace(tzinfo=UTC)
+            if timezone.now() > fresh_until:
+                return [], [], []
+        except ValueError:
+            return [], [], []
+
+    metric_by_key = {
+        str(item.get("key") or ""): item
+        for item in data.get("metrics", [])
+        if isinstance(item, dict)
+    }
+    source_metrics = [
+        metric_by_key.get("5y-bei"),
+        metric_by_key.get("10y-bei"),
+    ]
+    if any(metric is None for metric in source_metrics):
+        return [], [], []
+    metrics: list[dict[str, Any]] = []
+    for source_metric in source_metrics:
+        metric = deepcopy(source_metric)
+        metric["key"] = f"market-{metric['key']}"
+        metric["label"] = f"{metric['label']}（Treasury 曲线代理）"
+        metric["metadata"] = {
+            **dict(metric.get("metadata") or {}),
+            "component_page_key": "real-rates",
+            "component_snapshot_id": snapshot.pk,
+            "component_publication_batch_id": str(snapshot.batch_id),
+            "component_fingerprint": data.get("fingerprint"),
+            "model_label": (
+                "Treasury nominal minus TIPS par curve approximation; "
+                "not traded breakeven inflation or 5Y5Y"
+            ),
+        }
+        metric["source"] = "Atlas Macro 计算：Treasury 名义曲线 - TIPS 实际曲线"
+        metric["source_keys"] = sorted(
+            {*metric.get("source_keys", []), "internal", "us-treasury-rates"}
+        )
+        metrics.append(metric)
+
+    source_chart = next(
+        (
+            item
+            for item in data.get("charts", [])
+            if item.get("key") == "nominal-real-breakeven-history"
+        ),
+        None,
+    )
+    if not source_chart:
+        return [], [], []
+    rows = []
+    for row in source_chart.get("data", []):
+        filtered = {
+            "date": row.get("date"),
+            "5Y BEI": row.get("5Y BEI"),
+            "10Y BEI": row.get("10Y BEI"),
+            "_source_keys": row.get("_source_keys", ["us-treasury-rates", "internal"]),
+        }
+        if "_batch_ids" in row:
+            filtered["_batch_ids"] = row["_batch_ids"]
+        rows.append(filtered)
+    chart = {
+        **deepcopy(source_chart),
+        "key": "market-breakeven-inflation",
+        "title": "Treasury 曲线派生盈亏平衡通胀",
+        "description": (
+            "复用实际利率页同一官方 Treasury 名义与 TIPS par curve 快照；"
+            "5Y/10Y BEI 为 Atlas 透明代理，不是可交易 breakeven 或 5Y5Y。"
+        ),
+        "data": rows,
+        "tab": "expectations",
+        "source_keys": sorted(
+            {*source_chart.get("source_keys", []), "internal", "us-treasury-rates"}
+        ),
+    }
+    sections = [
+        {
+            "title": "市场通胀预期代理口径",
+            "body": (
+                "5Y/10Y BEI 复用实际利率页同一 Treasury 官方曲线快照，"
+                "按名义 par yield 减 TIPS real par yield 计算。它是公开政府"
+                "曲线派生代理，不是实时交易 breakeven、远期 5Y5Y 或终端报价。"
+            ),
+            "status": Observation.Quality.ESTIMATED,
+            "fresh_until": data.get("fresh_until"),
+            "full_width": True,
+        }
+    ]
+    return metrics, [chart], sections
+
+
 def _lineage_chart(
     *,
     key: str,
@@ -2769,6 +2881,9 @@ def _inflation_page_data(
         batch_id=bea_pio_batch_id,
         input_source_key="bea-pio-release",
     )
+    expectation_metrics, expectation_charts, expectation_sections = (
+        _inflation_market_expectations_from_real_rates()
+    )
     charts = _existing(
         _lineage_chart(
             key="headline-cpi-rates",
@@ -2843,6 +2958,7 @@ def _inflation_page_data(
             ],
             tab="pce",
         ),
+        *expectation_charts,
     )
     sections = [
         {
@@ -2858,11 +2974,12 @@ def _inflation_page_data(
         {
             "title": "尚未接入的通胀层",
             "body": (
-                "住房与服务分拆、5Y/10Y 盈亏平衡通胀和完整发布 vintage "
+                "住房与服务分拆、真实交易 breakeven、5Y5Y 和完整发布 vintage "
                 "尚未进入本页原子快照；其来源状态与后续接入建议见下方数据覆盖台账。"
             ),
             "full_width": True,
         },
+        *expectation_sections,
     ]
     return [
         *headline_metrics,
@@ -2870,6 +2987,7 @@ def _inflation_page_data(
         *producer_metrics,
         *pce_metrics,
         *core_pce_metrics,
+        *expectation_metrics,
     ], charts, sections
 
 
