@@ -38,6 +38,7 @@ from .labor_official import (
 from .labor_official import (
     REQUIRED_SERIES as DOL_REQUIRED_SERIES,
 )
+from .macro_official import CensusMARTSProvider
 from .macro_releases import (
     BEAGDPReleaseProvider,
     BEAPIOReleaseProvider,
@@ -121,16 +122,24 @@ PRATES_PUBLICATION_KEYS = frozenset(
 )
 H10_PUBLICATION_KEYS = frozenset({"assets-fx"})
 CREDIT_PUBLICATION_KEYS = frozenset({"credit", "credit-spreads", "credit-stress"})
+CONSUMER_CONTRACT_VERSION = 1
 MACRO_PUBLICATION_GROUPS = {
     "gdp": frozenset({"bea-release"}),
     "consumer": frozenset(
         {
+            "census",
             "census-release",
             "bea-pio-release",
             "federal-reserve-g19",
             "ny-fed-household-credit",
         }
     ),
+}
+MACRO_REQUIRED_DATASETS = {
+    "consumer": {
+        "census": "marts:44X72:SM:yes",
+        "census-release": "marts:retail-food-services",
+    }
 }
 EMPLOYMENT_PUBLICATION_GROUPS = {
     "employment": frozenset({"bls", "dol-eta-ui"}),
@@ -290,7 +299,7 @@ MACRO_REQUIRED_SERIES = {
         )
     },
     "consumer": {
-        "census-release": frozenset(
+        "census": frozenset(
             {
                 "CENSUS-MRTS-44X72-SM-SA",
                 "CENSUS-MRTS-44X72-SM-SA-MOM",
@@ -379,6 +388,13 @@ def _keys_with_current_required_batches(
     for page_key in page_keys:
         page_requirements = MACRO_REQUIRED_SERIES.get(page_key, {})
         page_is_current = bool(page_requirements)
+        for source_key, dataset in MACRO_REQUIRED_DATASETS.get(page_key, {}).items():
+            run = run_by_source.get(source_key)
+            if run is None or run.dataset != dataset:
+                page_is_current = False
+                break
+        if not page_is_current:
+            continue
         for source_key, series_keys in page_requirements.items():
             run = run_by_source.get(source_key)
             if run is None:
@@ -386,10 +402,12 @@ def _keys_with_current_required_batches(
                 break
             expected_batch = str(run.batch_id)
             for series_key in series_keys:
-                observation = _real_observations(series_key).first()
+                observation = _real_observations(
+                    series_key,
+                    source_key=source_key,
+                ).first()
                 if (
                     observation is None
-                    or observation.source.key != source_key
                     or str(observation.batch_id) != expected_batch
                 ):
                     page_is_current = False
@@ -502,25 +520,40 @@ def _fresh_until(observation: Observation) -> datetime:
     return period_end + timedelta(days=FRESHNESS_DAYS.get(frequency, 4))
 
 
-def _real_observations(series_key: str):
-    return (
+def _real_observations(
+    series_key: str,
+    *,
+    source_key: str | None = None,
+    batch_id: uuid.UUID | str | None = None,
+):
+    queryset = (
         Observation.objects.filter(series__key=series_key.lower())
         .exclude(source__key="demo-market")
         .filter(public_display_license_q())
         .select_related("series", "source", "fallback_source")
         .distinct()
-        .order_by("-value_date", "-fetched_at", "-id")
     )
+    if source_key is not None:
+        queryset = queryset.filter(source__key=source_key)
+    if batch_id is not None:
+        queryset = queryset.filter(batch_id=batch_id)
+    return queryset.order_by("-value_date", "-fetched_at", "-id")
 
 
 def _latest_observations_by_value_date(
-    series_key: str, *, limit: int
+    series_key: str,
+    *,
+    limit: int,
+    source_key: str | None = None,
+    batch_id: uuid.UUID | str | None = None,
 ) -> list[Observation]:
     """Return one deterministic latest-source observation per economic date."""
 
     observations: list[Observation] = []
     seen_dates = set()
-    for observation in _real_observations(series_key).iterator():
+    for observation in _real_observations(
+        series_key, source_key=source_key, batch_id=batch_id
+    ).iterator():
         if observation.value_date in seen_dates:
             continue
         observations.append(observation)
@@ -548,13 +581,20 @@ def _metric(
     suffix: str = "",
     scale: Decimal = Decimal("1"),
     aligned_with: Iterable[str] = (),
+    source_key: str | None = None,
+    batch_id: uuid.UUID | str | None = None,
 ) -> dict[str, Any] | None:
     alignment_keys = tuple(dict.fromkeys(aligned_with))
     if alignment_keys:
         observations_by_key = {
             key: {
                 item.value_date.date(): item
-                for item in _latest_observations_by_value_date(key, limit=2000)
+                for item in _latest_observations_by_value_date(
+                    key,
+                    limit=2000,
+                    source_key=source_key,
+                    batch_id=batch_id,
+                )
             }
             for key in (series_key, *alignment_keys)
         }
@@ -572,7 +612,12 @@ def _metric(
             observations_by_key[series_key][period] for period in periods[:2]
         ]
     else:
-        observations = _latest_observations_by_value_date(series_key, limit=2)
+        observations = _latest_observations_by_value_date(
+            series_key,
+            limit=2,
+            source_key=source_key,
+            batch_id=batch_id,
+        )
     if not observations:
         return None
     latest = observations[0]
@@ -749,13 +794,23 @@ def _curve_rows(prefix: str, tenors: Iterable[str]) -> list[dict[str, Any]]:
 
 
 def _history_rows(
-    series: dict[str, str], *, limit: int = 120, require_all: bool = False
+    series: dict[str, str],
+    *,
+    limit: int = 120,
+    require_all: bool = False,
+    source_key: str | None = None,
+    batch_id: uuid.UUID | str | None = None,
 ) -> list[dict[str, Any]]:
     """Align public observations by date while preserving semantic series labels."""
 
     by_date: dict[str, dict[str, Any]] = {}
     for series_key, label in series.items():
-        observations = _latest_observations_by_value_date(series_key, limit=limit)
+        observations = _latest_observations_by_value_date(
+            series_key,
+            limit=limit,
+            source_key=source_key,
+            batch_id=batch_id,
+        )
         for observation in reversed(observations):
             day = observation.value_date.date().isoformat()
             row = by_date.setdefault(
@@ -806,16 +861,28 @@ def _history_chart(
     limit: int = 120,
     description: str = "",
     kind: str = "line",
+    source_key: str | None = None,
+    batch_id: uuid.UUID | str | None = None,
 ) -> dict[str, Any] | None:
     """Build a chart contract with component-level source and freshness metadata."""
 
-    rows = _history_rows(series, limit=limit)
+    rows = _history_rows(
+        series,
+        limit=limit,
+        source_key=source_key,
+        batch_id=batch_id,
+    )
     if not rows:
         return None
     latest = [
         observation
         for series_key in series
-        if (observation := _real_observations(series_key).first()) is not None
+        if (
+            observation := _real_observations(
+                series_key, source_key=source_key, batch_id=batch_id
+            ).first()
+        )
+        is not None
     ]
     if len(latest) != len(series):
         return None
@@ -5092,6 +5159,31 @@ def _store_h10_observations(result, source, run) -> int:
 def _store_release_workbook_observations(result, source, run) -> int:
     """Persist normalized release rows plus immutable HTML/XLSX fingerprints."""
 
+    for record in result.records:
+        metadata = dict(record.get("metadata") or {})
+        if metadata.get("calculation_owner") != "Atlas Macro":
+            continue
+        input_dates = list(metadata.get("input_value_dates") or [])
+        input_values = list(metadata.get("input_values") or [])
+        metadata["input_batch_ids"] = [str(run.batch_id)]
+        input_series = list(metadata.get("input_series") or [])
+        metadata["input_lineage"] = [
+            {
+                "series_key": str(input_series[0]).lower() if input_series else "",
+                "source_key": source.key,
+                "source_name": source.name,
+                "value_date": str(value_date),
+                "value": str(value),
+                "fetched_at": result.fetched_at.isoformat(),
+                "batch_id": str(run.batch_id),
+                "quality_status": Observation.Quality.FRESH,
+                "license_scope": source.license_scope,
+                "fallback_source": None,
+            }
+            for value_date, value in zip(input_dates, input_values, strict=False)
+        ]
+        record["metadata"] = metadata
+
     incoming_series = {
         str(record.get("series_id") or "").lower()
         for record in result.records
@@ -5133,6 +5225,68 @@ def _store_release_workbook_observations(result, source, run) -> int:
             size_bytes=int(artifact.get("size") or 0),
         )
     return row_count
+
+
+def _record_census_revision_witness(runs: Iterable[IngestionRun]) -> None:
+    """Record, but never promote, differences from the older release workbook."""
+
+    run_by_source = {run.source.key: run for run in runs}
+    current_run = run_by_source.get("census")
+    legacy_run = run_by_source.get("census-release")
+    if (
+        current_run is None
+        or legacy_run is None
+        or current_run.status != IngestionRun.Status.SUCCESS
+        or legacy_run.status != IngestionRun.Status.SUCCESS
+    ):
+        return
+    series_keys = {
+        "census-mrts-44x72-sm-sa",
+        "census-mrts-44x72-sm-sa-mom",
+        "census-mrts-44x72-sm-sa-yoy",
+    }
+    current = {
+        (item.series.key, item.value_date.date().isoformat()): item.value
+        for item in Observation.objects.filter(
+            source__key="census",
+            batch_id=current_run.batch_id,
+            series__key__in=series_keys,
+        ).select_related("series")
+    }
+    legacy = {
+        (item.series.key, item.value_date.date().isoformat()): item.value
+        for item in Observation.objects.filter(
+            source__key="census-release",
+            batch_id=legacy_run.batch_id,
+            series__key__in=series_keys,
+        ).select_related("series")
+    }
+    overlap = sorted(set(current) & set(legacy))
+    differences = [
+        {
+            "series_key": key[0],
+            "value_date": key[1],
+            "legacy_value": str(legacy[key]),
+            "current_value": str(current[key]),
+            "revision_delta": str(current[key] - legacy[key]),
+        }
+        for key in overlap
+        if current[key] != legacy[key]
+    ]
+    metadata = dict(current_run.metadata or {})
+    metadata["legacy_revision_witness"] = {
+        "source": "census-release",
+        "batch_id": str(legacy_run.batch_id),
+        "latest_value_date": max((key[1] for key in legacy), default=None),
+        "overlap_count": len(overlap),
+        "differences": differences,
+        "policy": (
+            "Older MARTS workbooks are immutable revision witnesses; "
+            "the current API batch always controls public observations."
+        ),
+    }
+    current_run.metadata = metadata
+    current_run.save(update_fields=["metadata", "updated_at"])
 
 
 def _payload_source_keys(value: Any) -> set[str]:
@@ -5553,6 +5707,12 @@ def publish_official_dashboards(
         latest_bls_batch = _latest_successful_source_batch("bls")
         if latest_bls_batch is not None:
             normalized_source_batches["bls"] = latest_bls_batch
+    if source_batches is None and (
+        selected_keys is None or "consumer" in selected_keys
+    ):
+        latest_census_batch = _latest_successful_source_batch("census")
+        if latest_census_batch is not None:
+            normalized_source_batches["census"] = latest_census_batch
     nominal_curve = _curve_rows(
         "ust", ("1m", "2m", "3m", "4m", "6m", "1y", "2y", "3y", "5y", "7y", "10y", "20y", "30y")
     )
@@ -5579,27 +5739,46 @@ def publish_official_dashboards(
     liquidity_charts: list[dict[str, Any]] = []
     liquidity_sections: list[dict[str, Any]] = []
     liquidity_extra_data: dict[str, Any] = {}
+    retail_batch = normalized_source_batches.get("census")
     gdp_vintage_chart: dict[str, Any] | None = None
     gdp_vintage_section: dict[str, Any] | None = None
     if selected_keys is None or "gdp" in selected_keys:
         gdp_vintage_chart, gdp_vintage_section = _gdp_vintage_chart_and_section()
     if selected_keys is None or "consumer" in selected_keys:
         consumer_metrics = _existing(
-            _metric(
-                "CENSUS-MRTS-44X72-SM-SA",
-                "零售与餐饮服务",
-                decimals=0,
-                suffix=" USD mn",
+            (
+                _metric(
+                    "CENSUS-MRTS-44X72-SM-SA",
+                    "零售与餐饮服务",
+                    decimals=0,
+                    suffix=" USD mn",
+                    source_key="census",
+                    batch_id=retail_batch,
+                )
+                if retail_batch is not None
+                else None
             ),
-            _metric(
-                "CENSUS-MRTS-44X72-SM-SA-MOM",
-                "零售环比",
-                suffix="%",
+            (
+                _metric(
+                    "CENSUS-MRTS-44X72-SM-SA-MOM",
+                    "零售环比",
+                    suffix="%",
+                    source_key="census",
+                    batch_id=retail_batch,
+                )
+                if retail_batch is not None
+                else None
             ),
-            _metric(
-                "CENSUS-MRTS-44X72-SM-SA-YOY",
-                "零售同比",
-                suffix="%",
+            (
+                _metric(
+                    "CENSUS-MRTS-44X72-SM-SA-YOY",
+                    "零售同比",
+                    suffix="%",
+                    source_key="census",
+                    batch_id=retail_batch,
+                )
+                if retail_batch is not None
+                else None
             ),
             _metric("BEA-REAL-PCE-MOM", "实际 PCE 环比", suffix="%"),
             _metric("BEA-PERSONAL-SAVING-RATE", "个人储蓄率", suffix="%"),
@@ -5643,6 +5822,8 @@ def publish_official_dashboards(
                     description="季调月度水平，单位：百万美元",
                     series={"CENSUS-MRTS-44X72-SM-SA": "零售与餐饮服务"},
                     limit=36,
+                    source_key="census",
+                    batch_id=retail_batch,
                 ),
                 _history_chart(
                     key="real-consumption-income-momentum",
@@ -6165,7 +6346,8 @@ def publish_official_dashboards(
             "key": "consumer",
             "title": "消费与零售",
             "summary": (
-                "零售与餐饮服务销售来自 Census MARTS 官方发布工作簿；实际 PCE、"
+                "零售与餐饮服务销售来自 Census MARTS 官方 API 当前完整历史；旧发布"
+                "工作簿只作为 Advance→Preliminary→Revised 修订见证。实际 PCE、"
                 "实际可支配收入和个人储蓄率来自 BEA 月度 PIO Section 2 工作簿，"
                 "并与当月 Historical Comparisons 摘要交叉校验。消费者信贷来自"
                 "联储 G.19，家庭债务和逾期率来自 New York Fed Consumer Credit "
@@ -6174,6 +6356,11 @@ def publish_official_dashboards(
             ),
             "metrics": consumer_metrics,
             "charts": consumer_charts,
+            "extra_data": {
+                "contract_version": CONSUMER_CONTRACT_VERSION,
+                "retail_source_key": "census",
+                "retail_batch_id": str(retail_batch) if retail_batch else None,
+            },
             "required_metric_keys": frozenset(
                 {
                     "census-mrts-44x72-sm-sa",
@@ -6516,7 +6703,7 @@ def refresh_credit_official_data() -> dict[str, Any]:
 
 
 def refresh_macro_official_data(*, current_year: int | None = None) -> dict[str, Any]:
-    """Refresh keyless growth and consumer releases with page-level quality gates."""
+    """Refresh official growth and consumer sources with page-level quality gates."""
 
     _ = current_year  # Backward-compatible command/task signature.
     providers = [
@@ -6524,6 +6711,12 @@ def refresh_macro_official_data(*, current_year: int | None = None) -> dict[str,
             BEAGDPReleaseProvider(),
             "gdp_pce",
             {},
+            _store_release_workbook_observations,
+        ),
+        (
+            CensusMARTSProvider(),
+            "monthly_retail_sales",
+            {"time": "from 1992", "require_complete_history": True},
             _store_release_workbook_observations,
         ),
         (
@@ -6559,6 +6752,7 @@ def refresh_macro_official_data(*, current_year: int | None = None) -> dict[str,
     finally:
         for provider, _, _, _ in providers:
             provider.close()
+    _record_census_revision_witness(runs)
     completed_keys = _publishable_keys_for_source_groups(
         runs, MACRO_PUBLICATION_GROUPS
     )
@@ -6566,7 +6760,10 @@ def refresh_macro_official_data(*, current_year: int | None = None) -> dict[str,
     stale_keys = set(MACRO_PUBLICATION_GROUPS) - publishable_keys
     _mark_latest_dashboards_stale(stale_keys, runs)
     dashboards = (
-        publish_official_dashboards(keys=publishable_keys)
+        publish_official_dashboards(
+            keys=publishable_keys,
+            source_batches={run.source.key: run.batch_id for run in runs},
+        )
         if publishable_keys
         else []
     )

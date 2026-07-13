@@ -125,7 +125,7 @@ Important settings are:
 | `CELERY_BROKER_URL` / `CELERY_RESULT_BACKEND` | Redis endpoints for tasks |
 | `SITE_URL` / `SITE_NAME` | Canonical URL and independent product identity |
 | `BLS_REGISTRATION_KEY` | Optional higher BLS public API quota |
-| `BEA_API_KEY` / `CENSUS_API_KEY` | Reserved for explicit historical backfills; public GDP and retail snapshots always use complete first-party release-workbook batches |
+| `BEA_API_KEY` / `CENSUS_API_KEY` | BEA API is reserved for explicit backfills; Census key is required for the current 1992-present MARTS retail batch, while archived workbooks remain revision witnesses |
 | `SEC_USER_AGENT` | Required descriptive identity for SEC requests |
 | `MARKET_DATA_PROVIDER` | Redistribution-approved provider; default `none` |
 | `MARKET_DATA_API_KEY` | Credential for a redistribution-approved provider |
@@ -146,7 +146,7 @@ the last complete snapshot remains visible and is marked stale.
 Production snapshots currently pull directly from the New York Fed, U.S.
 Treasury interest-rate and FiscalData APIs, BLS, CFTC PRE, Federal Reserve RSS,
 H.4.1, H.10, PRATES and Consumer Credit G.19; the consumer page also uses BEA
-Personal Income and Outlays, Census MARTS, and New York Fed Household Debt and
+Personal Income and Outlays, Census MARTS API plus archived revision witnesses, and New York Fed Household Debt and
 Credit workbooks with the required Consumer Credit Panel / Equifax attribution.
 The employment page combines BLS CES/CPS/JOLTS with U.S. Department of Labor
 national weekly-claims XML and the current immutable weekly-release PDF. The PDF

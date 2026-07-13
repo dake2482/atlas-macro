@@ -2,7 +2,7 @@
 
 The upstream APIs expose only their current/latest vintage.  BEA includes a
 ``LastRevised`` date in NIPA table notes, which is retained on every normalized
-record.  Census EITS/MRTS does not expose a release or revision timestamp in
+record.  Census EITS/MARTS does not expose a release or revision timestamp in
 the data response, so this module deliberately records that fact instead of
 using the fetch time as a made-up vintage.
 
@@ -16,12 +16,15 @@ Official references:
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 from collections.abc import Iterable, Mapping, Sequence
-from datetime import UTC, datetime
-from decimal import Decimal, InvalidOperation
+from datetime import UTC, date, datetime
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Any
+
+import httpx
 
 from .providers import HTTPProvider, ProviderResult
 
@@ -300,15 +303,15 @@ class BEANIPAProvider(HTTPProvider):
         return result
 
 
-class CensusMRTSProvider(HTTPProvider):
-    """Census Monthly Retail Trade and Food Services (EITS/MRTS) adapter."""
+class CensusMARTSProvider(HTTPProvider):
+    """Credential-gated Advance Monthly Retail Sales (EITS/MARTS) adapter."""
 
     key = "census"
     base_url = "https://api.census.gov"
     documentation_url = (
         "https://www.census.gov/data/developers/data-sets/economic-indicators.html"
     )
-    dataset_metadata_url = "https://api.census.gov/data/timeseries/eits/mrts.json"
+    dataset_metadata_url = "https://api.census.gov/data/timeseries/eits/marts.json"
     terms_url = "https://www.census.gov/data/developers/about/terms-of-service.html"
     license_url = "https://creativecommons.org/publicdomain/zero/1.0/"
 
@@ -322,42 +325,50 @@ class CensusMRTSProvider(HTTPProvider):
         time: str,
         category_code: str = "44X72",
         seasonally_adjusted: bool = True,
+        require_complete_history: bool = False,
     ) -> ProviderResult:
-        """Return MRTS monthly sales in millions of dollars.
+        """Return MARTS monthly sales and transparent one-month/year changes.
 
         ``44X72`` is Retail Trade and Food Services; ``SM`` is Sales -
-        Monthly.  The source's decimal precision is retained exactly as
-        required by Census publication guidance.
+        Monthly. Source levels retain Census precision. Derived rates use the
+        one-decimal precision of the public MARTS release tables.
         """
 
         category_code = str(category_code).strip().upper()
         seasonal_value = "yes" if seasonally_adjusted else "no"
-        dataset = f"mrts:{category_code}:SM:{seasonal_value}"
+        dataset = f"marts:{category_code}:SM:{seasonal_value}"
         if not self.api_key:
             return ProviderResult.skip(self.key, dataset, "CENSUS_API_KEY is not configured")
         if not str(time).strip():
             return ProviderResult.failure(self.key, dataset, "time is required")
         if not re.fullmatch(r"[0-9A-Z]+", category_code):
-            return ProviderResult.failure(self.key, dataset, "invalid MRTS category_code")
+            return ProviderResult.failure(self.key, dataset, "invalid MARTS category_code")
 
         fields = (
             "program_code,cell_value,time_slot_id,time_slot_date,time_slot_name,"
             "error_data,seasonally_adj,category_code,data_type_code"
         )
-        payload, failure = self._get_json(
-            dataset,
-            "/data/timeseries/eits/mrts",
-            params={
+        params = {
                 "get": fields,
                 "category_code": category_code,
                 "seasonally_adj": seasonal_value,
                 "data_type_code": "SM",
                 "time": str(time).strip(),
                 "key": self.api_key,
-            },
-        )
-        if failure:
-            return failure
+        }
+        try:
+            response = self.client.get("/data/timeseries/eits/marts", params=params)
+            response.raise_for_status()
+            raw_content = response.content
+            payload = response.json()
+        except (httpx.HTTPError, ValueError) as exc:
+            status_code = getattr(getattr(exc, "response", None), "status_code", None)
+            detail = f"HTTP {status_code}" if status_code is not None else type(exc).__name__
+            return ProviderResult.failure(
+                self.key,
+                dataset,
+                f"Census MARTS request failed: {detail}",
+            )
         if isinstance(payload, Mapping):
             error = payload.get("error") or payload.get("errors")
             return ProviderResult.failure(
@@ -369,7 +380,7 @@ class CensusMRTSProvider(HTTPProvider):
             return ProviderResult.failure(self.key, dataset, "unexpected Census response shape")
 
         headers = [str(name) for name in payload[0]]
-        records = []
+        levels: dict[date, dict[str, Any]] = {}
         for row in payload[1:]:
             if not isinstance(row, list):
                 continue
@@ -378,54 +389,173 @@ class CensusMRTSProvider(HTTPProvider):
             value_date = _month_from_census_row(item)
             returned_category = str(item.get("category_code") or category_code).strip().upper()
             returned_seasonal = str(item.get("seasonally_adj") or seasonal_value).strip().lower()
+            returned_type = str(item.get("data_type_code") or "SM").strip().upper()
             if value is None or value_date is None:
                 continue
+            if (
+                returned_category != category_code
+                or returned_seasonal != seasonal_value
+                or returned_type != "SM"
+            ):
+                return ProviderResult.failure(
+                    self.key, dataset, "Census MARTS response violated requested dimensions"
+                )
+            period = date.fromisoformat(value_date[:10]).replace(day=1)
+            if period > date.today().replace(day=1):
+                return ProviderResult.failure(
+                    self.key, dataset, "Census MARTS response contains a future month"
+                )
+            if period in levels:
+                return ProviderResult.failure(
+                    self.key, dataset, "Census MARTS response duplicated a month"
+                )
+            levels[period] = {
+                "value": value,
+                "source_fields": item,
+                "category_code": returned_category,
+                "seasonally_adjusted": returned_seasonal == "yes",
+            }
+        ordered_periods = sorted(levels)
+        if not ordered_periods:
+            return ProviderResult.failure(self.key, dataset, "Census MARTS returned no values")
+        if require_complete_history:
+            if ordered_periods[0] != date(1992, 1, 1):
+                return ProviderResult.failure(
+                    self.key, dataset, "Census MARTS history does not begin in 1992-01"
+                )
+            expected = []
+            cursor = ordered_periods[0]
+            while cursor <= ordered_periods[-1]:
+                expected.append(cursor)
+                cursor = (
+                    date(cursor.year + 1, 1, 1)
+                    if cursor.month == 12
+                    else date(cursor.year, cursor.month + 1, 1)
+                )
+            if ordered_periods != expected:
+                return ProviderResult.failure(
+                    self.key, dataset, "Census MARTS history contains a missing month"
+                )
+
+        records: list[dict[str, Any]] = []
+        latest_period = ordered_periods[-1]
+        adjustment_code = "SA" if seasonally_adjusted else "NSA"
+        for position, period in enumerate(ordered_periods):
+            level = levels[period]
+            estimate_status = (
+                "advance"
+                if period == latest_period
+                else "preliminary"
+                if position == len(ordered_periods) - 2
+                else "current_latest_vintage"
+            )
+            source_fields = level["source_fields"]
             records.append(
                 {
-                    "series_id": (
-                        f"CENSUS-MRTS-{returned_category}-SM-"
-                        f"{'SA' if returned_seasonal == 'yes' else 'NSA'}"
-                    ),
-                    "date": value_date,
-                    "value": value,
+                    "series_id": f"CENSUS-MRTS-{category_code}-SM-{adjustment_code}",
+                    "date": period.isoformat(),
+                    "value": level["value"],
                     "metadata": {
-                        "program_code": item.get("program_code") or "MRTS",
-                        "category_code": returned_category,
-                        "data_type_code": item.get("data_type_code") or "SM",
-                        "seasonally_adjusted": returned_seasonal == "yes",
-                        "time_slot_id": item.get("time_slot_id"),
-                        "time_slot_date": item.get("time_slot_date"),
-                        "time_slot_name": item.get("time_slot_name"),
-                        "error_data": item.get("error_data"),
+                        "program_code": source_fields.get("program_code") or "MARTS",
+                        "category_code": category_code,
+                        "data_type_code": "SM",
+                        "seasonally_adjusted": seasonally_adjusted,
+                        "time_slot_id": source_fields.get("time_slot_id"),
+                        "time_slot_date": source_fields.get("time_slot_date"),
+                        "time_slot_name": source_fields.get("time_slot_name"),
+                        "error_data": source_fields.get("error_data"),
                         "unit": "USD millions",
+                        "estimate_status": estimate_status,
                         "source_revision_date": None,
-                        "vintage_policy": "latest-vintage-only",
+                        "vintage_policy": "current-latest-vintage",
                     },
                 }
             )
+            for months, suffix in ((1, "MOM"), (12, "YOY")):
+                prior_position = position - months
+                if prior_position < 0:
+                    continue
+                prior_period = ordered_periods[prior_position]
+                expected_prior = period.year * 12 + period.month - months
+                actual_prior = prior_period.year * 12 + prior_period.month
+                if actual_prior != expected_prior or levels[prior_period]["value"] == 0:
+                    continue
+                derived = (
+                    (level["value"] / levels[prior_period]["value"] - Decimal("1"))
+                    * Decimal("100")
+                ).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+                records.append(
+                    {
+                        "series_id": (
+                            f"CENSUS-MRTS-{category_code}-SM-{adjustment_code}-{suffix}"
+                        ),
+                        "date": period.isoformat(),
+                        "value": derived,
+                        "metadata": {
+                            "unit": "percent",
+                            "category_code": category_code,
+                            "seasonally_adjusted": seasonally_adjusted,
+                            "estimate_status": estimate_status,
+                            "calculation_owner": "Atlas Macro",
+                            "formula": f"(level_t / level_t-{months} - 1) * 100",
+                            "input_series": [
+                                f"CENSUS-MRTS-{category_code}-SM-{adjustment_code}"
+                            ],
+                            "input_value_dates": [
+                                prior_period.isoformat(),
+                                period.isoformat(),
+                            ],
+                            "input_values": [
+                                str(levels[prior_period]["value"]),
+                                str(level["value"]),
+                            ],
+                            "precision_policy": "round half up to 0.1 percentage point",
+                            "source_revision_date": None,
+                            "vintage_policy": "current-latest-vintage",
+                        },
+                    }
+                )
         return ProviderResult(
             provider=self.key,
             dataset=dataset,
             records=records,
             metadata={
-                "program": "Monthly Retail Trade and Food Services",
+                "program": "Advance Monthly Sales for Retail and Food Services",
                 "category_code": category_code,
                 "data_type_code": "SM",
                 "seasonally_adjusted": seasonally_adjusted,
                 "unit": "USD millions",
                 "precision_policy": "retain cell_value precision without rounding",
+                "derived_precision_policy": "round half up to 0.1 percentage point",
+                "latest_value_date": latest_period.isoformat(),
+                "history_start": ordered_periods[0].isoformat(),
+                "level_count": len(ordered_periods),
                 "source_revision_date": None,
-                "vintage_policy": "latest-vintage-only",
+                "vintage_policy": "current-latest-vintage",
                 "revision_note": (
-                    "The EITS/MRTS response does not expose a release or revision timestamp; "
+                    "The EITS/MARTS response does not expose a release or revision timestamp; "
                     "fetched_at is retrieval time, not a source vintage."
                 ),
-                "attribution": "U.S. Census Bureau, Monthly Retail Trade and Food Services",
+                "attribution": "U.S. Census Bureau, Advance Monthly Retail Trade Survey",
                 "attribution_notice": CENSUS_ATTRIBUTION_NOTICE,
                 "license": "CC0-1.0 dataset catalogue; API terms and attribution apply",
                 "license_url": self.license_url,
                 "dataset_metadata_url": self.dataset_metadata_url,
                 "documentation_url": self.documentation_url,
                 "terms_url": self.terms_url,
+                "artifacts": [
+                    {
+                        "url": "https://api.census.gov/data/timeseries/eits/marts",
+                        "sha256": hashlib.sha256(raw_content).hexdigest(),
+                        "size": len(raw_content),
+                        "content_type": response.headers.get(
+                            "content-type", "application/json"
+                        ).split(";", 1)[0],
+                    }
+                ],
             },
         )
+
+
+# Backward-compatible import for callers that used the old, inaccurate class name.
+CensusMRTSProvider = CensusMARTSProvider

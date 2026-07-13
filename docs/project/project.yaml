@@ -11,8 +11,8 @@ current_milestone:
   title: 修正 Census 当期零售发布与完整历史
   status: IN_PROGRESS
 health: GREEN
-next_action: Replace the lagging historical-directory tail with the current Census MARTS workbook and the official 1992-present adjusted-sales series, then fail closed on any same-vintage disagreement.
-updated_at: '2026-07-13T08:02:09+08:00'
+next_action: Implement the credential-gated Census MARTS current/history contract and legacy-workbook revision witness; production publication then requires a free CENSUS_API_KEY.
+updated_at: '2026-07-13T08:08:00+08:00'
 validation_commands:
   - .venv/bin/ruff check .
   - .venv/bin/pytest -q

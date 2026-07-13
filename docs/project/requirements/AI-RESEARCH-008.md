@@ -11,8 +11,8 @@ branch: main
 worktree: local
 dependencies:
 - AI-RESEARCH-006
-updated_at: '2026-07-13T08:02:09+08:00'
-next_action: Replace the lagging historical-directory tail with the current Census MARTS workbook and the official 1992-present adjusted-sales series, then fail closed on any same-vintage disagreement.
+updated_at: '2026-07-13T08:08:00+08:00'
+next_action: Implement the credential-gated Census MARTS current/history contract and legacy-workbook revision witness; production publication then requires a free CENSUS_API_KEY.
 evidence:
 - Production currently publishes April 2026 Census retail and food-services sales as 757,085 USD millions,
   +0.5% month over month and +4.9% year over year from batch 3b6ea974-4f6f-4379-b008-80d3e6056727;
@@ -22,10 +22,11 @@ evidence:
 - The current adapter scans only the archived rsYYMM.xlsx directory. Its newest visible file is rs2604.xlsx,
   so it misses the current marts_current.xlsx release and stores only three levels plus two months of changes.
 - Census identifies /data/timeseries/eits/marts as Advance Monthly Sales for Retail and Food Services and
-  explicitly requires an API key. Production has no configured Census key, so the public refresh must not
-  silently depend on the credential-gated API.
-- The same official release page exposes a keyless adjusted total-sales series from 1992 to present at
-  /retail/marts/www/adv44X72.txt. Its May, April and March values are 763,705, 757,036 and 754,013.
+  explicitly requires an API key. Production has no configured Census key, so the public refresh must retain
+  the old complete snapshot and name the missing credential rather than silently fall back to stale current data.
+- The official release page exposes current XLSX/TXT links, but ordinary local and Mina service requests are
+  currently rejected by Cloudflare with HTTP 403. They are browser references, not a dependable keyless Celery
+  ingestion path; the www2 historical directory remains reachable but ends at April 2026.
 started_at: '2026-07-13T08:02:09+08:00'
 ---
 
@@ -35,10 +36,10 @@ started_at: '2026-07-13T08:02:09+08:00'
 
 ## Acceptance criteria
 
-- [ ] Census 当前页、marts_current.xlsx 和 adv44X72.txt 均作为一手工件保存哈希；最新月份、最近重叠水平和官方公布的环比/同比必须一致，否则本批次失败。
-- [ ] 季调零售与餐饮服务销售从 1992 年起完整入库；环比和同比用 Decimal 从水平序列透明计算，并按 Census 公布精度交叉校验。
+- [ ] Census MARTS API 原始响应作为一手工件保存脱敏 URI 和哈希；最新月份、最近水平及派生环比/同比必须来自同一完整 API batch。
+- [ ] 季调零售与餐饮服务销售从 1992 年起完整入库；环比和同比用 Decimal 从水平序列透明计算，并按 Census 公布精度输出。
 - [ ] 旧 rsYYMM.xlsx 只作为历史 vintage/修订对照；其较旧月份不得覆盖当前源，同一当前 vintage 冲突不得发布，旧回放不得使已存官方日期倒退。
-- [ ] API 适配器改用正确的 EITS /marts 路径并保持凭据门控；公开生产刷新使用无需凭据的当前发布工件，不伪装成 API 数据。
+- [ ] API 适配器改用正确的 EITS /marts 路径并保持凭据门控；key 不进入日志、错误、工件 URI、页面或 Git，缺 key 时不得联网或发布半成品。
 - [ ] 当前源缺失、格式变化、交叉校验失败、过期、未授权或混批时保留上一完整 consumer 快照并显示具体失败；恢复后同值刷新血缘而不制造错误新版本。
 - [ ] consumer 页面发布 May 2026 的 763,705、+0.9% 和 +6.9%，April 历史修订为 757,036 与 +0.4%；不回归 BEA PIO、G.19、NY Fed 家庭债务或 economy 组合页。
 - [ ] 数据目录把 Census 零售完整历史标记为 LIVE；Ruff、完整 pytest、Django check、Mina 生产刷新、路由烟测及桌面/390px 浏览器验收通过。

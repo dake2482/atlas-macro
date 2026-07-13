@@ -183,4 +183,11 @@ LOGGING = {
     "disable_existing_loggers": False,
     "handlers": {"console": {"class": "logging.StreamHandler"}},
     "root": {"handlers": ["console"], "level": os.getenv("LOG_LEVEL", "INFO")},
+    # httpx's INFO record includes the complete request URL. Some official APIs
+    # accept credentials only as query parameters, so request logging must not
+    # turn the worker log into a secret store.
+    "loggers": {
+        "httpx": {"handlers": ["console"], "level": "WARNING", "propagate": False},
+        "httpcore": {"handlers": ["console"], "level": "WARNING", "propagate": False},
+    },
 }

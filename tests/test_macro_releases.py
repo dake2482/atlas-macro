@@ -40,6 +40,7 @@ from research.official_data import (
     _keys_with_current_required_batches,
     _mark_latest_dashboards_stale,
     _publishable_keys_for_source_groups,
+    _record_census_revision_witness,
     _store_release_workbook_observations,
     publish_official_dashboards,
 )
@@ -89,6 +90,40 @@ def _consumer_credit_results() -> tuple[ProviderResult, ProviderResult]:
             dataset="hhdc-fixture",
             records=household_records,
         ),
+    )
+
+
+def _census_api_result() -> ProviderResult:
+    records = []
+    values = {
+        "2026-03-01": ("754013", "1.7", "4.2"),
+        "2026-04-01": ("757036", "0.4", "4.8"),
+        "2026-05-01": ("763705", "0.9", "6.9"),
+    }
+    for period, (level, mom, yoy) in values.items():
+        records.extend(
+            [
+                {
+                    "series_id": "CENSUS-MRTS-44X72-SM-SA",
+                    "date": period,
+                    "value": level,
+                },
+                {
+                    "series_id": "CENSUS-MRTS-44X72-SM-SA-MOM",
+                    "date": period,
+                    "value": mom,
+                },
+                {
+                    "series_id": "CENSUS-MRTS-44X72-SM-SA-YOY",
+                    "date": period,
+                    "value": yoy,
+                },
+            ]
+        )
+    return ProviderResult(
+        provider="census",
+        dataset="marts:44X72:SM:yes",
+        records=records,
     )
 
 
@@ -582,6 +617,7 @@ def test_release_workbooks_persist_lineage_and_publish_gdp_and_consumer_pages(cl
     bea = BEAGDPReleaseProvider(
         client=_bea_client(_bea_vintage_workbook(), _bea_comparison_workbook())
     ).gdp_pce()
+    census_api = _census_api_result()
     census = CensusMARTSReleaseProvider(
         client=_census_client(_census_workbook())
     ).monthly_retail_sales()
@@ -592,6 +628,9 @@ def test_release_workbooks_persist_lineage_and_publish_gdp_and_consumer_pages(cl
         )
     ).personal_income_outlays()
     bea_run = record_provider_result(bea, persist=_store_release_workbook_observations)
+    census_api_run = record_provider_result(
+        census_api, persist=_store_release_workbook_observations
+    )
     census_run = record_provider_result(census, persist=_store_release_workbook_observations)
     pio_run = record_provider_result(pio, persist=_store_release_workbook_observations)
     g19, household = _consumer_credit_results()
@@ -599,6 +638,10 @@ def test_release_workbooks_persist_lineage_and_publish_gdp_and_consumer_pages(cl
     household_run = record_provider_result(
         household, persist=_store_release_workbook_observations
     )
+    _record_census_revision_witness(
+        [census_api_run, census_run, pio_run, g19_run, household_run]
+    )
+    census_api_run.refresh_from_db()
 
     dashboards = {
         item.key: item
@@ -606,10 +649,21 @@ def test_release_workbooks_persist_lineage_and_publish_gdp_and_consumer_pages(cl
     }
 
     assert bea_run.status == "success"
+    assert census_api_run.status == "success"
     assert census_run.status == "success"
     assert pio_run.status == "success"
     assert g19_run.status == "success"
     assert household_run.status == "success"
+    witness = census_api_run.metadata["legacy_revision_witness"]
+    assert witness["latest_value_date"] == "2026-04-01"
+    assert witness["overlap_count"] == 6
+    differences = {
+        (item["series_key"], item["value_date"]): item
+        for item in witness["differences"]
+    }
+    assert differences[("census-mrts-44x72-sm-sa", "2026-04-01")][
+        "revision_delta"
+    ] == "-49.00000000"
     assert RawArtifact.objects.filter(run=bea_run).count() == 3
     assert RawArtifact.objects.filter(run=census_run).count() == 2
     assert RawArtifact.objects.filter(run=pio_run).count() == 3
@@ -654,8 +708,8 @@ def test_release_workbooks_persist_lineage_and_publish_gdp_and_consumer_pages(cl
     assert revision_section["title"] == "GDP 发布轮次与修订路径"
     assert revision_section["rows"][0]["display_value"] == "1.60% → 2.10%"
     assert "累计修订 +0.50pp" in revision_section["rows"][0]["status"]
-    assert consumer["census-mrts-44x72-sm-sa"]["display_value"] == "757,085 USD mn"
-    assert consumer["census-mrts-44x72-sm-sa-mom"]["display_value"] == "0.50%"
+    assert consumer["census-mrts-44x72-sm-sa"]["display_value"] == "763,705 USD mn"
+    assert consumer["census-mrts-44x72-sm-sa-mom"]["display_value"] == "0.90%"
     assert consumer["census-mrts-44x72-sm-sa-mom"]["change_unit"] == "pp"
     assert consumer["bea-real-pce-mom"]["display_value"] == "0.30%"
     assert consumer["bea-real-dpi-mom"]["display_value"] == "0.30%"
@@ -677,11 +731,15 @@ def test_release_workbooks_persist_lineage_and_publish_gdp_and_consumer_pages(cl
         "household-debt-delinquency",
     ]
     assert dashboards["consumer"].data["chart_data"] == charts[0]["data"]
-    assert charts[0]["source_keys"] == ["census-release"]
+    assert dashboards["consumer"].data["contract_version"] == 1
+    assert dashboards["consumer"].data["retail_batch_id"] == str(
+        census_api_run.batch_id
+    )
+    assert charts[0]["source_keys"] == ["census"]
     assert charts[1]["source_keys"] == ["bea-pio-release"]
     assert charts[0]["data"][0]["_lineage"]["零售与餐饮服务"][
         "source_key"
-    ] == "census-release"
+    ] == "census"
     response = client.get("/economy/consumer/")
     body = response.content.decode()
     assert response.status_code == 200
@@ -702,11 +760,23 @@ def test_release_workbooks_persist_lineage_and_publish_gdp_and_consumer_pages(cl
     assert "GDP 发布轮次与修订路径" in gdp_body
     assert "1.60% → 2.10%" in gdp_body
 
-    runs = [bea_run, census_run, pio_run, g19_run, household_run]
+    runs = [
+        bea_run,
+        census_api_run,
+        census_run,
+        pio_run,
+        g19_run,
+        household_run,
+    ]
     assert _keys_with_current_required_batches({"gdp", "consumer"}, runs) == {
         "gdp",
         "consumer",
     }
+    census_api_run.dataset = "mrts:44X72:SM:yes"
+    census_api_run.save(update_fields=["dataset", "updated_at"])
+    assert _keys_with_current_required_batches({"gdp", "consumer"}, runs) == {"gdp"}
+    census_api_run.dataset = "marts:44X72:SM:yes"
+    census_api_run.save(update_fields=["dataset", "updated_at"])
     latest_pio = Observation.objects.filter(
         series__key="bea-real-pce-mom",
         source__key="bea-pio-release",
@@ -855,7 +925,7 @@ def test_economy_catalog_separates_live_release_data_from_remaining_gaps():
     requirements = {item["key"]: item for item in DATA_REQUIREMENTS}
 
     assert requirements["bea-gdp-pce"]["status"] == "live"
-    assert requirements["census-retail"]["status"] == "live"
+    assert requirements["census-retail"]["status"] == "needs_source"
     assert requirements["bea-gdp-contributions"]["status"] == "live"
     assert requirements["bea-gdp-vintage-trail"]["status"] == "live"
     assert "独立 release-vintage 数据层" in requirements["bea-gdp-vintage-trail"][
@@ -873,12 +943,16 @@ def test_economy_catalog_separates_live_release_data_from_remaining_gaps():
 @pytest.mark.parametrize(
     ("statuses", "expected"),
     [
-        (("success", "success", "success", "success", "success"), {"gdp", "consumer"}),
-        (("success", "success", "failed", "success", "success"), {"gdp"}),
-        (("success", "failed", "success", "success", "success"), {"gdp"}),
-        (("failed", "success", "success", "success", "success"), {"consumer"}),
-        (("success", "success", "success", "partial", "success"), {"gdp"}),
-        (("success", "success", "success", "success", "failed"), {"gdp"}),
+        (
+            ("success", "success", "success", "success", "success", "success"),
+            {"gdp", "consumer"},
+        ),
+        (("success", "failed", "success", "success", "success", "success"), {"gdp"}),
+        (("success", "success", "failed", "success", "success", "success"), {"gdp"}),
+        (("success", "success", "success", "failed", "success", "success"), {"gdp"}),
+        (("failed", "success", "success", "success", "success", "success"), {"consumer"}),
+        (("success", "success", "success", "success", "partial", "success"), {"gdp"}),
+        (("success", "success", "success", "success", "success", "failed"), {"gdp"}),
     ],
 )
 def test_macro_publication_groups_isolate_unrelated_page_failures(statuses, expected):
@@ -891,6 +965,7 @@ def test_macro_publication_groups_isolate_unrelated_page_failures(statuses, expe
         for source_key, status in zip(
             (
                 "bea-release",
+                "census",
                 "census-release",
                 "bea-pio-release",
                 "federal-reserve-g19",

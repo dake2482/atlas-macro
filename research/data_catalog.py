@@ -447,12 +447,13 @@ DATA_REQUIREMENTS = [
         "key": "census-retail",
         "page_key": "consumer",
         "metric_name": "零售与餐饮服务销售（水平/环比/同比）",
-        "status": LIVE,
-        "source_name": "U.S. Census Bureau MARTS release workbooks",
-        "source_url": "https://www2.census.gov/retail/releases/historical/marts/",
+        "status": NEEDS_SOURCE,
+        "source_name": "U.S. Census Bureau EITS MARTS API",
+        "source_url": "https://api.census.gov/data/timeseries/eits/marts.html",
         "reason": (
-            "已从 Census 官方 MARTS 发布目录选取最新 XLSX，发布季调销售水平、"
-            "环比和同比，并保留 Advance/Preliminary/Revised 状态与工作簿哈希。"
+            "当期与完整历史适配器已改用正确的 MARTS API，并保留脱敏响应哈希；"
+            "旧发布工作簿仅作 revision witness。生产尚缺免费的 CENSUS_API_KEY，"
+            "因此继续保留上一完整快照并明确标记过期，配置凭据并验收前不标 LIVE。"
         ),
         "priority": 1,
     },
@@ -489,11 +490,11 @@ DATA_REQUIREMENTS = [
         "page_key": "consumer",
         "metric_name": "MARTS 零售销售完整月度历史回填",
         "status": NEEDS_SOURCE,
-        "source_name": "U.S. Census Bureau MARTS historical release directory/API",
-        "source_url": "https://www2.census.gov/retail/releases/historical/marts/",
+        "source_name": "U.S. Census Bureau EITS MARTS API",
+        "source_url": "https://api.census.gov/data/timeseries/eits/marts.html",
         "reason": (
-            "当前最新发布工作簿只入库可明确识别的近期月份。需从官方历史文件或 EITS "
-            "API 回填并做修订/状态去重，完成前图表明确显示有限历史窗口。"
+            "代码已要求 1992-01 起连续完整月度水平，并从同批水平透明计算环比/同比；"
+            "生产 CENSUS_API_KEY 配置、回填、数量核验和页面验收完成前维持 NEEDS_SOURCE。"
         ),
         "priority": 2,
     },
