@@ -5,7 +5,7 @@
 - Purpose: Build a clean-room macro-research and AI supply-chain intelligence platform with traceable public sources, explicit data-quality labels, and original presentation.
 - Health: `YELLOW`
 - Milestone: `AI-RESEARCH-008` — 修正 Census 当期零售发布与完整历史 (`BLOCKED`)
-- Next action: Provision a free CENSUS_API_KEY in Mina's protected shared environment, recreate the app services, rerun refresh_macro_data, and complete the May 2026 production audit.
+- Next action: Implement deterministic multi-year Treasury curve ingestion and the contract-v1 coordinator.
 - Updated: `2026-07-13T08:35:19+08:00`
 - Git boundary: branch `main`; run `portfolio closeout AI-RESEARCH` for live delivery state.
 - Execution metadata: Codex 0/0 active/total; ZCode 0/0 active/total
@@ -14,6 +14,7 @@
 
 | Requirement | State | Priority | Executor | Task | Branch / worktree | Next action |
 |---|---|---|---|---|---|---|
+| AI-RESEARCH-009 | IN_PROGRESS | P1 | codex | atlas-treasury-curve-alignment-20260713 | main / local | Implement deterministic multi-year Treasury curve ingestion and the contract-v1 coordinator. |
 | AI-RESEARCH-008 | BLOCKED | P1 | codex | atlas-census-retail-alignment-20260713 | main / local | Provision a free CENSUS_API_KEY in Mina's protected shared environment, recreate the app services, rerun refresh_macro_data, and complete the May 2026 production audit. |
 
 ## Blockers
