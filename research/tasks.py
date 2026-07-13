@@ -332,7 +332,7 @@ def generate_daily_research() -> dict[str, Any]:
             return None
 
         locked = (
-            DashboardSnapshot.objects.select_for_update()
+            DashboardSnapshot.objects.select_for_update(of=("self",))
             .select_related("source")
             .filter(key="daily-evidence")
             .order_by("-created_at", "-id")

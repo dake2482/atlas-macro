@@ -1123,7 +1123,7 @@ def publish_daily_evidence_snapshot(
             # All daily-evidence consumers use parent -> components -> metrics.
             # Keep the producer in that same row-lock order to avoid inversion.
             latest_parent = (
-                DashboardSnapshot.objects.select_for_update()
+                DashboardSnapshot.objects.select_for_update(of=("self",))
                 .select_related("source")
                 .filter(key=DAILY_EVIDENCE_KEY)
                 .order_by("-created_at", "-id")
@@ -1149,7 +1149,7 @@ def publish_daily_evidence_snapshot(
                 raise _CandidateRejected(missing)
 
             locked_components = list(
-                DashboardSnapshot.objects.select_for_update()
+                DashboardSnapshot.objects.select_for_update(of=("self",))
                 .select_related("source")
                 .filter(pk__in=selected_ids.values())
                 .order_by("pk")
@@ -1215,7 +1215,7 @@ def publish_daily_evidence_snapshot(
                 raise _CandidateRejected(selection_errors)
 
             locked_metrics = list(
-                MetricSnapshot.objects.select_for_update()
+                MetricSnapshot.objects.select_for_update(of=("self",))
                 .select_related("source", "fallback_source")
                 .filter(pk__in=metric_ids.values())
                 .order_by("pk")

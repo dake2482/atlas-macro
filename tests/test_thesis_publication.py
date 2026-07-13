@@ -10,6 +10,7 @@ from django.conf import settings
 from django.contrib import admin
 from django.contrib.auth import get_user_model
 from django.db import IntegrityError, connection, transaction
+from django.db.models import QuerySet
 from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
 from django.utils import timezone
@@ -671,6 +672,26 @@ def test_daily_research_revalidates_inside_persistence_transaction(monkeypatch):
 
 
 @pytest.mark.django_db
+def test_daily_research_parent_lock_targets_only_snapshot(monkeypatch):
+    build_daily_evidence("daily-research-lock-target")
+    dashboard_lock_targets: list[tuple[str, ...]] = []
+    original_select_for_update = QuerySet.select_for_update
+
+    def tracked_select_for_update(queryset, *args, **kwargs):
+        if queryset.model is DashboardSnapshot:
+            dashboard_lock_targets.append(kwargs.get("of", ()))
+        return original_select_for_update(queryset, *args, **kwargs)
+
+    monkeypatch.setattr(QuerySet, "select_for_update", tracked_select_for_update)
+
+    result = generate_daily_research()
+
+    assert result["failed"] == 0
+    assert dashboard_lock_targets
+    assert dashboard_lock_targets[0] == ("self",)
+
+
+@pytest.mark.django_db
 def test_daily_evidence_coordinator_freezes_exact_lineage_and_is_idempotent():
     current_time = timezone.now()
     components, metrics = build_daily_components(
@@ -711,6 +732,30 @@ def test_daily_evidence_coordinator_freezes_exact_lineage_and_is_idempotent():
         require_current_components=True,
         require_latest_snapshot=True,
     )
+
+
+@pytest.mark.django_db
+def test_daily_evidence_coordinator_locks_only_primary_rows(monkeypatch):
+    current_time = timezone.now()
+    build_daily_components("coordinator-lock-targets", now=current_time)
+    lock_calls: list[tuple[type, tuple[str, ...]]] = []
+    original_select_for_update = QuerySet.select_for_update
+
+    def tracked_select_for_update(queryset, *args, **kwargs):
+        if queryset.model in {DashboardSnapshot, MetricSnapshot}:
+            lock_calls.append((queryset.model, kwargs.get("of", ())))
+        return original_select_for_update(queryset, *args, **kwargs)
+
+    monkeypatch.setattr(QuerySet, "select_for_update", tracked_select_for_update)
+
+    outcome = publish_daily_evidence_snapshot(now=current_time)
+
+    assert outcome.ok
+    assert {model for model, _of in lock_calls} == {
+        DashboardSnapshot,
+        MetricSnapshot,
+    }
+    assert all(of == ("self",) for _model, of in lock_calls)
 
 
 @pytest.mark.django_db
