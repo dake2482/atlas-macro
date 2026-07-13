@@ -6,7 +6,7 @@
 - Health: `YELLOW`
 - Milestone: `AI-RESEARCH-010` — 首页与每日报告官方证据发布安全闭环 (`REVIEW`)
 - Next action: Provision a free CENSUS_API_KEY in Mina's protected shared environment, recreate the app services, rerun refresh_macro_data, and complete the May 2026 production audit.
-- Updated: `2026-07-13T14:12:00+08:00`
+- Updated: `2026-07-13T14:15:00+08:00`
 - Git boundary: branch `main`; run `portfolio closeout AI-RESEARCH` for live delivery state.
 - Execution metadata: Codex 0/0 active/total; ZCode 0/0 active/total
 
@@ -16,7 +16,7 @@
 |---|---|---|---|---|---|---|
 | AI-RESEARCH-008 | BLOCKED | P1 | codex | atlas-census-retail-alignment-20260713 | main / local | Provision a free CENSUS_API_KEY in Mina's protected shared environment, recreate the app services, rerun refresh_macro_data, and complete the May 2026 production audit. |
 | AI-RESEARCH-009 | REVIEW | P1 | codex | atlas-treasury-curve-alignment-20260713 | main / local | Run the project closeout gate after the pre-existing untracked docs/guides ownership is resolved; do not mix those user files into this requirement. |
-| AI-RESEARCH-010 | REVIEW | P0 | codex | atlas-daily-evidence-publication-safety-20260713 | main / local | Commit the verified deployment evidence and run portfolio closeout AI-RESEARCH. |
+| AI-RESEARCH-010 | REVIEW | P0 | codex | atlas-daily-evidence-publication-safety-20260713 | main / local | Register or explicitly exclude /Users/dake/Documents/weihua from AI-Portfolio discovery, then rerun portfolio closeout AI-RESEARCH; do not mutate that unrelated repository without user direction. |
 
 ## Blockers
 
@@ -24,4 +24,4 @@
 
 ## Latest verification evidence
 
-- verification: commits 7dd83ef, b99f8e7 and f7d2ad8 passed Ruff, 409 tests, Django checks, Mina migration and immutable deployment, route smoke, production PARTIAL safety audit, and 1440px/390px browser checks.
+- The command `portfolio closeout AI-RESEARCH` was run after evidence commit `97b4f5a` and stopped before project commands because strict discovery found the unrelated unregistered Git repository `/Users/dake/Documents/weihua` (zero errors, one warning). `portfolio check --strict --no-discovery` passes with zero errors and warnings; the requirement remains REVIEW rather than changing another repository's registry entry without authority.

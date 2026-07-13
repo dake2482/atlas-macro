@@ -12,8 +12,9 @@ worktree: local
 dependencies:
 - AI-RESEARCH-006
 - AI-RESEARCH-007
-updated_at: '2026-07-13T14:13:46+08:00'
-next_action: Commit the verified deployment evidence and run portfolio closeout AI-RESEARCH.
+updated_at: '2026-07-13T14:15:00+08:00'
+next_action: Register or explicitly exclude /Users/dake/Documents/weihua from AI-Portfolio discovery,
+  then rerun portfolio closeout AI-RESEARCH; do not mutate that unrelated repository without user direction.
 evidence:
 - The current public-thesis selector can expose a future-dated Thesis with no published daily-evidence
   contract, no relationized evidence, no trigger and no invalidation.
@@ -47,6 +48,10 @@ evidence:
   during acceptance was fixed before release; final document scroll width equals the 375px client width.
 - 'verification: commits 7dd83ef, b99f8e7 and f7d2ad8 passed Ruff, 409 tests, Django checks, Mina migration
   and immutable deployment, route smoke, production PARTIAL safety audit, and 1440px/390px browser checks.'
+- The command `portfolio closeout AI-RESEARCH` was run after evidence commit `97b4f5a` and stopped before project commands
+  because strict discovery found the unrelated unregistered Git repository `/Users/dake/Documents/weihua`
+  (zero errors, one warning). `portfolio check --strict --no-discovery` passes with zero errors and warnings;
+  the requirement remains REVIEW rather than changing another repository's registry entry without authority.
 started_at: '2026-07-13T10:00:47+08:00'
 ---
 
