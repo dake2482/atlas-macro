@@ -708,12 +708,13 @@ def test_release_workbooks_persist_lineage_and_publish_gdp_and_consumer_pages(cl
     assert revision_section["title"] == "GDP 发布轮次与修订路径"
     assert revision_section["rows"][0]["display_value"] == "1.60% → 2.10%"
     assert "累计修订 +0.50pp" in revision_section["rows"][0]["status"]
-    assert consumer["census-mrts-44x72-sm-sa"]["display_value"] == "763,705 USD mn"
-    assert consumer["census-mrts-44x72-sm-sa-mom"]["display_value"] == "0.90%"
+    assert consumer["census-mrts-44x72-sm-sa"]["display_value"] == "757,085 USD mn"
+    assert consumer["census-mrts-44x72-sm-sa-mom"]["display_value"] == "0.50%"
     assert consumer["census-mrts-44x72-sm-sa-mom"]["change_unit"] == "pp"
     assert consumer["bea-real-pce-mom"]["display_value"] == "0.30%"
     assert consumer["bea-real-dpi-mom"]["display_value"] == "0.30%"
     assert consumer["bea-personal-saving-rate"]["display_value"] == "3.00%"
+    assert consumer["census-mrts-44x72-sm-sa"]["source_key"] == "census-release"
     assert consumer["bea-real-pce-mom"]["source_key"] == "bea-pio-release"
     assert consumer["g19-consumer-credit-outstanding-sa"]["source_key"] == (
         "federal-reserve-g19"
@@ -733,13 +734,13 @@ def test_release_workbooks_persist_lineage_and_publish_gdp_and_consumer_pages(cl
     assert dashboards["consumer"].data["chart_data"] == charts[0]["data"]
     assert dashboards["consumer"].data["contract_version"] == 1
     assert dashboards["consumer"].data["retail_batch_id"] == str(
-        census_api_run.batch_id
+        census_run.batch_id
     )
-    assert charts[0]["source_keys"] == ["census"]
+    assert charts[0]["source_keys"] == ["census-release"]
     assert charts[1]["source_keys"] == ["bea-pio-release"]
     assert charts[0]["data"][0]["_lineage"]["零售与餐饮服务"][
         "source_key"
-    ] == "census"
+    ] == "census-release"
     response = client.get("/economy/consumer/")
     body = response.content.decode()
     assert response.status_code == 200
@@ -774,9 +775,17 @@ def test_release_workbooks_persist_lineage_and_publish_gdp_and_consumer_pages(cl
     }
     census_api_run.dataset = "mrts:44X72:SM:yes"
     census_api_run.save(update_fields=["dataset", "updated_at"])
-    assert _keys_with_current_required_batches({"gdp", "consumer"}, runs) == {"gdp"}
+    assert _keys_with_current_required_batches({"gdp", "consumer"}, runs) == {
+        "gdp",
+        "consumer",
+    }
     census_api_run.dataset = "marts:44X72:SM:yes"
     census_api_run.save(update_fields=["dataset", "updated_at"])
+    census_run.dataset = "marts:44X72:SM:yes"
+    census_run.save(update_fields=["dataset", "updated_at"])
+    assert _keys_with_current_required_batches({"gdp", "consumer"}, runs) == {"gdp"}
+    census_run.dataset = "marts:retail-food-services"
+    census_run.save(update_fields=["dataset", "updated_at"])
     latest_pio = Observation.objects.filter(
         series__key="bea-real-pce-mom",
         source__key="bea-pio-release",
@@ -814,16 +823,10 @@ def test_release_workbooks_persist_lineage_and_publish_gdp_and_consumer_pages(cl
     census_api_run.save(
         update_fields=["status", "row_count", "metadata", "updated_at"]
     )
-    _mark_latest_dashboards_stale({"consumer"}, runs)
-    missing_key = DashboardSnapshot.objects.get(pk=stale.pk)
-    source_states = {
-        item["source"]: item for item in missing_key.data["refresh_failure"]["sources"]
+    assert _publishable_keys_for_source_groups(runs, MACRO_PUBLICATION_GROUPS) == {
+        "gdp",
+        "consumer",
     }
-    assert source_states["census"]["status"] == "partial"
-    assert source_states["census"]["error"] == "CENSUS_API_KEY is not configured"
-    missing_key_body = client.get("/economy/consumer/").content.decode()
-    assert "partial" in missing_key_body
-    assert "CENSUS_API_KEY is not configured" in missing_key_body
 
 
 @pytest.mark.django_db
@@ -942,12 +945,13 @@ def test_economy_catalog_separates_live_release_data_from_remaining_gaps():
     requirements = {item["key"]: item for item in DATA_REQUIREMENTS}
 
     assert requirements["bea-gdp-pce"]["status"] == "live"
-    assert requirements["census-retail"]["status"] == "needs_source"
     assert requirements["bea-gdp-contributions"]["status"] == "live"
     assert requirements["bea-gdp-vintage-trail"]["status"] == "live"
     assert "独立 release-vintage 数据层" in requirements["bea-gdp-vintage-trail"][
         "reason"
     ]
+    assert requirements["census-retail"]["status"] == "live"
+    assert "发布工作簿" in requirements["census-retail"]["reason"]
     assert requirements["bea-personal-income-outlays"]["status"] == "live"
     assert "Section 2" in requirements["bea-personal-income-outlays"]["reason"]
     assert requirements["bea-pio-vintage-trail"]["status"] == "needs_source"
@@ -964,7 +968,10 @@ def test_economy_catalog_separates_live_release_data_from_remaining_gaps():
             ("success", "success", "success", "success", "success", "success"),
             {"gdp", "consumer"},
         ),
-        (("success", "failed", "success", "success", "success", "success"), {"gdp"}),
+        (
+            ("success", "failed", "success", "success", "success", "success"),
+            {"gdp", "consumer"},
+        ),
         (("success", "success", "failed", "success", "success", "success"), {"gdp"}),
         (("success", "success", "success", "failed", "success", "success"), {"gdp"}),
         (("failed", "success", "success", "success", "success", "success"), {"consumer"}),

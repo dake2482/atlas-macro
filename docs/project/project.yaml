@@ -7,12 +7,12 @@ success_metrics:
   - Demo or fallback records are never presented as verified official data.
   - Django checks, lint, and deterministic tests remain green.
 current_milestone:
-  id: AI-RESEARCH-010
-  title: 首页与每日报告官方证据发布安全闭环
-  status: REVIEW
+  id: AI-RESEARCH-008
+  title: 分层补齐 Census 零售发布与完整历史
+  status: IN_PROGRESS
 health: YELLOW
-next_action: Register or explicitly exclude /Users/dake/Documents/weihua from AI-Portfolio discovery, then rerun portfolio closeout AI-RESEARCH; do not mutate that unrelated repository without user direction.
-updated_at: '2026-07-13T14:15:00+08:00'
+next_action: Deploy the Census release-workbook retail fallback to Mina, rerun refresh_macro_data, audit the consumer/economy/daily-evidence impact, then keep CENSUS_API_KEY as the remaining complete-history action.
+updated_at: '2026-07-13T14:21:11+08:00'
 validation_commands:
   - .venv/bin/ruff check .
   - .venv/bin/pytest -q

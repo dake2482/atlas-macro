@@ -168,7 +168,6 @@ MACRO_PUBLICATION_GROUPS = {
     "gdp": frozenset({"bea-release"}),
     "consumer": frozenset(
         {
-            "census",
             "census-release",
             "bea-pio-release",
             "federal-reserve-g19",
@@ -178,7 +177,6 @@ MACRO_PUBLICATION_GROUPS = {
 }
 MACRO_REQUIRED_DATASETS = {
     "consumer": {
-        "census": "marts:44X72:SM:yes",
         "census-release": "marts:retail-food-services",
     }
 }
@@ -340,7 +338,7 @@ MACRO_REQUIRED_SERIES = {
         )
     },
     "consumer": {
-        "census": frozenset(
+        "census-release": frozenset(
             {
                 "CENSUS-MRTS-44X72-SM-SA",
                 "CENSUS-MRTS-44X72-SM-SA-MOM",
@@ -7129,9 +7127,9 @@ def publish_official_dashboards(
     if source_batches is None and (
         selected_keys is None or "consumer" in selected_keys
     ):
-        latest_census_batch = _latest_successful_source_batch("census")
-        if latest_census_batch is not None:
-            normalized_source_batches["census"] = latest_census_batch
+        latest_census_release_batch = _latest_successful_source_batch("census-release")
+        if latest_census_release_batch is not None:
+            normalized_source_batches["census-release"] = latest_census_release_batch
     hqm_curve = _curve_rows("hqm-par", ("2y", "5y", "10y", "30y"))
     sofr_market_metrics = _sofr_market_metrics()
     auction_metrics, auction_rows = _auction_snapshot_data()
@@ -7154,7 +7152,8 @@ def publish_official_dashboards(
     liquidity_charts: list[dict[str, Any]] = []
     liquidity_sections: list[dict[str, Any]] = []
     liquidity_extra_data: dict[str, Any] = {}
-    retail_batch = normalized_source_batches.get("census")
+    retail_source_key = "census-release"
+    retail_batch = normalized_source_batches.get(retail_source_key)
     gdp_vintage_chart: dict[str, Any] | None = None
     gdp_vintage_section: dict[str, Any] | None = None
     if selected_keys is None or "gdp" in selected_keys:
@@ -7167,7 +7166,7 @@ def publish_official_dashboards(
                     "零售与餐饮服务",
                     decimals=0,
                     suffix=" USD mn",
-                    source_key="census",
+                    source_key=retail_source_key,
                     batch_id=retail_batch,
                 )
                 if retail_batch is not None
@@ -7178,7 +7177,7 @@ def publish_official_dashboards(
                     "CENSUS-MRTS-44X72-SM-SA-MOM",
                     "零售环比",
                     suffix="%",
-                    source_key="census",
+                    source_key=retail_source_key,
                     batch_id=retail_batch,
                 )
                 if retail_batch is not None
@@ -7189,7 +7188,7 @@ def publish_official_dashboards(
                     "CENSUS-MRTS-44X72-SM-SA-YOY",
                     "零售同比",
                     suffix="%",
-                    source_key="census",
+                    source_key=retail_source_key,
                     batch_id=retail_batch,
                 )
                 if retail_batch is not None
@@ -7237,7 +7236,7 @@ def publish_official_dashboards(
                     description="季调月度水平，单位：百万美元",
                     series={"CENSUS-MRTS-44X72-SM-SA": "零售与餐饮服务"},
                     limit=36,
-                    source_key="census",
+                    source_key=retail_source_key,
                     batch_id=retail_batch,
                 ),
                 _history_chart(
@@ -7725,8 +7724,8 @@ def publish_official_dashboards(
             "key": "consumer",
             "title": "消费与零售",
             "summary": (
-                "零售与餐饮服务销售来自 Census MARTS 官方 API 当前完整历史；旧发布"
-                "工作簿只作为 Advance→Preliminary→Revised 修订见证。实际 PCE、"
+                "零售与餐饮服务销售来自 Census MARTS 官方发布工作簿；完整"
+                "API 历史仍需 CENSUS_API_KEY 后启用。实际 PCE、"
                 "实际可支配收入和个人储蓄率来自 BEA 月度 PIO Section 2 工作簿，"
                 "并与当月 Historical Comparisons 摘要交叉校验。消费者信贷来自"
                 "联储 G.19，家庭债务和逾期率来自 New York Fed Consumer Credit "
@@ -7737,7 +7736,7 @@ def publish_official_dashboards(
             "charts": consumer_charts,
             "extra_data": {
                 "contract_version": CONSUMER_CONTRACT_VERSION,
-                "retail_source_key": "census",
+                "retail_source_key": retail_source_key,
                 "retail_batch_id": str(retail_batch) if retail_batch else None,
             },
             "required_metric_keys": frozenset(

@@ -350,8 +350,8 @@ def test_bea_and_census_observations_publish_gdp_and_consumer_pages():
         ],
     )
     census = ProviderResult(
-        provider="census",
-        dataset="census-fixture",
+        provider="census-release",
+        dataset="marts:retail-food-services",
         fetched_at=fetched_at,
         records=[
             {

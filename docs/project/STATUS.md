@@ -4,9 +4,9 @@
 
 - Purpose: Build a clean-room macro-research and AI supply-chain intelligence platform with traceable public sources, explicit data-quality labels, and original presentation.
 - Health: `YELLOW`
-- Milestone: `AI-RESEARCH-010` — 首页与每日报告官方证据发布安全闭环 (`REVIEW`)
-- Next action: Provision a free CENSUS_API_KEY in Mina's protected shared environment, recreate the app services, rerun refresh_macro_data, and complete the May 2026 production audit.
-- Updated: `2026-07-13T14:15:00+08:00`
+- Milestone: `AI-RESEARCH-008` — 分层补齐 Census 零售发布与完整历史 (`IN_PROGRESS`)
+- Next action: Deploy the Census release-workbook retail fallback to Mina, rerun refresh_macro_data, audit the consumer/economy/daily-evidence impact, then keep CENSUS_API_KEY as the remaining complete-history action.
+- Updated: `2026-07-13T14:21:11+08:00`
 - Git boundary: branch `main`; run `portfolio closeout AI-RESEARCH` for live delivery state.
 - Execution metadata: Codex 0/0 active/total; ZCode 0/0 active/total
 
@@ -14,14 +14,14 @@
 
 | Requirement | State | Priority | Executor | Task | Branch / worktree | Next action |
 |---|---|---|---|---|---|---|
-| AI-RESEARCH-008 | BLOCKED | P1 | codex | atlas-census-retail-alignment-20260713 | main / local | Provision a free CENSUS_API_KEY in Mina's protected shared environment, recreate the app services, rerun refresh_macro_data, and complete the May 2026 production audit. |
+| AI-RESEARCH-008 | IN_PROGRESS | P1 | codex | atlas-census-retail-alignment-20260713 | main / local | Deploy the Census release-workbook retail fallback to Mina, rerun refresh_macro_data, audit the consumer/economy/daily-evidence impact, then keep CENSUS_API_KEY as the remaining complete-history action. |
 | AI-RESEARCH-009 | REVIEW | P1 | codex | atlas-treasury-curve-alignment-20260713 | main / local | Run the project closeout gate after the pre-existing untracked docs/guides ownership is resolved; do not mix those user files into this requirement. |
 | AI-RESEARCH-010 | REVIEW | P0 | codex | atlas-daily-evidence-publication-safety-20260713 | main / local | Register or explicitly exclude /Users/dake/Documents/weihua from AI-Portfolio discovery, then rerun portfolio closeout AI-RESEARCH; do not mutate that unrelated repository without user direction. |
 
 ## Blockers
 
-- `AI-RESEARCH-008`: Provision a free CENSUS_API_KEY in Mina's protected shared environment, recreate the app services, rerun refresh_macro_data, and complete the May 2026 production audit.
+- None recorded.
 
 ## Latest verification evidence
 
-- The command `portfolio closeout AI-RESEARCH` was run after evidence commit `97b4f5a` and stopped before project commands because strict discovery found the unrelated unregistered Git repository `/Users/dake/Documents/weihua` (zero errors, one warning). `portfolio check --strict --no-discovery` passes with zero errors and warnings; the requirement remains REVIEW rather than changing another repository's registry entry without authority.
+- The validated pre-release backup is /srv/atlasmacro/backups/20260713T002138Z.dump, size 7,868,138 bytes, SHA-256 a3d36c13e7717ca784fb97730885afac0cae13f5a353ba1d33d53a5ee0e4a2df; its pg_restore catalogue check passed.

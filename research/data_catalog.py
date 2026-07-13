@@ -464,13 +464,13 @@ DATA_REQUIREMENTS = [
         "key": "census-retail",
         "page_key": "consumer",
         "metric_name": "零售与餐饮服务销售（水平/环比/同比）",
-        "status": NEEDS_SOURCE,
-        "source_name": "U.S. Census Bureau EITS MARTS API",
-        "source_url": "https://api.census.gov/data/timeseries/eits/marts.html",
+        "status": LIVE,
+        "source_name": "U.S. Census Bureau MARTS release workbook",
+        "source_url": "https://www.census.gov/retail/sales.html",
         "reason": (
-            "当期与完整历史适配器已改用正确的 MARTS API，并保留脱敏响应哈希；"
-            "旧发布工作簿仅作 revision witness。生产尚缺免费的 CENSUS_API_KEY，"
-            "因此继续保留上一完整快照并明确标记过期，配置凭据并验收前不标 LIVE。"
+            "当前可发布零售页使用 Census 官方 Advance Monthly Retail Sales "
+            "发布工作簿，保留原文件哈希、发布状态和环比/同比来源字段。完整 "
+            "1992 起 API 历史仍单列为待 CENSUS_API_KEY 的数据缺口。"
         ),
         "priority": 1,
     },
