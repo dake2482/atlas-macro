@@ -75,6 +75,11 @@ evidence:
   less energy +0.3% MoM/+3.4% YoY, all bound to BLS batch
   c62e7a25-e503-47f3-81f5-8018aaaa85b3. The catalogue now reports live=36 and
   needs_source=12.'
+- 'The scoped BLS refresh also reconciled unchanged employment snapshot 132 against the
+  latest BLS batch and the last complete DOL batch 3fbbda43-25c1-40b1-8765-cc698446aa92.
+  Same-value recovery cleared its stale marker, and economy snapshot 135 now inherits
+  GDP 128, employment 132, inflation 138 and consumer 137 with quality=estimated and no
+  refresh_failure.'
 started_at: '2026-07-12T23:24:28+08:00'
 ---
 
