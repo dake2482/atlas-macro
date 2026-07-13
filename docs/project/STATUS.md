@@ -4,9 +4,9 @@
 
 - Purpose: Build a clean-room macro-research and AI supply-chain intelligence platform with traceable public sources, explicit data-quality labels, and original presentation.
 - Health: `GREEN`
-- Milestone: `AI-RESEARCH-007` — 流动性快照原子协调与净流动性同日化 (`DONE`)
-- Next action: Define the next reviewed requirement to replace the lagging Census retail workbook tail with the current official release and full historical series.
-- Updated: `2026-07-13T03:24:00+08:00`
+- Milestone: `AI-RESEARCH-008` — 修正 Census 当期零售发布与完整历史 (`IN_PROGRESS`)
+- Next action: Replace the lagging historical-directory tail with the current Census MARTS workbook and the official 1992-present adjusted-sales series, then fail closed on any same-vintage disagreement.
+- Updated: `2026-07-13T08:02:09+08:00`
 - Git boundary: branch `main`; run `portfolio closeout AI-RESEARCH` for live delivery state.
 - Execution metadata: Codex 0/0 active/total; ZCode 0/0 active/total
 
@@ -14,7 +14,7 @@
 
 | Requirement | State | Priority | Executor | Task | Branch / worktree | Next action |
 |---|---|---|---|---|---|---|
-| - | - | - | - | - | - | No active requirement |
+| AI-RESEARCH-008 | IN_PROGRESS | P1 | codex | atlas-census-retail-alignment-20260713 | main / local | Replace the lagging historical-directory tail with the current Census MARTS workbook and the official 1992-present adjusted-sales series, then fail closed on any same-vintage disagreement. |
 
 ## Blockers
 

@@ -7,12 +7,12 @@ success_metrics:
   - Demo or fallback records are never presented as verified official data.
   - Django checks, lint, and deterministic tests remain green.
 current_milestone:
-  id: AI-RESEARCH-007
-  title: 流动性快照原子协调与净流动性同日化
-  status: DONE
+  id: AI-RESEARCH-008
+  title: 修正 Census 当期零售发布与完整历史
+  status: IN_PROGRESS
 health: GREEN
-next_action: Define the next reviewed requirement to replace the lagging Census retail workbook tail with the current official release and full historical series.
-updated_at: '2026-07-13T03:24:00+08:00'
+next_action: Replace the lagging historical-directory tail with the current Census MARTS workbook and the official 1992-present adjusted-sales series, then fail closed on any same-vintage disagreement.
+updated_at: '2026-07-13T08:02:09+08:00'
 validation_commands:
   - .venv/bin/ruff check .
   - .venv/bin/pytest -q
