@@ -7,6 +7,7 @@ be persisted as ingestion metadata instead of crashing a Celery worker.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 from collections.abc import Mapping
@@ -828,6 +829,8 @@ class TreasuryRatesProvider(HTTPProvider):
             return ProviderResult.failure(self.key, dataset, f"ParseError: {exc}")
 
         records = []
+        seen: dict[tuple[str, str], Decimal] = {}
+        today = datetime.now(UTC).date()
         for entry in root.findall("atom:entry", self.XML_NS):
             properties = entry.find("atom:content/meta:properties", self.XML_NS)
             if properties is None:
@@ -836,19 +839,88 @@ class TreasuryRatesProvider(HTTPProvider):
             value_date = (values.get("NEW_DATE") or "")[:10]
             if not value_date:
                 continue
+            try:
+                parsed_date = date.fromisoformat(value_date)
+            except ValueError:
+                return ProviderResult.failure(
+                    self.key, dataset, f"invalid Treasury observation date: {value_date}"
+                )
+            if parsed_date.year != year:
+                return ProviderResult.failure(
+                    self.key,
+                    dataset,
+                    f"Treasury response year {parsed_date.year} does not match requested year {year}",
+                )
+            if parsed_date > today:
+                return ProviderResult.failure(
+                    self.key, dataset, f"Treasury response contains future date {value_date}"
+                )
             for field_name, series_id in fields.items():
                 value = _decimal_or_none(values.get(field_name))
                 if value is None:
                     continue
+                identity = (value_date, series_id)
+                if identity in seen:
+                    if seen[identity] != value:
+                        return ProviderResult.failure(
+                            self.key,
+                            dataset,
+                            f"conflicting duplicate Treasury value for {series_id} on {value_date}",
+                        )
+                    continue
+                seen[identity] = value
                 records.append(
                     {
                         "series_id": series_id,
                         "date": value_date,
                         "value": value,
-                        "metadata": {"treasury_field": field_name, "curve": curve},
+                        "metadata": {
+                            "treasury_field": field_name,
+                            "curve": curve,
+                            "requested_year": year,
+                            "dataset": dataset,
+                        },
                     }
                 )
-        return ProviderResult(provider=self.key, dataset=dataset, records=records)
+        latest_date = max((item[0] for item in seen), default=None)
+        latest_series = {
+            series_id
+            for value_date, series_id in seen
+            if value_date == latest_date
+        }
+        required_latest = set(fields.values())
+        missing_latest = sorted(required_latest - latest_series)
+        if not records:
+            return ProviderResult.failure(
+                self.key,
+                dataset,
+                "Treasury response contains no usable curve observations",
+            )
+        content = (payload or "").encode()
+        source_url = (
+            f"{self.base_url}/resource-center/data-chart-center/interest-rates/pages/xml"
+            f"?data={curve}&field_tdr_date_value={year}"
+        )
+        return ProviderResult(
+            provider=self.key,
+            dataset=dataset,
+            records=records,
+            metadata={
+                "curve": curve,
+                "requested_year": year,
+                "latest_value_date": latest_date,
+                "series_coverage": sorted({item[1] for item in seen}),
+                "missing_latest_series": missing_latest,
+                "artifacts": [
+                    {
+                        "url": source_url,
+                        "sha256": hashlib.sha256(content).hexdigest(),
+                        "size": len(content),
+                        "content_type": "application/atom+xml",
+                    }
+                ],
+            },
+        )
 
     def yield_curve(self, *, year: int | None = None) -> ProviderResult:
         return self._curve(

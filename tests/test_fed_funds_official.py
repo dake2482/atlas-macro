@@ -512,17 +512,16 @@ def test_other_policy_pages_align_direct_cards_and_history(monkeypatch):
     )
 
     dashboards = publish_official_dashboards(
-        keys={"transmission-chain", "rates", "subsurface"}
+        keys={"transmission-chain", "subsurface"}
     )
     pages = {item.key: item.data for item in dashboards}
 
-    for page_key in ("transmission-chain", "rates"):
-        metrics = {item["key"]: item for item in pages[page_key]["metrics"]}
-        assert metrics["sofr"]["value_date"].startswith("2026-07-09")
-        assert metrics["iorb"]["value_date"].startswith("2026-07-09")
-        assert metrics["iorb"]["display_value"] == "3.65%"
-    rates = {item["key"]: item for item in pages["rates"]["metrics"]}
-    assert rates["effr"]["value_date"].startswith("2026-07-09")
+    metrics = {
+        item["key"]: item for item in pages["transmission-chain"]["metrics"]
+    }
+    assert metrics["sofr"]["value_date"].startswith("2026-07-09")
+    assert metrics["iorb"]["value_date"].startswith("2026-07-09")
+    assert metrics["iorb"]["display_value"] == "3.65%"
     transmission_rows = pages["transmission-chain"]["charts"][0]["data"]
     assert max(row["date"] for row in transmission_rows) == "2026-07-09"
     assert all({"SOFR", "EFFR", "IORB"} <= set(row) for row in transmission_rows)

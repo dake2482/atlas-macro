@@ -67,15 +67,31 @@ PAGE_CONFIGS = {
     },
     "assets-bonds": {
         "title": "债券",
-        "eyebrow": "Duration & Credit",
-        "description": "同时追踪国债久期、投资级与高收益信用，而不是只看单一收益率。",
-        "metrics": [
-            metric("TLT", "$92.43", "-0.18%"),
-            metric("IEF", "$95.18", "-0.07%"),
-            metric("LQD", "$108.34", "+0.02%"),
-            metric("HYG", "$78.94", "+0.06%"),
+        "eyebrow": "Official Treasury Curves",
+        "description": (
+            "展示美国财政部名义 Par Yield 曲线与 Atlas 透明利差计算；"
+            "这些数值不是债券或 ETF 价格、久期、信用利差或总回报。"
+        ),
+        "snapshot_key": "yield-curve",
+        "snapshot_contract_version": 1,
+        "period_options": [
+            {"value": "1y", "label": "1 年", "months": 12},
+            {"value": "3y", "label": "3 年", "months": 36},
+            {"value": "5y", "label": "5 年", "months": 60},
         ],
-        "analysis": "信用债相对稳定但长久期承压，当前更接近增长尚可、期限溢价偏高的组合。",
+        "default_period": "3y",
+        "tab_options": [
+            {"value": "curve", "label": "曲线对比", "chart_keys": ["nominal-curve-comparison"]},
+            {"value": "spreads", "label": "曲线利差", "chart_keys": ["curve-spreads-history"]},
+        ],
+        "default_tab": "curve",
+        "metrics": [
+            metric("2Y 名义收益率"),
+            metric("10Y 名义收益率"),
+            metric("2s10s"),
+            metric("5s30s"),
+        ],
+        "analysis": "页面只陈述官方 Treasury 收益率和一手输入可复算的曲线利差，不生成未审核的久期或交易判断。",
     },
     "assets-commodities": {
         "title": "商品",
@@ -117,6 +133,13 @@ PAGE_CONFIGS = {
         "title": "利率",
         "eyebrow": "Rates Command Center",
         "description": "从政策利率、整条收益率曲线、实际利率与拍卖需求判断金融条件。",
+        "snapshot_contract_version": 1,
+        "period_options": [
+            {"value": "1y", "label": "1 年", "months": 12},
+            {"value": "3y", "label": "3 年", "months": 36},
+            {"value": "5y", "label": "5 年", "months": 60},
+        ],
+        "default_period": "3y",
         "metrics": [
             metric("有效联邦基金", "5.33%", "持平", source="NY Fed / FRED"),
             metric("2Y", "4.72%", "+2bp", source="Treasury / FRED"),
@@ -180,6 +203,18 @@ PAGE_CONFIGS = {
         "title": "收益率曲线",
         "eyebrow": "Treasury Curve",
         "description": "比较当前、1 周、1 月与 3 月前曲线，并拆分名义、实际和盈亏平衡通胀。",
+        "snapshot_contract_version": 1,
+        "period_options": [
+            {"value": "1y", "label": "1 年", "months": 12},
+            {"value": "3y", "label": "3 年", "months": 36},
+            {"value": "5y", "label": "5 年", "months": 60},
+        ],
+        "default_period": "3y",
+        "tab_options": [
+            {"value": "curve", "label": "曲线对比", "chart_keys": ["nominal-curve-comparison"]},
+            {"value": "spreads", "label": "曲线利差", "chart_keys": ["curve-spreads-history"]},
+        ],
+        "default_tab": "curve",
         "metrics": [
             metric("曲线形态", "熊平", "长端+3bp"),
             metric("2s10s", "-41bp", "+1bp"),
@@ -204,6 +239,21 @@ PAGE_CONFIGS = {
         "title": "实际利率",
         "eyebrow": "TIPS & Inflation",
         "description": "名义收益率拆分为实际利率与盈亏平衡通胀。",
+        "snapshot_contract_version": 1,
+        "period_options": [
+            {"value": "1y", "label": "1 年", "months": 12},
+            {"value": "3y", "label": "3 年", "months": 36},
+            {"value": "5y", "label": "5 年", "months": 60},
+        ],
+        "default_period": "3y",
+        "tab_options": [
+            {
+                "value": "decomposition",
+                "label": "名义 / 实际 / BEI",
+                "chart_keys": ["nominal-real-breakeven-history"],
+            }
+        ],
+        "default_tab": "decomposition",
         "metrics": [
             metric("5Y 实际利率", "2.08%", "+3bp"),
             metric("10Y 实际利率", "2.01%", "+2bp"),

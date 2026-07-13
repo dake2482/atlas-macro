@@ -40,6 +40,12 @@ docker compose up -d db redis
 docker compose run --rm web python manage.py migrate
 docker compose run --rm web python manage.py sync_data_requirements
 docker compose run --rm web python manage.py refresh_official_data
+# Initial Treasury history: keep each annual shard in its own bounded process.
+current_year=$(date +%Y)
+for year in $(seq $((current_year - 5)) "$current_year"); do
+  docker compose run --rm web python manage.py refresh_treasury_curve_data --start-year "$year" --end-year "$year" --no-publish
+done
+docker compose run --rm web python manage.py refresh_treasury_curve_data --start-year "$current_year" --end-year "$current_year"
 docker compose run --rm web python manage.py refresh_prates_data
 docker compose run --rm web python manage.py refresh_h10_data
 docker compose run --rm web python manage.py refresh_h41_data

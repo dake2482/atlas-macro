@@ -533,13 +533,18 @@ def test_public_dashboard_publisher_requires_approved_source_licence():
             )
 
     dashboards = publish_official_dashboards()
-    rates = next(item for item in dashboards if item.key == "rates")
+    transmission = next(
+        item for item in dashboards if item.key == "transmission-chain"
+    )
 
-    assert rates.data["demo"] is False
-    assert {item["label"] for item in rates.data["metrics"]} >= {"SOFR", "EFFR"}
+    assert transmission.data["demo"] is False
+    assert {item["label"] for item in transmission.data["metrics"]} >= {
+        "SOFR",
+        "IORB",
+    }
     assert all(
         "Approved Official Fixture" in item["source"]
-        for item in rates.data["metrics"][:2]
+        for item in transmission.data["metrics"][:2]
     )
 
 
@@ -768,7 +773,7 @@ def test_current_restricted_or_expired_licence_suppresses_old_dashboard(client, 
         include_historical_open=True,
     )
     DashboardSnapshot.objects.create(
-        key="rates",
+        key="operations",
         title="Old licensed dashboard",
         as_of=timezone.now() - timedelta(days=2),
         source=source,
@@ -786,7 +791,7 @@ def test_current_restricted_or_expired_licence_suppresses_old_dashboard(client, 
         },
     )
 
-    response = client.get("/rates/")
+    response = client.get("/liquidity/operations/")
 
     assert response.status_code == 200
     assert "MUST-NOT-RENDER" not in response.content.decode()
@@ -802,7 +807,7 @@ def test_top_level_source_keys_cannot_hide_revoked_metric_source(client):
         include_historical_open=True,
     )
     DashboardSnapshot.objects.create(
-        key="rates",
+        key="operations",
         title="Mixed-source dashboard",
         as_of=timezone.now(),
         source=allowed,
@@ -836,7 +841,7 @@ def test_chart_lineage_cannot_hide_revoked_source(client):
         include_historical_open=True,
     )
     DashboardSnapshot.objects.create(
-        key="rates",
+        key="operations",
         title="Mixed-source chart",
         as_of=timezone.now(),
         source=allowed,
@@ -942,7 +947,7 @@ def test_newer_revoked_chart_snapshot_falls_back_to_previous_safe_snapshot(clien
     )
     now = timezone.now()
     DashboardSnapshot.objects.create(
-        key="rates",
+        key="operations",
         title="Previous safe snapshot",
         as_of=now - timedelta(days=1),
         source=allowed,
@@ -961,7 +966,7 @@ def test_newer_revoked_chart_snapshot_falls_back_to_previous_safe_snapshot(clien
         },
     )
     DashboardSnapshot.objects.create(
-        key="rates",
+        key="operations",
         title="Newer unsafe snapshot",
         as_of=now,
         source=allowed,
@@ -986,7 +991,7 @@ def test_newer_revoked_chart_snapshot_falls_back_to_previous_safe_snapshot(clien
         },
     )
 
-    response = client.get("/rates/")
+    response = client.get("/liquidity/operations/")
     body = response.content.decode()
     assert response.status_code == 200
     assert "SAFE-SNAPSHOT-RENDERS" in body
@@ -998,7 +1003,7 @@ def test_latest_published_mixed_frequency_snapshot_wins_even_with_older_as_of(cl
     allowed = _licensed_source("mixed-frequency-snapshot-source")
     now = timezone.now()
     DashboardSnapshot.objects.create(
-        key="rates",
+        key="operations",
         title="Older monthly-only snapshot",
         as_of=now,
         source=allowed,
@@ -1017,7 +1022,7 @@ def test_latest_published_mixed_frequency_snapshot_wins_even_with_older_as_of(cl
         },
     )
     DashboardSnapshot.objects.create(
-        key="rates",
+        key="operations",
         title="Latest mixed-frequency snapshot",
         as_of=now - timedelta(days=90),
         source=allowed,
@@ -1036,7 +1041,7 @@ def test_latest_published_mixed_frequency_snapshot_wins_even_with_older_as_of(cl
         },
     )
 
-    body = client.get("/rates/").content.decode()
+    body = client.get("/liquidity/operations/").content.decode()
 
     assert "LATEST-MIXED-FREQUENCY-SNAPSHOT" in body
     assert "OLD-MONTHLY-SNAPSHOT" not in body
@@ -1048,7 +1053,7 @@ def test_legacy_chart_data_footer_uses_chart_lineage_not_all_page_sources(client
     chart_source = _licensed_source("legacy-chart-only")
     metric_source = _licensed_source("legacy-metric-only")
     DashboardSnapshot.objects.create(
-        key="rates",
+        key="operations",
         title="Legacy chart snapshot",
         as_of=timezone.now(),
         source=shell,
@@ -1073,7 +1078,7 @@ def test_legacy_chart_data_footer_uses_chart_lineage_not_all_page_sources(client
         },
     )
 
-    body = client.get("/rates/").content.decode()
+    body = client.get("/liquidity/operations/").content.decode()
     chart_footer = body.split('<footer class="source-line', 1)[1].split(
         "</footer>", 1
     )[0]

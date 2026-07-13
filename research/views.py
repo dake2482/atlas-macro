@@ -503,29 +503,136 @@ def assets_overview(request):
                     "name": instrument.name,
                     "value": latest.value if latest else None,
                     "change": change,
+                    "value_display": (
+                        f"{latest.value:,.2f}" if latest is not None else "—"
+                    ),
+                    "change_display": (
+                        f"{change:+.2f}%" if change is not None else "—"
+                    ),
                     "as_of": latest.as_of if latest else None,
                     "status": latest.quality_status if latest else "stale",
                 }
             )
-        groups.append({"key": asset_class, "label": label, "rows": rows})
+        groups.append(
+            {
+                "key": asset_class,
+                "label": label,
+                "rows": rows,
+                "deck": "价格、日变动与组件级状态",
+                "value_label": "数值",
+                "change_label": "变动",
+            }
+        )
+
+    curve_snapshot = None
+    curve_candidates = (
+        DashboardSnapshot.objects.filter(
+            key="yield-curve",
+            is_published=True,
+            data__contract_version=1,
+            data__demo=False,
+        )
+        .exclude(source__key="demo-market")
+        .select_related("source")
+        .order_by("-created_at", "-id")
+    )
+    now = timezone.now()
+    for candidate in curve_candidates[:20]:
+        data = dict(candidate.data or {})
+        source_keys = _snapshot_source_keys(data)
+        if candidate.source_id:
+            source_keys.add(candidate.source.key)
+        metrics = [item for item in data.get("metrics", []) if isinstance(item, dict)]
+        deadlines = []
+        for item in metrics:
+            try:
+                deadline = datetime.fromisoformat(str(item.get("fresh_until") or ""))
+            except ValueError:
+                deadline = None
+            if deadline is not None:
+                if deadline.tzinfo is None:
+                    deadline = deadline.replace(
+                        tzinfo=timezone.get_current_timezone()
+                    )
+                deadlines.append(deadline)
+        if (
+            candidate.quality_status
+            in {Observation.Quality.FRESH, Observation.Quality.ESTIMATED}
+            and not data.get("refresh_failure")
+            and metrics
+            and deadlines
+            and min(deadlines) >= now
+            and publicly_displayable_source_keys(source_keys)
+        ):
+            curve_snapshot = candidate
+            break
+    if curve_snapshot is not None:
+        curve_metrics = {
+            item.get("key"): item
+            for item in (curve_snapshot.data or {}).get("metrics", [])
+            if isinstance(item, dict)
+        }
+        bond_rows = []
+        for metric_key, symbol, name in (
+            ("ust-2y", "UST 2Y", "财政部 2 年期 Par Yield"),
+            ("ust-10y", "UST 10Y", "财政部 10 年期 Par Yield"),
+            ("2s10s", "2s10s", "10Y − 2Y 曲线利差"),
+            ("5s30s", "5s30s", "30Y − 5Y 曲线利差"),
+        ):
+            metric = curve_metrics.get(metric_key)
+            if metric is None:
+                continue
+            change = metric.get("change")
+            change_unit = str(metric.get("change_unit") or "")
+            try:
+                as_of = datetime.fromisoformat(
+                    str(metric.get("value_date") or metric.get("as_of"))
+                )
+            except (TypeError, ValueError):
+                as_of = curve_snapshot.as_of
+            bond_rows.append(
+                {
+                    "symbol": symbol,
+                    "name": name,
+                    "value": metric.get("value"),
+                    "change": change,
+                    "value_display": metric.get("display_value") or "—",
+                    "change_display": (
+                        f"{float(change):+g}{change_unit}"
+                        if change is not None
+                        else "—"
+                    ),
+                    "as_of": as_of,
+                    "status": metric.get("quality_status") or "stale",
+                }
+            )
+        bond_group = next(group for group in groups if group["key"] == "bond")
+        bond_group.update(
+            {
+                "rows": bond_rows,
+                "deck": "官方 Treasury 收益率与 Atlas 曲线利差；不是 ETF 行情",
+                "value_label": "收益率 / 利差",
+                "change_label": "较前值",
+            }
+        )
     covered_groups = sum(bool(group["rows"]) for group in groups)
-    covered_instruments = sum(len(group["rows"]) for group in groups)
+    covered_components = sum(len(group["rows"]) for group in groups)
     config = {
         "title": "大类资产",
         "eyebrow": "Cross-Asset Dashboard",
         "description": "把权益、久期、信用、商品、外汇和加密放在同一证据框架下。",
         "metrics": [
             {
-                "label": "已授权资产类别",
+                "label": "已覆盖资产类别",
                 "display_value": f"{covered_groups} / {len(groups)}",
                 "change": "按实际可发布数据计数",
                 "status": "fresh" if covered_groups else "stale",
             },
             {
-                "label": "已覆盖标的",
-                "display_value": str(covered_instruments),
-                "change": "通过当前许可校验",
-                "status": "fresh" if covered_instruments else "stale",
+                "label": "已覆盖资产组件",
+                "display_value": str(covered_components),
+                "change": "通过当前许可与质量校验",
+                "status": "fresh" if covered_components else "stale",
             },
             {
                 "label": "30 / 90D 相关性",
@@ -535,9 +642,15 @@ def assets_overview(request):
             },
         ],
         "chart_data": [],
-        "analysis": "尚未取得可公开展示的跨资产行情授权；页面只展示已通过许可校验的数据。",
+        "analysis": (
+            "证券、商品和加密行情在外部展示授权完成前保持空缺；"
+            "债券组可独立展示已通过许可与质量门的官方 Treasury 收益率组件。"
+        ),
         "sections": [],
-        "source_notes": ["证券与商品行情在外部展示授权完成前保持空缺，不使用合成价格。"],
+        "source_notes": [
+            "证券与商品行情在外部展示授权完成前保持空缺，不使用合成价格。",
+            "债券组展示财政部 Par Yield 和 Atlas 曲线利差，不代表债券或 ETF 价格、久期或总回报。",
+        ],
     }
     return render(
         request,
@@ -564,8 +677,9 @@ def dashboard_page(request, page_key: str):
         config = get_page_config(page_key)
     except KeyError as exc:
         raise Http404("未知仪表盘") from exc
+    snapshot_key = str(config.get("snapshot_key") or page_key)
     snapshot_candidates = (
-        DashboardSnapshot.objects.filter(key=page_key, is_published=True)
+        DashboardSnapshot.objects.filter(key=snapshot_key, is_published=True)
         .filter(Q(data__demo=False) | ~Q(data__has_key="demo"))
         .exclude(source__key="demo-market")
         .select_related("source")

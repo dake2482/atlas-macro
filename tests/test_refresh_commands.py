@@ -21,6 +21,16 @@ from django.core.management.base import CommandError
             "official source refreshes were incomplete",
         ),
         (
+            "refresh_treasury_curve_data",
+            "research.management.commands.refresh_treasury_curve_data.refresh_treasury_curve_data",
+            {
+                "runs": [{"status": "failed", "row_count": 0}],
+                "dashboard_keys": [],
+                "stale_dashboard_keys": ["yield-curve", "real-rates"],
+            },
+            "Treasury annual curve refreshes were incomplete",
+        ),
+        (
             "refresh_h41_data",
             "research.management.commands.refresh_h41_data.refresh_h41_data",
             {

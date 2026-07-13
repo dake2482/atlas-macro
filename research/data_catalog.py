@@ -97,6 +97,23 @@ DATA_REQUIREMENTS = [
         "status": LIVE,
         "source_name": "U.S. Treasury Daily Treasury Par Yield Curve Rates",
         "source_url": "https://home.treasury.gov/resource-center/data-chart-center/interest-rates/",
+        "reason": (
+            "名义与实际曲线按年度精确批次回填五年，当前、1 周、1 月、3 月"
+            "曲线和关键利差只用完整共同日；任一年度组件失败时保留上一完整快照。"
+        ),
+        "priority": 1,
+    },
+    {
+        "key": "treasury-yield-curve-bond-proxy",
+        "page_key": "assets-bonds",
+        "metric_name": "官方 Treasury Par Yield 与曲线利差",
+        "status": LIVE,
+        "source_name": "U.S. Treasury Daily Treasury Par Yield Curve Rates",
+        "source_url": "https://home.treasury.gov/resource-center/data-chart-center/interest-rates/",
+        "reason": (
+            "债券入口复用 yield-curve contract v1，展示官方收益率与 Atlas 透明"
+            "利差计算；明确不是债券或 ETF 价格、久期、信用利差或总回报。"
+        ),
         "priority": 1,
     },
     {

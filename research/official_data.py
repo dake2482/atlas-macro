@@ -18,6 +18,7 @@ from decimal import Decimal
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from dateutil.relativedelta import relativedelta
 from django.db import transaction
 from django.utils import timezone
 
@@ -51,6 +52,7 @@ from .models import (
     Observation,
     RawArtifact,
     ReleaseVintageObservation,
+    SeriesDefinition,
     Source,
     TreasuryAuction,
 )
@@ -107,14 +109,53 @@ CORE_PUBLICATION_KEYS = frozenset(
     {
         "transmission-chain",
         "operations",
-        "rates",
-        "yield-curve",
-        "real-rates",
         "rrp-tga",
         "global-dollar",
         "subsurface",
         "auctions",
     }
+)
+TREASURY_CURVE_CONTRACT_VERSION = 1
+TREASURY_CURVE_HISTORY_YEARS = 5
+TREASURY_CURVE_MIN_HISTORY_POINTS = 1000
+TREASURY_CURVE_MAX_GAP_DAYS = 10
+TREASURY_CURVE_START_TOLERANCE_DAYS = 14
+TREASURY_CURVE_PAGE_KEYS = frozenset({"yield-curve", "real-rates"})
+TREASURY_NOMINAL_TENORS = (
+    "1m",
+    "2m",
+    "3m",
+    "4m",
+    "6m",
+    "1y",
+    "2y",
+    "3y",
+    "5y",
+    "7y",
+    "10y",
+    "20y",
+    "30y",
+)
+TREASURY_REAL_TENORS = ("5y", "7y", "10y", "20y", "30y")
+TREASURY_NOMINAL_SERIES = tuple(f"ust-{tenor}" for tenor in TREASURY_NOMINAL_TENORS)
+TREASURY_REAL_SERIES = tuple(f"tips-{tenor}" for tenor in TREASURY_REAL_TENORS)
+TREASURY_NOMINAL_HISTORY_SERIES = (
+    "ust-3m",
+    "ust-2y",
+    "ust-5y",
+    "ust-10y",
+    "ust-30y",
+)
+TREASURY_REAL_HISTORY_SERIES = ("tips-5y", "tips-10y")
+TREASURY_CURVE_DATASET_PREFIXES = {
+    "nominal": "daily_treasury_yield_curve",
+    "real": "daily_treasury_real_yield_curve",
+}
+YIELD_CURVE_REQUIRED_METRIC_KEYS = frozenset(
+    {"ust-2y", "ust-5y", "ust-10y", "ust-30y", "2s10s", "3m10s", "5s30s"}
+)
+REAL_RATES_REQUIRED_METRIC_KEYS = frozenset(
+    {"tips-5y", "tips-10y", "5y-bei", "10y-bei"}
 )
 H41_PUBLICATION_KEYS = frozenset({"fed-balance-sheet", "reserves"})
 PRATES_PUBLICATION_KEYS = frozenset(
@@ -1814,6 +1855,841 @@ def _lineage_chart(
         "time_axis": "date",
         "tab": tab,
     }
+
+
+def _treasury_dataset(component: str, year: int) -> str:
+    return f"{TREASURY_CURVE_DATASET_PREFIXES[component]}:{year}"
+
+
+def _latest_treasury_attempt(component: str, year: int) -> IngestionRun | None:
+    return (
+        IngestionRun.objects.filter(
+            source__key="us-treasury-rates",
+            dataset=_treasury_dataset(component, year),
+        )
+        .order_by("-started_at", "-id")
+        .first()
+    )
+
+
+def _treasury_run_state(
+    component: str,
+    year: int,
+    run: IngestionRun | None,
+    *,
+    reason: str = "",
+) -> dict[str, Any]:
+    return {
+        "component": component,
+        "year": year,
+        "dataset": _treasury_dataset(component, year),
+        "status": run.status if run is not None else "missing",
+        "row_count": run.row_count if run is not None else 0,
+        "batch_id": str(run.batch_id) if run is not None else None,
+        "refresh_cycle_id": (
+            str((run.metadata or {}).get("refresh_cycle_id") or "")
+            if run is not None
+            else ""
+        ),
+        "reason": (
+            reason
+            or (run.error if run is not None else "required annual dataset attempt is missing")
+            or str((run.metadata or {}).get("quality_reason") or "")
+        )[:240],
+    }
+
+
+def _select_treasury_curve_runs(
+    trigger_runs: Iterable[IngestionRun],
+    *,
+    end_year: int,
+) -> tuple[
+    dict[tuple[str, int], IngestionRun] | None,
+    list[dict[str, Any]],
+    bool,
+]:
+    treasury_triggers = [
+        run
+        for run in trigger_runs
+        if run.source.key == "us-treasury-rates"
+        and any(
+            run.dataset.startswith(f"{prefix}:")
+            for prefix in TREASURY_CURVE_DATASET_PREFIXES.values()
+        )
+    ]
+    if not treasury_triggers:
+        return None, [], False
+
+    selected: dict[tuple[str, int], IngestionRun] = {}
+    states: list[dict[str, Any]] = []
+    for year in range(end_year - TREASURY_CURVE_HISTORY_YEARS, end_year + 1):
+        for component in TREASURY_CURVE_DATASET_PREFIXES:
+            run = _latest_treasury_attempt(component, year)
+            if (
+                run is None
+                or run.status != IngestionRun.Status.SUCCESS
+                or run.row_count <= 0
+            ):
+                states.append(
+                    _treasury_run_state(
+                        component,
+                        year,
+                        run,
+                        reason="latest annual dataset attempt is not complete and successful",
+                    )
+                )
+                continue
+            selected[(component, year)] = run
+            states.append(_treasury_run_state(component, year, run))
+
+    expected_count = (TREASURY_CURVE_HISTORY_YEARS + 1) * len(
+        TREASURY_CURVE_DATASET_PREFIXES
+    )
+    current_runs = [selected.get((component, end_year)) for component in ("nominal", "real")]
+    current_cycles = {
+        str((run.metadata or {}).get("refresh_cycle_id") or "")
+        for run in current_runs
+        if run is not None
+    }
+    current_trigger_batches = {
+        str(run.batch_id)
+        for run in treasury_triggers
+        if run.dataset in {
+            _treasury_dataset("nominal", end_year),
+            _treasury_dataset("real", end_year),
+        }
+    }
+    selected_current_batches = {
+        str(run.batch_id) for run in current_runs if run is not None
+    }
+    if (
+        len(selected) != expected_count
+        or any(run is None for run in current_runs)
+        or len(current_cycles) != 1
+        or "" in current_cycles
+        or current_trigger_batches != selected_current_batches
+    ):
+        if current_trigger_batches != selected_current_batches:
+            states.append(
+                {
+                    "component": "current-cycle",
+                    "year": end_year,
+                    "dataset": "nominal+real",
+                    "status": "mixed",
+                    "row_count": 0,
+                    "batch_id": None,
+                    "refresh_cycle_id": "",
+                    "reason": "current nominal and real runs are not the latest paired trigger batches",
+                }
+            )
+        elif len(current_cycles) != 1 or "" in current_cycles:
+            states.append(
+                {
+                    "component": "current-cycle",
+                    "year": end_year,
+                    "dataset": "nominal+real",
+                    "status": "mixed",
+                    "row_count": 0,
+                    "batch_id": None,
+                    "refresh_cycle_id": ",".join(sorted(current_cycles)),
+                    "reason": "current nominal and real runs do not share one refresh cycle",
+                }
+            )
+        return None, states, True
+    return selected, states, True
+
+
+def _treasury_observation_maps(
+    selected_runs: dict[tuple[str, int], IngestionRun],
+) -> tuple[dict[str, dict[date, Observation]] | None, list[dict[str, Any]]]:
+    expected_batches = {
+        (component, year): str(run.batch_id)
+        for (component, year), run in selected_runs.items()
+    }
+    batch_ids = [run.batch_id for run in selected_runs.values()]
+    series_keys = {*TREASURY_NOMINAL_SERIES, *TREASURY_REAL_SERIES}
+    observations = (
+        Observation.objects.filter(
+            source__key="us-treasury-rates",
+            batch_id__in=batch_ids,
+            series__key__in=series_keys,
+        )
+        .filter(public_display_license_q())
+        .select_related("series", "source", "fallback_source")
+        .order_by("value_date", "fetched_at", "id")
+    )
+    maps: dict[str, dict[date, Observation]] = {key: {} for key in series_keys}
+    failures: list[dict[str, Any]] = []
+    today_et = timezone.now().astimezone(ZoneInfo("America/New_York")).date()
+    for observation in observations:
+        series_key = observation.series.key
+        period = observation.value_date.date()
+        component = "nominal" if series_key.startswith("ust-") else "real"
+        expected_batch = expected_batches.get((component, period.year))
+        if period > today_et:
+            failures.append(
+                {
+                    "component": component,
+                    "year": period.year,
+                    "dataset": _treasury_dataset(component, period.year),
+                    "status": "future",
+                    "reason": f"future observation {period.isoformat()} is not publishable",
+                }
+            )
+            continue
+        if expected_batch != str(observation.batch_id):
+            failures.append(
+                {
+                    "component": component,
+                    "year": period.year,
+                    "dataset": _treasury_dataset(component, period.year),
+                    "status": "mixed",
+                    "reason": f"{series_key} {period.isoformat()} is outside its annual batch",
+                }
+            )
+            continue
+        if period in maps[series_key]:
+            failures.append(
+                {
+                    "component": component,
+                    "year": period.year,
+                    "dataset": _treasury_dataset(component, period.year),
+                    "status": "duplicate",
+                    "reason": f"duplicate {series_key} observation for {period.isoformat()}",
+                }
+            )
+            continue
+        if (
+            observation.fallback_source_id
+            or observation.quality_status != Observation.Quality.FRESH
+        ):
+            failures.append(
+                {
+                    "component": component,
+                    "year": period.year,
+                    "dataset": _treasury_dataset(component, period.year),
+                    "status": observation.quality_status,
+                    "reason": f"{series_key} {period.isoformat()} is fallback or not fresh",
+                }
+            )
+            continue
+        maps[series_key][period] = observation
+    missing = [key for key, by_date in maps.items() if not by_date]
+    if missing:
+        failures.append(
+            {
+                "component": "series-coverage",
+                "year": None,
+                "dataset": "treasury-curve-history",
+                "status": "missing",
+                "reason": "missing exact-batch series: " + ", ".join(sorted(missing)),
+            }
+        )
+    if failures:
+        return None, failures
+    return maps, []
+
+
+def _treasury_direct_lineage(
+    observation: Observation,
+    *,
+    fresh_until: datetime,
+) -> dict[str, Any]:
+    return {
+        "series_key": observation.series.key,
+        "source_key": observation.source.key,
+        "source_name": observation.source.name,
+        "source_keys": [observation.source.key],
+        "license_scope": observation.source.license_scope,
+        "value": str(observation.value),
+        "raw_value": str(observation.value),
+        "value_date": observation.value_date.isoformat(),
+        "as_of": observation.as_of.isoformat(),
+        "fetched_at": observation.fetched_at.isoformat(),
+        "fresh_until": fresh_until.isoformat(),
+        "batch_id": str(observation.batch_id),
+        "quality_status": observation.quality_status,
+        "fallback_source": None,
+    }
+
+
+def _treasury_direct_metric(
+    *,
+    key: str,
+    label: str,
+    current: Observation,
+    previous: Observation,
+    fresh_until: datetime,
+) -> dict[str, Any]:
+    change_bp = (current.value - previous.value) * Decimal("100")
+    current_lineage = _treasury_direct_lineage(current, fresh_until=fresh_until)
+    previous_lineage = _treasury_direct_lineage(previous, fresh_until=fresh_until)
+    return {
+        "key": key,
+        "label": label,
+        "value": float(current.value),
+        "display_value": f"{current.value:.2f}%",
+        "change": float(change_bp),
+        "change_unit": "bp",
+        "unit": "%",
+        "quality_status": Observation.Quality.FRESH,
+        "source": current.source.name,
+        "source_key": current.source.key,
+        "source_keys": [current.source.key],
+        "fallback_source": None,
+        "as_of": current.as_of.isoformat(),
+        "value_date": current.value_date.isoformat(),
+        "fetched_at": current.fetched_at.isoformat(),
+        "fresh_until": fresh_until.isoformat(),
+        "batch_id": str(current.batch_id),
+        "metadata": {
+            "input_series": [current.series.key],
+            "input_batch_ids": [str(current.batch_id)],
+            "input_value_dates": [current.value_date.isoformat()],
+            "input_lineage": [current_lineage],
+            "previous_value": float(previous.value),
+            "previous_value_date": previous.value_date.isoformat(),
+            "previous_input_lineage": [previous_lineage],
+            "freshness_basis": "latest complete Treasury nominal/real curve date",
+        },
+    }
+
+
+def _treasury_derived_metric(
+    *,
+    key: str,
+    label: str,
+    current_inputs: tuple[Observation, Observation],
+    previous_inputs: tuple[Observation, Observation],
+    formula: str,
+    basis_points: bool,
+    fresh_until: datetime,
+) -> dict[str, Any]:
+    current_value = current_inputs[0].value - current_inputs[1].value
+    previous_value = previous_inputs[0].value - previous_inputs[1].value
+    if basis_points:
+        current_value *= Decimal("100")
+        previous_value *= Decimal("100")
+    current_lineage = [
+        _treasury_direct_lineage(item, fresh_until=fresh_until)
+        for item in current_inputs
+    ]
+    previous_lineage = [
+        _treasury_direct_lineage(item, fresh_until=fresh_until)
+        for item in previous_inputs
+    ]
+    input_batches = sorted({str(item.batch_id) for item in current_inputs})
+    source_keys = sorted(_observation_source_keys(*current_inputs) | {"internal"})
+    unit = "bp" if basis_points else "%"
+    display_value = (
+        f"{current_value:+.0f}bp" if basis_points else f"{current_value:.2f}%"
+    )
+    change = (
+        current_value - previous_value
+        if basis_points
+        else (current_value - previous_value) * Decimal("100")
+    )
+    return {
+        "key": key,
+        "label": label,
+        "value": float(current_value),
+        "display_value": display_value,
+        "change": float(change),
+        "change_unit": "bp",
+        "unit": unit,
+        "quality_status": Observation.Quality.ESTIMATED,
+        "source": "Atlas Macro 计算（U.S. Treasury 输入）",
+        "source_key": "internal",
+        "source_keys": source_keys,
+        "fallback_source": None,
+        "as_of": min(item.as_of for item in current_inputs).isoformat(),
+        "value_date": current_inputs[0].value_date.isoformat(),
+        "fetched_at": max(item.fetched_at for item in current_inputs).isoformat(),
+        "fresh_until": fresh_until.isoformat(),
+        "batch_id": ",".join(input_batches),
+        "metadata": {
+            "formula": formula,
+            "calculation_owner": "Atlas Macro",
+            "input_series": [item.series.key for item in current_inputs],
+            "input_batch_ids": input_batches,
+            "input_value_dates": sorted(
+                {item.value_date.isoformat() for item in current_inputs}
+            ),
+            "input_lineage": current_lineage,
+            "previous_value": float(previous_value),
+            "previous_value_date": previous_inputs[0].value_date.isoformat(),
+            "previous_input_lineage": previous_lineage,
+            "freshness_basis": "latest complete Treasury nominal/real curve date",
+            "model_label": (
+                "Atlas spread calculation"
+                if basis_points
+                else "Atlas breakeven approximation from Treasury par curves"
+            ),
+        },
+    }
+
+
+def _treasury_series_batch_segments(
+    selected_runs: dict[tuple[str, int], IngestionRun],
+    maps: dict[str, dict[date, Observation]],
+    *,
+    components: set[str],
+) -> dict[str, list[dict[str, Any]]]:
+    segments: dict[str, list[dict[str, Any]]] = {}
+    for series_key, by_date in maps.items():
+        component = "nominal" if series_key.startswith("ust-") else "real"
+        if component not in components:
+            continue
+        rows = []
+        for year in sorted({period.year for period in by_date}):
+            periods = sorted(period for period in by_date if period.year == year)
+            if not periods:
+                continue
+            run = selected_runs[(component, year)]
+            rows.append(
+                {
+                    "dataset": run.dataset,
+                    "batch_id": str(run.batch_id),
+                    "start": periods[0].isoformat(),
+                    "end": periods[-1].isoformat(),
+                    "row_count": len(periods),
+                }
+            )
+        segments[series_key] = rows
+    return segments
+
+
+def _treasury_chart(
+    *,
+    key: str,
+    title: str,
+    description: str,
+    rows: list[dict[str, Any]],
+    selected_runs: dict[tuple[str, int], IngestionRun],
+    maps: dict[str, dict[date, Observation]],
+    components: set[str],
+    current_inputs: list[Observation],
+    fresh_until: datetime,
+    tab: str,
+    time_axis: str,
+    estimated: bool,
+) -> dict[str, Any]:
+    batch_ids = sorted(
+        {
+            str(run.batch_id)
+            for (component, _year), run in selected_runs.items()
+            if component in components
+        }
+    )
+    return {
+        "key": key,
+        "title": title,
+        "description": description,
+        "kind": "line",
+        "data": rows,
+        "lineage_mode": "series-batch-segments",
+        "series_batch_lineage": _treasury_series_batch_segments(
+            selected_runs, maps, components=components
+        ),
+        "source_keys": [
+            "internal",
+            "us-treasury-rates",
+        ]
+        if estimated
+        else ["us-treasury-rates"],
+        "as_of": min(item.as_of for item in current_inputs).isoformat(),
+        "fetched_at": max(item.fetched_at for item in current_inputs).isoformat(),
+        "fresh_until": fresh_until.isoformat(),
+        "quality_status": (
+            Observation.Quality.ESTIMATED
+            if estimated
+            else Observation.Quality.FRESH
+        ),
+        "batch_ids": batch_ids,
+        "frequency": "daily",
+        "time_axis": time_axis,
+        "tab": tab,
+    }
+
+
+def _treasury_curve_page_data(
+    selected_runs: dict[tuple[str, int], IngestionRun],
+) -> tuple[
+    dict[
+        str,
+        tuple[
+            list[dict[str, Any]],
+            list[dict[str, Any]],
+            list[dict[str, Any]],
+            dict[str, Any],
+        ],
+    ]
+    | None,
+    list[dict[str, Any]],
+]:
+    maps, failures = _treasury_observation_maps(selected_runs)
+    if maps is None:
+        return None, failures
+    if not publicly_displayable_source_keys({"us-treasury-rates"}):
+        return None, [
+            {
+                "component": "licence",
+                "year": None,
+                "dataset": "treasury-curve-history",
+                "status": "unlicensed",
+                "reason": "Treasury curve source is not publicly displayable",
+            }
+        ]
+
+    nominal_curve_dates = set.intersection(
+        *(set(maps[key]) for key in TREASURY_NOMINAL_SERIES)
+    )
+    real_curve_dates = set.intersection(
+        *(set(maps[key]) for key in TREASURY_REAL_SERIES)
+    )
+    nominal_history_dates = set.intersection(
+        *(set(maps[key]) for key in TREASURY_NOMINAL_HISTORY_SERIES)
+    )
+    real_history_dates = set.intersection(
+        *(set(maps[key]) for key in TREASURY_REAL_HISTORY_SERIES)
+    )
+    common_dates = sorted(nominal_history_dates & real_history_dates)
+    if len(common_dates) < 2:
+        return None, [
+            {
+                "component": "common-date",
+                "year": None,
+                "dataset": "nominal+real",
+                "status": "missing",
+                "reason": "Treasury nominal and real curves have fewer than two complete common dates",
+            }
+        ]
+    current_date, previous_date = common_dates[-1], common_dates[-2]
+    if (
+        not nominal_curve_dates
+        or not real_curve_dates
+        or max(nominal_curve_dates) != current_date
+        or max(real_curve_dates) != current_date
+    ):
+        return None, [
+            {
+                "component": "current-curve",
+                "year": current_date.year,
+                "dataset": "nominal+real",
+                "status": "missing",
+                "reason": "latest common date does not contain every current curve tenor",
+            }
+        ]
+    all_latest_dates = {
+        max(by_date) for by_date in maps.values() if by_date
+    }
+    if all_latest_dates != {current_date}:
+        return None, [
+            {
+                "component": "common-date",
+                "year": current_date.year,
+                "dataset": "nominal+real",
+                "status": "mixed",
+                "reason": "latest required tenors do not share the same complete effective date",
+            }
+        ]
+
+    window_start = current_date - relativedelta(years=TREASURY_CURVE_HISTORY_YEARS)
+    window_dates = [period for period in common_dates if period >= window_start]
+    if (
+        len(window_dates) < TREASURY_CURVE_MIN_HISTORY_POINTS
+        or window_dates[0]
+        > window_start + timedelta(days=TREASURY_CURVE_START_TOLERANCE_DAYS)
+        or any(
+            (right - left).days > TREASURY_CURVE_MAX_GAP_DAYS
+            for left, right in zip(window_dates, window_dates[1:], strict=False)
+        )
+    ):
+        return None, [
+            {
+                "component": "history",
+                "year": None,
+                "dataset": "treasury-curve-history",
+                "status": "incomplete",
+                "reason": "five-year complete-date history is too short or has an abnormal gap",
+            }
+        ]
+
+    current_inputs = [maps[key][current_date] for key in (*TREASURY_NOMINAL_SERIES, *TREASURY_REAL_SERIES)]
+    fresh_until = min(_fresh_until(item) for item in current_inputs)
+    if timezone.now() > fresh_until:
+        return None, [
+            {
+                "component": "freshness",
+                "year": current_date.year,
+                "dataset": "nominal+real",
+                "status": Observation.Quality.STALE,
+                "reason": f"latest complete Treasury curve expired at {fresh_until.isoformat()}",
+            }
+        ]
+
+    comparison_targets = {
+        "当前": current_date,
+        "1周前": current_date - timedelta(days=7),
+        "1月前": current_date - relativedelta(months=1),
+        "3月前": current_date - relativedelta(months=3),
+    }
+    comparison_dates: dict[str, date] = {}
+    for label, target in comparison_targets.items():
+        candidates = [
+            period for period in nominal_curve_dates if period <= target
+        ]
+        if not candidates or (target - max(candidates)).days > 10:
+            return None, [
+                {
+                    "component": "curve-comparison",
+                    "year": target.year,
+                    "dataset": "nominal",
+                    "status": "missing",
+                    "reason": f"no complete Treasury curve near {label} target {target.isoformat()}",
+                }
+            ]
+        comparison_dates[label] = max(candidates)
+
+    nominal_current = {
+        key: maps[key][current_date] for key in TREASURY_NOMINAL_SERIES
+    }
+    nominal_previous = {
+        key: maps[key][previous_date] for key in TREASURY_NOMINAL_SERIES
+    }
+    real_current = {key: maps[key][current_date] for key in TREASURY_REAL_SERIES}
+    real_previous = {key: maps[key][previous_date] for key in TREASURY_REAL_SERIES}
+
+    yield_metrics = [
+        _treasury_direct_metric(
+            key=key,
+            label=label,
+            current=nominal_current[key],
+            previous=nominal_previous[key],
+            fresh_until=fresh_until,
+        )
+        for key, label in (
+            ("ust-2y", "2Y 名义收益率"),
+            ("ust-5y", "5Y 名义收益率"),
+            ("ust-10y", "10Y 名义收益率"),
+            ("ust-30y", "30Y 名义收益率"),
+        )
+    ]
+    spread_specs = (
+        ("2s10s", "2s10s", "ust-10y", "ust-2y", "100 × (UST-10Y - UST-2Y)"),
+        ("3m10s", "3m10s", "ust-10y", "ust-3m", "100 × (UST-10Y - UST-3M)"),
+        ("5s30s", "5s30s", "ust-30y", "ust-5y", "100 × (UST-30Y - UST-5Y)"),
+    )
+    yield_metrics.extend(
+        _treasury_derived_metric(
+            key=key,
+            label=label,
+            current_inputs=(nominal_current[left], nominal_current[right]),
+            previous_inputs=(nominal_previous[left], nominal_previous[right]),
+            formula=formula,
+            basis_points=True,
+            fresh_until=fresh_until,
+        )
+        for key, label, left, right, formula in spread_specs
+    )
+
+    real_metrics = [
+        _treasury_direct_metric(
+            key=key,
+            label=label,
+            current=real_current[key],
+            previous=real_previous[key],
+            fresh_until=fresh_until,
+        )
+        for key, label in (
+            ("tips-5y", "5Y 实际利率"),
+            ("tips-10y", "10Y 实际利率"),
+        )
+    ]
+    bei_specs = (
+        ("5y-bei", "5Y 盈亏平衡通胀", "ust-5y", "tips-5y", "UST-5Y - TIPS-5Y"),
+        ("10y-bei", "10Y 盈亏平衡通胀", "ust-10y", "tips-10y", "UST-10Y - TIPS-10Y"),
+    )
+    real_metrics.extend(
+        _treasury_derived_metric(
+            key=key,
+            label=label,
+            current_inputs=(nominal_current[left], real_current[right]),
+            previous_inputs=(nominal_previous[left], real_previous[right]),
+            formula=formula,
+            basis_points=False,
+            fresh_until=fresh_until,
+        )
+        for key, label, left, right, formula in bei_specs
+    )
+
+    comparison_rows: list[dict[str, Any]] = []
+    for tenor in TREASURY_NOMINAL_TENORS:
+        series_key = f"ust-{tenor}"
+        row: dict[str, Any] = {"label": tenor.upper()}
+        row_batches: set[str] = set()
+        for label, period in comparison_dates.items():
+            observation = maps[series_key][period]
+            row[label] = float(observation.value)
+            row_batches.add(str(observation.batch_id))
+        row["_batch_ids"] = sorted(row_batches)
+        row["_source_keys"] = ["us-treasury-rates"]
+        comparison_rows.append(row)
+
+    spread_rows: list[dict[str, Any]] = []
+    real_rows: list[dict[str, Any]] = []
+    for period in window_dates:
+        period_nominal = {
+            key: maps[key][period] for key in TREASURY_NOMINAL_HISTORY_SERIES
+        }
+        period_real = {
+            key: maps[key][period] for key in TREASURY_REAL_HISTORY_SERIES
+        }
+        spread_rows.append(
+            {
+                "date": period.isoformat(),
+                "2s10s": float((period_nominal["ust-10y"].value - period_nominal["ust-2y"].value) * Decimal("100")),
+                "3m10s": float((period_nominal["ust-10y"].value - period_nominal["ust-3m"].value) * Decimal("100")),
+                "5s30s": float((period_nominal["ust-30y"].value - period_nominal["ust-5y"].value) * Decimal("100")),
+                "_batch_ids": sorted({str(item.batch_id) for item in period_nominal.values()}),
+                "_source_keys": ["us-treasury-rates", "internal"],
+            }
+        )
+        real_rows.append(
+            {
+                "date": period.isoformat(),
+                "5Y 名义": float(period_nominal["ust-5y"].value),
+                "5Y 实际": float(period_real["tips-5y"].value),
+                "5Y BEI": float(period_nominal["ust-5y"].value - period_real["tips-5y"].value),
+                "10Y 名义": float(period_nominal["ust-10y"].value),
+                "10Y 实际": float(period_real["tips-10y"].value),
+                "10Y BEI": float(period_nominal["ust-10y"].value - period_real["tips-10y"].value),
+                "_batch_ids": sorted({str(item.batch_id) for item in (*period_nominal.values(), *period_real.values())}),
+                "_source_keys": ["us-treasury-rates", "internal"],
+            }
+        )
+
+    yield_charts = [
+        _treasury_chart(
+            key="nominal-curve-comparison",
+            title="当前、1 周、1 月与 3 月前名义曲线",
+            description="每个回看点取目标日前最近的完整 Treasury 营业日，单位：%。",
+            rows=comparison_rows,
+            selected_runs=selected_runs,
+            maps=maps,
+            components={"nominal"},
+            current_inputs=list(nominal_current.values()),
+            fresh_until=fresh_until,
+            tab="curve",
+            time_axis="tenor",
+            estimated=False,
+        ),
+        _treasury_chart(
+            key="curve-spreads-history",
+            title="关键曲线利差历史",
+            description="2s10s、3m10s 与 5s30s 均使用同一财政部曲线日期，单位：bp。",
+            rows=spread_rows,
+            selected_runs=selected_runs,
+            maps=maps,
+            components={"nominal"},
+            current_inputs=list(nominal_current.values()),
+            fresh_until=fresh_until,
+            tab="spreads",
+            time_axis="date",
+            estimated=True,
+        ),
+    ]
+    real_charts = [
+        _treasury_chart(
+            key="nominal-real-breakeven-history",
+            title="名义、实际与盈亏平衡通胀",
+            description="BEI 为 Atlas Macro 用同期限 Treasury par curve 名义减实际的近似，单位：%。",
+            rows=real_rows,
+            selected_runs=selected_runs,
+            maps=maps,
+            components={"nominal", "real"},
+            current_inputs=current_inputs,
+            fresh_until=fresh_until,
+            tab="decomposition",
+            time_axis="date",
+            estimated=True,
+        )
+    ]
+
+    nominal_section_rows = [
+        {
+            "label": tenor.upper(),
+            "display_value": f"{nominal_current[f'ust-{tenor}'].value:.2f}%",
+            "quality_status": Observation.Quality.FRESH,
+            "source": nominal_current[f"ust-{tenor}"].source.name,
+            "source_key": "us-treasury-rates",
+            "as_of": nominal_current[f"ust-{tenor}"].as_of.isoformat(),
+            "batch_id": str(nominal_current[f"ust-{tenor}"].batch_id),
+        }
+        for tenor in TREASURY_NOMINAL_TENORS
+    ]
+    real_section_rows = [
+        {
+            "label": tenor.upper(),
+            "display_value": f"{real_current[f'tips-{tenor}'].value:.2f}%",
+            "quality_status": Observation.Quality.FRESH,
+            "source": real_current[f"tips-{tenor}"].source.name,
+            "source_key": "us-treasury-rates",
+            "as_of": real_current[f"tips-{tenor}"].as_of.isoformat(),
+            "batch_id": str(real_current[f"tips-{tenor}"].batch_id),
+        }
+        for tenor in TREASURY_REAL_TENORS
+    ]
+    common_extra = {
+        "contract_version": TREASURY_CURVE_CONTRACT_VERSION,
+        "common_effective_date": current_date.isoformat(),
+        "history_start": window_dates[0].isoformat(),
+        "history_end": window_dates[-1].isoformat(),
+        "comparison_dates": {
+            label: period.isoformat() for label, period in comparison_dates.items()
+        },
+        "annual_runs": [
+            _treasury_run_state(component, year, run)
+            for (component, year), run in sorted(selected_runs.items())
+        ],
+    }
+    prepared = {
+        "yield-curve": (
+            yield_metrics,
+            yield_charts,
+            [
+                {
+                    "title": "财政部名义 Par Yield 曲线",
+                    "description": "官方收益率横截面；不是债券或 ETF 价格、久期或总回报。",
+                    "rows": nominal_section_rows,
+                    "fresh_until": fresh_until.isoformat(),
+                    "status": Observation.Quality.FRESH,
+                    "full_width": True,
+                }
+            ],
+            {**common_extra, "curve_scope": "nominal"},
+        ),
+        "real-rates": (
+            real_metrics,
+            real_charts,
+            [
+                {
+                    "title": "财政部实际 Par Yield 曲线",
+                    "description": "BEI 为 Atlas 近似通胀补偿，不是财政部发布的官方 BEI 或 5Y5Y。",
+                    "rows": real_section_rows,
+                    "fresh_until": fresh_until.isoformat(),
+                    "status": Observation.Quality.FRESH,
+                    "full_width": True,
+                }
+            ],
+            {
+                **common_extra,
+                "curve_scope": "nominal-real-breakeven",
+                "model_disclaimer": "Atlas breakeven approximation from Treasury par curves; no 5Y5Y is published",
+            },
+        ),
+    }
+    return prepared, []
 
 
 def _inflation_page_data(
@@ -4709,6 +5585,351 @@ def _coordinate_liquidity_dashboard(
     return dashboards, set()
 
 
+def _latest_treasury_contract_snapshot(page_key: str) -> DashboardSnapshot | None:
+    return (
+        DashboardSnapshot.objects.filter(
+            key=page_key,
+            is_published=True,
+            data__contract_version=TREASURY_CURVE_CONTRACT_VERSION,
+        )
+        .exclude(source__key="demo-market")
+        .order_by("-created_at", "-id")
+        .first()
+    )
+
+
+def _mark_treasury_curve_dashboards_stale(
+    page_keys: Iterable[str],
+    components: list[dict[str, Any]],
+    *,
+    reason: str,
+) -> None:
+    checked_at = timezone.now().isoformat()
+    for page_key in page_keys:
+        latest = (
+            DashboardSnapshot.objects.select_for_update()
+            .filter(
+                key=page_key,
+                is_published=True,
+                data__contract_version=TREASURY_CURVE_CONTRACT_VERSION,
+            )
+            .exclude(source__key="demo-market")
+            .order_by("-created_at", "-id")
+            .first()
+        )
+        if latest is None:
+            continue
+        data = dict(latest.data or {})
+        data["refresh_failure"] = {
+            "checked_at": checked_at,
+            "reason": reason,
+            "components": components,
+            "sources": [
+                {
+                    "source": item.get("dataset") or item.get("component"),
+                    "status": item.get("status") or "invalid",
+                    "row_count": item.get("row_count") or 0,
+                    "error": item.get("reason") or "",
+                }
+                for item in components
+            ],
+        }
+        latest.data = data
+        latest.quality_status = Observation.Quality.STALE
+        latest.save(update_fields=["data", "quality_status", "updated_at"])
+
+
+def _treasury_prepared_contract_is_buildable(
+    page_key: str,
+    prepared: tuple[
+        list[dict[str, Any]],
+        list[dict[str, Any]],
+        list[dict[str, Any]],
+        dict[str, Any],
+    ],
+    *,
+    expected_batches: set[str],
+) -> bool:
+    metrics, charts, _sections, extra_data = prepared
+    required_metrics = {
+        "yield-curve": YIELD_CURVE_REQUIRED_METRIC_KEYS,
+        "real-rates": REAL_RATES_REQUIRED_METRIC_KEYS,
+    }.get(page_key)
+    required_charts = {
+        "yield-curve": {"nominal-curve-comparison", "curve-spreads-history"},
+        "real-rates": {"nominal-real-breakeven-history"},
+    }.get(page_key)
+    if (
+        extra_data.get("contract_version") != TREASURY_CURVE_CONTRACT_VERSION
+        or not extra_data.get("common_effective_date")
+        or not isinstance(extra_data.get("annual_runs"), list)
+        or any(
+            item.get("status") != IngestionRun.Status.SUCCESS
+            or not item.get("batch_id")
+            for item in extra_data["annual_runs"]
+        )
+        or (required_metrics is not None and {item.get("key") for item in metrics} != set(required_metrics))
+        or (required_charts is not None and {item.get("key") for item in charts} != required_charts)
+        or any(
+            item.get("value") is None
+            or item.get("fallback_source")
+            or item.get("quality_status")
+            not in {Observation.Quality.FRESH, Observation.Quality.ESTIMATED}
+            or not item.get("fresh_until")
+            or not _payload_batch_ids(item)
+            or not _payload_source_keys(item)
+            for item in metrics
+        )
+        or any(
+            not item.get("data")
+            or not item.get("batch_ids")
+            or not item.get("fresh_until")
+            or item.get("time_axis") not in {"date", "tenor"}
+            for item in charts
+        )
+        or not publicly_displayable_source_keys(
+            _payload_source_keys([metrics, charts])
+        )
+    ):
+        return False
+    actual_batches = _payload_batch_ids([metrics, charts])
+    return actual_batches == expected_batches
+
+
+def _treasury_rates_overview_prepared(
+    prepared: dict[
+        str,
+        tuple[
+            list[dict[str, Any]],
+            list[dict[str, Any]],
+            list[dict[str, Any]],
+            dict[str, Any],
+        ],
+    ],
+) -> tuple[
+    tuple[
+        list[dict[str, Any]],
+        list[dict[str, Any]],
+        list[dict[str, Any]],
+        dict[str, Any],
+    ]
+    | None,
+    dict[str, Any] | None,
+]:
+    fed_component = _liquidity_fed_funds_component(now=timezone.now())
+    if isinstance(fed_component, dict):
+        return None, fed_component
+    policy_metrics, policy_reference = fed_component
+    yield_metrics, yield_charts, _yield_sections, yield_extra = prepared["yield-curve"]
+    real_metrics, real_charts, _real_sections, _real_extra = prepared["real-rates"]
+    yield_by_key = {item["key"]: deepcopy(item) for item in yield_metrics}
+    real_by_key = {item["key"]: deepcopy(item) for item in real_metrics}
+    metrics = [
+        *policy_metrics,
+        yield_by_key["ust-2y"],
+        yield_by_key["ust-10y"],
+        yield_by_key["2s10s"],
+        real_by_key["tips-10y"],
+        real_by_key["10y-bei"],
+    ]
+    charts = [deepcopy(yield_charts[1]), deepcopy(real_charts[0])]
+    for chart in charts:
+        chart["tab"] = "treasury"
+    extra_data = {
+        **deepcopy(yield_extra),
+        "curve_scope": "rates-overview",
+        "component_snapshots": [policy_reference],
+    }
+    sections = [
+        {
+            "title": "组合口径",
+            "body": (
+                "政策利率继承已验证的 Fed Funds 原子快照；国债、实际利率与 BEI "
+                "继承同一 Treasury curve v1 合同。任一子组件失败时保留上一版。"
+            ),
+            "full_width": True,
+        }
+    ]
+    return (metrics, charts, sections, extra_data), None
+
+
+@transaction.atomic
+def _coordinate_treasury_curve_dashboards(
+    trigger_runs: Iterable[IngestionRun],
+    *,
+    end_year: int,
+) -> tuple[list[DashboardSnapshot], set[str]]:
+    ensure_source("us-treasury-rates")
+    ensure_source("internal")
+    list(
+        Source.objects.select_for_update()
+        .filter(key__in={"us-treasury-rates", "internal"})
+        .order_by("key")
+        .values_list("pk", flat=True)
+    )
+    selected, states, triggered = _select_treasury_curve_runs(
+        trigger_runs, end_year=end_year
+    )
+    if not triggered:
+        return [], set()
+    if selected is None:
+        _mark_treasury_curve_dashboards_stale(
+            {"yield-curve", "real-rates", "rates"},
+            states,
+            reason=(
+                "Treasury 必需年度数据集未全部成功，或当年名义/实际曲线不属于"
+                "同一刷新周期；继续保留上一版完整快照。"
+            ),
+        )
+        return [], {"yield-curve", "real-rates", "rates"}
+
+    prepared, failures = _treasury_curve_page_data(selected)
+    if prepared is None:
+        _mark_treasury_curve_dashboards_stale(
+            {"yield-curve", "real-rates", "rates"},
+            failures,
+            reason=(
+                "Treasury 曲线未形成同日、跨年度批次明确且许可可公开的完整合同；"
+                "继续保留上一版。"
+            ),
+        )
+        return [], {"yield-curve", "real-rates", "rates"}
+
+    expected_nominal_batches = {
+        str(run.batch_id)
+        for (component, _year), run in selected.items()
+        if component == "nominal"
+    }
+    expected_all_batches = {str(run.batch_id) for run in selected.values()}
+    if not _treasury_prepared_contract_is_buildable(
+        "yield-curve",
+        prepared["yield-curve"],
+        expected_batches=expected_nominal_batches,
+    ) or not _treasury_prepared_contract_is_buildable(
+        "real-rates",
+        prepared["real-rates"],
+        expected_batches=expected_all_batches,
+    ):
+        failures = [
+            {
+                "component": "contract",
+                "year": end_year,
+                "dataset": "treasury-curve-v1",
+                "status": "invalid",
+                "reason": "prepared Treasury page failed its v1 contract check",
+            }
+        ]
+        _mark_treasury_curve_dashboards_stale(
+            {"yield-curve", "real-rates", "rates"},
+            failures,
+            reason="Treasury v1 发布前置条件未满足；继续保留上一版。",
+        )
+        return [], {"yield-curve", "real-rates", "rates"}
+
+    candidate_date = date.fromisoformat(
+        prepared["yield-curve"][3]["common_effective_date"]
+    )
+    previous_snapshots = [
+        snapshot
+        for key in TREASURY_CURVE_PAGE_KEYS
+        if (snapshot := _latest_treasury_contract_snapshot(key)) is not None
+    ]
+    if any(
+        candidate_date
+        < date.fromisoformat(
+            str((snapshot.data or {}).get("common_effective_date"))
+        )
+        for snapshot in previous_snapshots
+    ):
+        failures = [
+            {
+                "component": "common-date",
+                "year": end_year,
+                "dataset": "treasury-curve-v1",
+                "status": Observation.Quality.STALE,
+                "reason": "candidate common effective date regressed behind a published v1 snapshot",
+            }
+        ]
+        _mark_treasury_curve_dashboards_stale(
+            {"yield-curve", "real-rates", "rates"},
+            failures,
+            reason="Treasury 候选共同有效日发生回退；拒绝发布并保留上一版。",
+        )
+        return [], {"yield-curve", "real-rates", "rates"}
+
+    rates_prepared, rates_failure = _treasury_rates_overview_prepared(prepared)
+    selected_keys = {"yield-curve", "real-rates"}
+    stale_keys: set[str] = set()
+    if rates_prepared is not None:
+        prepared["rates"] = rates_prepared
+        selected_keys.add("rates")
+    else:
+        stale_keys.add("rates")
+        _mark_treasury_curve_dashboards_stale(
+            {"rates"},
+            [rates_failure or {"component": "fed-funds", "status": "missing"}],
+            reason=(
+                "利率总览所需 Fed Funds 子快照未通过验证；Treasury 子页照常发布，"
+                "总览继续保留上一版。"
+            ),
+        )
+
+    try:
+        with transaction.atomic():
+            dashboards = publish_official_dashboards(
+                keys=selected_keys,
+                prepared_treasury_curve_data=prepared,
+            )
+            for key in ("yield-curve", "real-rates"):
+                latest = _latest_treasury_contract_snapshot(key)
+                expected_batches = (
+                    expected_nominal_batches
+                    if key == "yield-curve"
+                    else expected_all_batches
+                )
+                if (
+                    latest is None
+                    or latest.data.get("publication_batch_id") != str(latest.batch_id)
+                    or latest.data.get("common_effective_date")
+                    != candidate_date.isoformat()
+                    or latest.data.get("refresh_failure")
+                    or set(latest.data.get("component_batches", []))
+                    != expected_batches
+                    or not _treasury_prepared_contract_is_buildable(
+                        key,
+                        (
+                            list(latest.data.get("metrics", [])),
+                            list(latest.data.get("charts", [])),
+                            list(latest.data.get("sections", [])),
+                            dict(latest.data),
+                        ),
+                        expected_batches=expected_batches,
+                    )
+                ):
+                    raise ValueError(
+                        f"Treasury {key} publication postcondition failed"
+                    )
+    except ValueError as exc:
+        failures = [
+            {
+                "component": "publication",
+                "year": end_year,
+                "dataset": "treasury-curve-v1",
+                "status": "invalid",
+                "reason": str(exc),
+            }
+        ]
+        _mark_treasury_curve_dashboards_stale(
+            {"yield-curve", "real-rates", "rates"},
+            failures,
+            reason=(
+                "Treasury 发布后置条件未满足；新写入已回滚，继续保留上一版完整快照。"
+            ),
+        )
+        return [], {"yield-curve", "real-rates", "rates"}
+    return dashboards, stale_keys
+
+
 def _gdp_vintage_chart_and_section() -> tuple[
     dict[str, Any] | None,
     dict[str, Any] | None,
@@ -5154,6 +6375,136 @@ def _store_series_with_artifacts(result, source, run) -> int:
     return row_count
 
 
+def _store_treasury_curve_observations(result, source, run) -> int:
+    """Persist one annual Treasury curve without allowing its stored tail to regress."""
+
+    incoming_series = {
+        str(record.get("series_id") or "").lower()
+        for record in result.records
+        if record.get("series_id") and record.get("date")
+    }
+    incoming_dates = [
+        date.fromisoformat(str(record["date"])[:10])
+        for record in result.records
+        if record.get("series_id") and record.get("date")
+    ]
+    requested_year = int((result.metadata or {}).get("requested_year") or 0)
+    if not incoming_dates or requested_year <= 0:
+        raise ValueError("Treasury annual curve has no dated rows or requested year")
+    if {period.year for period in incoming_dates} != {requested_year}:
+        raise ValueError("Treasury annual curve contains an out-of-year observation")
+    existing_latest = (
+        Observation.objects.filter(
+            source=source,
+            series__key__in=incoming_series,
+            value_date__year=requested_year,
+        )
+        .order_by("-value_date")
+        .first()
+    )
+    if (
+        existing_latest is not None
+        and max(incoming_dates) < existing_latest.value_date.date()
+    ):
+        raise ValueError(
+            "Treasury annual curve latest date regressed behind the stored official source"
+        )
+    series_by_key: dict[str, SeriesDefinition] = {}
+    for series_key in sorted(incoming_series):
+        series_id = series_key.upper()
+        series, _created = SeriesDefinition.objects.get_or_create(
+            key=series_key,
+            defaults={
+                "name": series_id.replace("UST-", "U.S. Treasury ").replace(
+                    "TIPS-", "Treasury Real "
+                ),
+                "unit": "%",
+                "source": source,
+                "frequency": "daily",
+                "description": f"Imported directly from {source.name}.",
+            },
+        )
+        series_by_key[series_key] = series
+
+    existing = {
+        (item.series.key, item.value_date.date()): item
+        for item in Observation.objects.filter(
+            source=source,
+            series__key__in=incoming_series,
+            value_date__year=requested_year,
+        ).select_related("series")
+    }
+    fetched_at = result.fetched_at
+    if timezone.is_naive(fetched_at):
+        fetched_at = fetched_at.replace(tzinfo=UTC)
+    now = timezone.now()
+    to_create: list[Observation] = []
+    to_update: list[Observation] = []
+    for record in result.records:
+        series_key = str(record["series_id"]).lower()
+        period = date.fromisoformat(str(record["date"])[:10])
+        value_date = datetime.combine(period, datetime.min.time(), tzinfo=UTC)
+        item = existing.get((series_key, period))
+        if item is None:
+            to_create.append(
+                Observation(
+                    series=series_by_key[series_key],
+                    instrument=None,
+                    value=record["value"],
+                    value_date=value_date,
+                    as_of=value_date,
+                    fetched_at=fetched_at,
+                    batch_id=run.batch_id,
+                    source=source,
+                    fallback_source=None,
+                    quality_status=Observation.Quality.FRESH,
+                    metadata=dict(record.get("metadata") or {}),
+                )
+            )
+            continue
+        item.value = record["value"]
+        item.as_of = value_date
+        item.fetched_at = fetched_at
+        item.batch_id = run.batch_id
+        item.fallback_source = None
+        item.quality_status = Observation.Quality.FRESH
+        item.metadata = dict(record.get("metadata") or {})
+        item.updated_at = now
+        to_update.append(item)
+    if to_create:
+        Observation.objects.bulk_create(to_create, batch_size=1000)
+    if to_update:
+        Observation.objects.bulk_update(
+            to_update,
+            fields=[
+                "value",
+                "as_of",
+                "fetched_at",
+                "batch_id",
+                "fallback_source",
+                "quality_status",
+                "metadata",
+                "updated_at",
+            ],
+            batch_size=1000,
+        )
+    for artifact in result.metadata.get("artifacts", []):
+        url = str(artifact.get("url") or "")
+        digest = str(artifact.get("sha256") or "")
+        if not url or not digest:
+            continue
+        RawArtifact.objects.create(
+            run=run,
+            uri=f"{url}#sha256={digest}",
+            sha256=digest,
+            content_type=str(
+                artifact.get("content_type") or "application/octet-stream"
+            ),
+            size_bytes=int(artifact.get("size") or 0),
+        )
+    return len(to_create) + len(to_update)
+
+
 def _store_h41_observations(result, source, run) -> int:
     """Backward-compatible H.4.1 persistence entry point used by tests/jobs."""
 
@@ -5488,6 +6839,7 @@ def _publish_dashboard(
                 not in {
                     "batch_id",
                     "batch_ids",
+                    "_batch_ids",
                     "input_batch_ids",
                     "component_batch_id",
                     "component_batches",
@@ -5505,6 +6857,7 @@ def _publish_dashboard(
                     "component_fingerprint",
                     "component_metric_snapshot_id",
                     "component_metric_snapshot_batch_id",
+                    "refresh_cycle_id",
                 }
             }
         if isinstance(value, list):
@@ -5706,6 +7059,16 @@ def publish_official_dashboards(
         dict[str, Any],
     ]
     | None = None,
+    prepared_treasury_curve_data: dict[
+        str,
+        tuple[
+            list[dict[str, Any]],
+            list[dict[str, Any]],
+            list[dict[str, Any]],
+            dict[str, Any],
+        ],
+    ]
+    | None = None,
 ) -> list[DashboardSnapshot]:
     """Atomically publish only the dashboards affected by a completed source batch."""
 
@@ -5713,6 +7076,14 @@ def publish_official_dashboards(
     selected_keys = set(keys) if keys is not None else None
     normalized_source_batches = dict(source_batches or {})
     normalized_dataset_batches = dict(dataset_batches or {})
+    treasury_prepared = dict(prepared_treasury_curve_data or {})
+    rates_prepared = treasury_prepared.get("rates", ([], [], [], {}))
+    yield_curve_prepared = treasury_prepared.get(
+        "yield-curve", ([], [], [], {})
+    )
+    real_rates_prepared = treasury_prepared.get(
+        "real-rates", ([], [], [], {})
+    )
     if source_batches is None and (
         selected_keys is None or "inflation" in selected_keys
     ):
@@ -5725,10 +7096,6 @@ def publish_official_dashboards(
         latest_census_batch = _latest_successful_source_batch("census")
         if latest_census_batch is not None:
             normalized_source_batches["census"] = latest_census_batch
-    nominal_curve = _curve_rows(
-        "ust", ("1m", "2m", "3m", "4m", "6m", "1y", "2y", "3y", "5y", "7y", "10y", "20y", "30y")
-    )
-    real_curve = _curve_rows("tips", ("5y", "7y", "10y", "20y", "30y"))
     hqm_curve = _curve_rows("hqm-par", ("2y", "5y", "10y", "30y"))
     sofr_market_metrics = _sofr_market_metrics()
     auction_metrics, auction_rows = _auction_snapshot_data()
@@ -6043,22 +7410,14 @@ def publish_official_dashboards(
         {
             "key": "rates",
             "title": "利率",
-            "summary": "政策利率取纽约联储，国债收益率取美国财政部官方日曲线。",
-            "metrics": _existing(
-                _metric(
-                    "EFFR", "EFFR", suffix="%", aligned_with=("SOFR", "IORB")
-                ),
-                _metric(
-                    "SOFR", "SOFR", suffix="%", aligned_with=("EFFR", "IORB")
-                ),
-                _metric(
-                    "IORB", "IORB", suffix="%", aligned_with=("SOFR", "EFFR")
-                ),
-                _metric("UST-2Y", "2Y", suffix="%"),
-                _metric("UST-10Y", "10Y", suffix="%"),
-                _derived_metric("2s10s", "2s10s", "UST-10Y", "UST-2Y", basis_points=True),
+            "summary": (
+                "政策利率继承已验证的 Fed Funds 原子快照；国债、实际利率与"
+                "盈亏平衡通胀继承同一 Treasury curve v1 合同。"
             ),
-            "chart_data": _history_rows({"UST-2Y": "2Y", "UST-10Y": "10Y"}),
+            "metrics": rates_prepared[0],
+            "charts": rates_prepared[1],
+            "sections": rates_prepared[2],
+            "extra_data": rates_prepared[3],
         },
         {
             "key": "assets-fx",
@@ -6081,56 +7440,28 @@ def publish_official_dashboards(
         {
             "key": "yield-curve",
             "title": "收益率曲线",
-            "summary": "当前名义曲线直接来自美国财政部；利差为 Atlas Macro 透明计算。",
-            "metrics": _existing(
-                _derived_metric("2s10s", "2s10s", "UST-10Y", "UST-2Y", basis_points=True),
-                _derived_metric("3m10s", "3m10s", "UST-10Y", "UST-3M", basis_points=True),
-                _derived_metric("5s30s", "5s30s", "UST-30Y", "UST-5Y", basis_points=True),
-                _metric("UST-10Y", "10Y", suffix="%"),
+            "summary": (
+                "财政部名义 Par Yield 曲线按精确年度批次组合；当前、1 周、"
+                "1 月与 3 月比较和关键利差均保留可复算血缘。"
             ),
-            "chart_data": [
-                {"label": item["label"], "yield": item["value"]} for item in nominal_curve
-            ],
-            "sections": [
-                {
-                    "title": "财政部名义曲线",
-                    "rows": nominal_curve,
-                    "fresh_until": _earliest_fresh_until(nominal_curve),
-                    "status": (
-                        "fresh"
-                        if nominal_curve
-                        and all(item["quality_status"] == "fresh" for item in nominal_curve)
-                        else "stale"
-                    ),
-                }
-            ],
+            "metrics": yield_curve_prepared[0],
+            "charts": yield_curve_prepared[1],
+            "sections": yield_curve_prepared[2],
+            "extra_data": yield_curve_prepared[3],
+            "required_metric_keys": YIELD_CURVE_REQUIRED_METRIC_KEYS,
         },
         {
             "key": "real-rates",
             "title": "实际利率",
-            "summary": "TIPS 实际利率直接来自美国财政部；盈亏平衡通胀为同期限名义减实际。",
-            "metrics": _existing(
-                _metric("TIPS-5Y", "5Y 实际利率", suffix="%"),
-                _metric("TIPS-10Y", "10Y 实际利率", suffix="%"),
-                _derived_metric("5y-bei", "5Y BEI", "UST-5Y", "TIPS-5Y"),
-                _derived_metric("10y-bei", "10Y BEI", "UST-10Y", "TIPS-10Y"),
+            "summary": (
+                "TIPS 实际 Par Yield 直接来自财政部；BEI 为 Atlas Macro 用同期限"
+                "名义减实际的透明近似，不冒充官方 5Y5Y。"
             ),
-            "chart_data": [
-                {"label": item["label"], "real_yield": item["value"]} for item in real_curve
-            ],
-            "sections": [
-                {
-                    "title": "财政部实际利率曲线",
-                    "rows": real_curve,
-                    "fresh_until": _earliest_fresh_until(real_curve),
-                    "status": (
-                        "fresh"
-                        if real_curve
-                        and all(item["quality_status"] == "fresh" for item in real_curve)
-                        else "stale"
-                    ),
-                }
-            ],
+            "metrics": real_rates_prepared[0],
+            "charts": real_rates_prepared[1],
+            "sections": real_rates_prepared[2],
+            "extra_data": real_rates_prepared[3],
+            "required_metric_keys": REAL_RATES_REQUIRED_METRIC_KEYS,
         },
         {
             "key": "credit",
@@ -6415,7 +7746,18 @@ def refresh_official_data(*, current_year: int | None = None) -> dict[str, Any]:
         ),
         (
             TreasuryRatesProvider(),
-            (("yield_curve", {"year": year}), ("real_yield_curve", {"year": year})),
+            (
+                (
+                    "yield_curve",
+                    {"year": year},
+                    _store_treasury_curve_observations,
+                ),
+                (
+                    "real_yield_curve",
+                    {"year": year},
+                    _store_treasury_curve_observations,
+                ),
+            ),
         ),
         (
             FiscalDataProvider(),
@@ -6548,6 +7890,11 @@ def refresh_official_data(*, current_year: int | None = None) -> dict[str, Any]:
     )
     dashboards.extend(fed_funds_dashboards)
     stale_dashboard_keys |= stale_fed_funds_keys
+    treasury_dashboards, stale_treasury_keys = (
+        _coordinate_treasury_curve_dashboards(runs, end_year=year)
+    )
+    dashboards.extend(treasury_dashboards)
+    stale_dashboard_keys |= stale_treasury_keys
     liquidity_dashboards, stale_liquidity_keys = (
         _coordinate_liquidity_dashboard(runs)
     )
@@ -6569,6 +7916,75 @@ def refresh_official_data(*, current_year: int | None = None) -> dict[str, Any]:
         ],
         "dashboard_keys": [dashboard.key for dashboard in dashboards],
         "stale_dashboard_keys": sorted(stale_dashboard_keys),
+    }
+
+
+def refresh_treasury_curve_data(
+    *,
+    start_year: int | None = None,
+    end_year: int | None = None,
+    publish: bool = True,
+) -> dict[str, Any]:
+    """Backfill explicit annual Treasury curve datasets, then coordinate v1 pages."""
+
+    resolved_end = end_year or timezone.now().year
+    resolved_start = (
+        start_year
+        if start_year is not None
+        else resolved_end - TREASURY_CURVE_HISTORY_YEARS
+    )
+    if resolved_start > resolved_end:
+        raise ValueError("Treasury curve start year must not exceed end year")
+    if resolved_start < 1990 or resolved_end > timezone.now().year:
+        raise ValueError("Treasury curve years are outside the supported historical range")
+
+    refresh_cycle_id = str(uuid.uuid4())
+    runs: list[IngestionRun] = []
+    for year in range(resolved_start, resolved_end + 1):
+        for method_name in ("yield_curve", "real_yield_curve"):
+            provider = TreasuryRatesProvider()
+            try:
+                result = getattr(provider, method_name)(year=year)
+            finally:
+                provider.close()
+            try:
+                result.metadata = {
+                    **result.metadata,
+                    "refresh_cycle_id": refresh_cycle_id,
+                    "backfill_start_year": resolved_start,
+                    "backfill_end_year": resolved_end,
+                }
+                runs.append(
+                    record_provider_result(
+                        result,
+                        persist=_store_treasury_curve_observations,
+                    )
+                )
+            finally:
+                del result
+    if publish:
+        dashboards, stale_keys = _coordinate_treasury_curve_dashboards(
+            runs,
+            end_year=resolved_end,
+        )
+    else:
+        dashboards, stale_keys = [], set()
+    return {
+        "runs": [
+            {
+                "source": run.source.key,
+                "dataset": run.dataset,
+                "status": run.status,
+                "row_count": run.row_count,
+                "error": run.error,
+            }
+            for run in runs
+        ],
+        "dashboard_keys": [dashboard.key for dashboard in dashboards],
+        "stale_dashboard_keys": sorted(stale_keys),
+        "start_year": resolved_start,
+        "end_year": resolved_end,
+        "publish_requested": publish,
     }
 
 

@@ -163,7 +163,13 @@ def test_blank_snapshot_never_falls_back_to_static_market_conclusion(client):
         summary="",
         source=source,
         is_published=True,
-        data={"demo": False, "metrics": [], "chart_data": [], "sections": []},
+        data={
+            "demo": False,
+            "contract_version": 1,
+            "metrics": [],
+            "chart_data": [],
+            "sections": [],
+        },
     )
 
     body = client.get("/rates/").content.decode()
