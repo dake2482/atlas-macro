@@ -92,6 +92,12 @@ BLS_SERIES = (
     "CUUR0000SA0",
     "CUSR0000SA0L1E",
     "CUUR0000SA0L1E",
+    "CUSR0000SAH1",
+    "CUUR0000SAH1",
+    "CUSR0000SACL1E",
+    "CUUR0000SACL1E",
+    "CUSR0000SASLE",
+    "CUUR0000SASLE",
     "WPSFD4",
     "WPUFD4",
 )
@@ -294,6 +300,18 @@ INFLATION_REQUIRED_METRIC_KEYS = frozenset(
         "core-pce-price-index-yoy",
         "core-pce-price-index-3m-annualized",
         "core-pce-price-index-6m-annualized",
+        "shelter-cpi-mom",
+        "shelter-cpi-yoy",
+        "shelter-cpi-3m-annualized",
+        "shelter-cpi-6m-annualized",
+        "core-goods-cpi-mom",
+        "core-goods-cpi-yoy",
+        "core-goods-cpi-3m-annualized",
+        "core-goods-cpi-6m-annualized",
+        "services-less-energy-cpi-mom",
+        "services-less-energy-cpi-yoy",
+        "services-less-energy-cpi-3m-annualized",
+        "services-less-energy-cpi-6m-annualized",
     }
 )
 MACRO_REQUIRED_SERIES = {
@@ -323,6 +341,12 @@ MACRO_REQUIRED_SERIES = {
                 "CUUR0000SA0",
                 "CUSR0000SA0L1E",
                 "CUUR0000SA0L1E",
+                "CUSR0000SAH1",
+                "CUUR0000SAH1",
+                "CUSR0000SACL1E",
+                "CUUR0000SACL1E",
+                "CUSR0000SASLE",
+                "CUUR0000SASLE",
                 "WPSFD4",
                 "WPUFD4",
             }
@@ -2857,6 +2881,30 @@ def _inflation_page_data(
         batch_id=batch_id,
         input_source_key="bls",
     )
+    shelter_metrics, shelter_rows = _inflation_series_data(
+        key_prefix="shelter-cpi",
+        label="住房成本 CPI（Shelter）",
+        seasonally_adjusted_series="CUSR0000SAH1",
+        not_seasonally_adjusted_series="CUUR0000SAH1",
+        batch_id=batch_id,
+        input_source_key="bls",
+    )
+    core_goods_metrics, core_goods_rows = _inflation_series_data(
+        key_prefix="core-goods-cpi",
+        label="核心商品 CPI",
+        seasonally_adjusted_series="CUSR0000SACL1E",
+        not_seasonally_adjusted_series="CUUR0000SACL1E",
+        batch_id=batch_id,
+        input_source_key="bls",
+    )
+    services_metrics, services_rows = _inflation_series_data(
+        key_prefix="services-less-energy-cpi",
+        label="服务 CPI（不含能源服务）",
+        seasonally_adjusted_series="CUSR0000SASLE",
+        not_seasonally_adjusted_series="CUUR0000SASLE",
+        batch_id=batch_id,
+        input_source_key="bls",
+    )
     producer_metrics, producer_rows = _inflation_series_data(
         key_prefix="final-demand-ppi",
         label="最终需求 PPI",
@@ -2912,6 +2960,54 @@ def _inflation_page_data(
             tab="core",
         ),
         _lineage_chart(
+            key="shelter-cpi-rates",
+            title="住房成本 CPI（Shelter）通胀率与短周期动能",
+            description=(
+                "BLS Shelter 官方聚合项；环比与动能用季调指数，"
+                "同比用未季调指数。"
+            ),
+            rows=shelter_rows,
+            fields=[
+                "住房成本 CPI（Shelter） 环比",
+                "住房成本 CPI（Shelter） 同比",
+                "住房成本 CPI（Shelter） 3M 年化",
+                "住房成本 CPI（Shelter） 6M 年化",
+            ],
+            tab="components",
+        ),
+        _lineage_chart(
+            key="core-goods-cpi-rates",
+            title="核心商品 CPI 通胀率与短周期动能",
+            description=(
+                "BLS Commodities less food and energy commodities 官方聚合项；"
+                "不使用 headline-core 残差估算。"
+            ),
+            rows=core_goods_rows,
+            fields=[
+                "核心商品 CPI 环比",
+                "核心商品 CPI 同比",
+                "核心商品 CPI 3M 年化",
+                "核心商品 CPI 6M 年化",
+            ],
+            tab="components",
+        ),
+        _lineage_chart(
+            key="services-less-energy-cpi-rates",
+            title="服务 CPI（不含能源服务）通胀率与短周期动能",
+            description=(
+                "BLS Services less energy services 官方聚合项，仍包含 Shelter；"
+                "因此不将其标注为“超级核心”通胀。"
+            ),
+            rows=services_rows,
+            fields=[
+                "服务 CPI（不含能源服务） 环比",
+                "服务 CPI（不含能源服务） 同比",
+                "服务 CPI（不含能源服务） 3M 年化",
+                "服务 CPI（不含能源服务） 6M 年化",
+            ],
+            tab="components",
+        ),
+        _lineage_chart(
             key="final-demand-ppi-rates",
             title="最终需求 PPI 通胀率与短周期动能",
             description=(
@@ -2965,6 +3061,8 @@ def _inflation_page_data(
             "title": "口径、公式与修订",
             "body": (
                 "CPI/PPI 环比与 3M/6M 年化只使用季调指数，同比只使用未季调指数。"
+                "Shelter、核心商品和不含能源服务的服务 CPI 使用同样的"
+                "BLS 季调/未季调配对和同批次约束。"
                 "PCE 与核心 PCE 来自 BEA PIO Section 2 的季调 chain-type price index。"
                 "3M/6M 按复合增长率年化，缺失精确自然月时保留图表空档，不做"
                 "最近日期替代。CPI 季调因子可年度回修；PPI 和 PCE 发布值可能修订。"
@@ -2974,7 +3072,7 @@ def _inflation_page_data(
         {
             "title": "尚未接入的通胀层",
             "body": (
-                "住房与服务分拆、真实交易 breakeven、5Y5Y 和完整发布 vintage "
+                "真实交易 breakeven、5Y5Y 和完整发布 vintage "
                 "尚未进入本页原子快照；其来源状态与后续接入建议见下方数据覆盖台账。"
             ),
             "full_width": True,
@@ -2984,6 +3082,9 @@ def _inflation_page_data(
     return [
         *headline_metrics,
         *core_metrics,
+        *shelter_metrics,
+        *core_goods_metrics,
+        *services_metrics,
         *producer_metrics,
         *pce_metrics,
         *core_pce_metrics,
@@ -3004,13 +3105,18 @@ def _inflation_page_is_buildable(
     expected_chart_keys = {
         "headline-cpi-rates",
         "core-cpi-rates",
+        "shelter-cpi-rates",
+        "core-goods-cpi-rates",
+        "services-less-energy-cpi-rates",
         "final-demand-ppi-rates",
         "pce-price-rates",
         "core-pce-price-rates",
     }
+    allowed_chart_keys = {*expected_chart_keys, "market-breakeven-inflation"}
     if (
         not INFLATION_REQUIRED_METRIC_KEYS <= metric_keys
-        or set(chart_by_key) != expected_chart_keys
+        or not expected_chart_keys <= set(chart_by_key)
+        or not set(chart_by_key) <= allowed_chart_keys
     ):
         return False
     required_latest_fields = {
@@ -3025,6 +3131,24 @@ def _inflation_page_is_buildable(
             "核心 CPI 同比",
             "核心 CPI 3M 年化",
             "核心 CPI 6M 年化",
+        },
+        "shelter-cpi-rates": {
+            "住房成本 CPI（Shelter） 环比",
+            "住房成本 CPI（Shelter） 同比",
+            "住房成本 CPI（Shelter） 3M 年化",
+            "住房成本 CPI（Shelter） 6M 年化",
+        },
+        "core-goods-cpi-rates": {
+            "核心商品 CPI 环比",
+            "核心商品 CPI 同比",
+            "核心商品 CPI 3M 年化",
+            "核心商品 CPI 6M 年化",
+        },
+        "services-less-energy-cpi-rates": {
+            "服务 CPI（不含能源服务） 环比",
+            "服务 CPI（不含能源服务） 同比",
+            "服务 CPI（不含能源服务） 3M 年化",
+            "服务 CPI（不含能源服务） 6M 年化",
         },
         "final-demand-ppi-rates": {
             "最终需求 PPI 环比",
@@ -7934,9 +8058,10 @@ def publish_official_dashboards(
             "key": "inflation",
             "title": "通胀",
             "summary": (
-                "总体 CPI、核心 CPI 与最终需求 PPI 的环比和短期动能来自"
+                "总体 CPI、核心 CPI、Shelter、核心商品、不含能源服务的服务 CPI "
+                "与最终需求 PPI 的环比和短期动能来自"
                 "BLS 季调指数，同比来自对应未季调指数。所有变化率按精确"
-                "自然月透明计算并绑定同一 BLS 抓取批次；PCE、分项、市场"
+                "自然月透明计算并绑定同一 BLS 抓取批次；PCE、市场"
                 "预期与完整 vintage 缺口在数据台账中单列。"
             ),
             "metrics": inflation_metrics,

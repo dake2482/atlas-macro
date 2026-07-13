@@ -501,10 +501,10 @@ PAGE_CONFIGS = {
         "eyebrow": "Inflation Stack",
         "description": (
             "使用 BLS 季调与未季调配对指数展示总体 CPI、核心 CPI 与最终需求"
-            "PPI 的环比、同比及 3M/6M 年化动能；BEA PIO Section 2 展示 PCE"
+            "PPI 的环比、同比及 3M/6M 年化动能，并加入 Shelter、核心商品与"
+            "不含能源服务的服务 CPI 官方分项；BEA PIO Section 2 展示 PCE"
             " 与核心 PCE 价格指数；市场预期复用 Treasury/TIPS 官方曲线派生"
-            " 5Y/10Y BEI 代理；通胀分项和"
-            "历史 vintage 缺口在数据台账中单列。"
+            " 5Y/10Y BEI 代理；历史 vintage 缺口在数据台账中单列。"
         ),
         "period_options": [
             {"value": "1y", "label": "1 年", "months": 12},
@@ -523,6 +523,15 @@ PAGE_CONFIGS = {
                 "value": "core",
                 "label": "核心 CPI",
                 "chart_keys": ["core-cpi-rates"],
+            },
+            {
+                "value": "components",
+                "label": "CPI 分项",
+                "chart_keys": [
+                    "shelter-cpi-rates",
+                    "core-goods-cpi-rates",
+                    "services-less-energy-cpi-rates",
+                ],
             },
             {
                 "value": "producer",
@@ -550,6 +559,12 @@ PAGE_CONFIGS = {
             metric("核心 CPI 同比"),
             metric("核心 CPI 3M 年化"),
             metric("核心 CPI 6M 年化"),
+            metric("住房成本 CPI（Shelter） 环比"),
+            metric("住房成本 CPI（Shelter） 同比"),
+            metric("核心商品 CPI 环比"),
+            metric("核心商品 CPI 同比"),
+            metric("服务 CPI（不含能源服务） 环比"),
+            metric("服务 CPI（不含能源服务） 同比"),
             metric("最终需求 PPI 环比"),
             metric("最终需求 PPI 同比"),
             metric("最终需求 PPI 3M 年化"),
@@ -563,7 +578,7 @@ PAGE_CONFIGS = {
         ],
         "analysis": (
             "当前只对通过同批完整性检查的 BLS、BEA PIO 与 Treasury/TIPS "
-            "官方曲线通胀层作可复算展示；"
+            "官方曲线通胀层作可复算展示；BLS 分项不使用残差估算；"
             "未接入层保持空缺，不用指数水平或演示数值替代。"
         ),
     },

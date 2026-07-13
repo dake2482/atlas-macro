@@ -376,13 +376,15 @@ DATA_REQUIREMENTS = [
         "key": "bls-inflation-components",
         "page_key": "inflation",
         "metric_name": "住房、商品与服务通胀分项",
-        "status": NEEDS_SOURCE,
+        "status": LIVE,
         "source_name": "U.S. Bureau of Labor Statistics CPI detailed indexes",
         "source_url": "https://www.bls.gov/cpi/data.htm",
         "reason": (
-            "官方分项来源已知，但分项序列清单、季调/未季调配对、历史"
-            "回填和口径定义尚未冻结；不得用 headline-core 残差冒充服务"
-            "通胀，也不在定义完成前称为“超级核心”。"
+            "已冻结 BLS Shelter（SAH1）、Commodities less food and energy "
+            "commodities（SACL1E）与 Services less energy services（SASLE）"
+            "的季调/未季调配对。环比和短周期动能用季调指数，"
+            "同比用未季调指数，全部绑定同一 BLS 批次。服务口径仍"
+            "包含 Shelter，因此不冒充“超级核心”。"
         ),
         "priority": 2,
     },

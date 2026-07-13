@@ -842,6 +842,32 @@ SERIES_CATALOG = {
         "index",
         "monthly",
     ),
+    "CUSR0000SAH1": ("CPI Shelter", "index", "monthly"),
+    "CUUR0000SAH1": (
+        "CPI Shelter, Not Seasonally Adjusted",
+        "index",
+        "monthly",
+    ),
+    "CUSR0000SACL1E": (
+        "CPI Commodities Less Food and Energy Commodities",
+        "index",
+        "monthly",
+    ),
+    "CUUR0000SACL1E": (
+        "CPI Commodities Less Food and Energy Commodities, Not Seasonally Adjusted",
+        "index",
+        "monthly",
+    ),
+    "CUSR0000SASLE": (
+        "CPI Services Less Energy Services",
+        "index",
+        "monthly",
+    ),
+    "CUUR0000SASLE": (
+        "CPI Services Less Energy Services, Not Seasonally Adjusted",
+        "index",
+        "monthly",
+    ),
     "WPSFD4": ("Producer Price Index: Final Demand", "index", "monthly"),
     "WPUFD4": (
         "Producer Price Index: Final Demand, Not Seasonally Adjusted",

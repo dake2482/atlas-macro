@@ -34,6 +34,12 @@ INFLATION_SERIES = (
     "CUUR0000SA0",
     "CUSR0000SA0L1E",
     "CUUR0000SA0L1E",
+    "CUSR0000SAH1",
+    "CUUR0000SAH1",
+    "CUSR0000SACL1E",
+    "CUUR0000SACL1E",
+    "CUSR0000SASLE",
+    "CUUR0000SASLE",
     "WPSFD4",
     "WPUFD4",
 )
@@ -72,6 +78,12 @@ def _inflation_records(
         "CUUR0000SA0": Decimal("101"),
         "CUSR0000SA0L1E": Decimal("200"),
         "CUUR0000SA0L1E": Decimal("201"),
+        "CUSR0000SAH1": Decimal("300"),
+        "CUUR0000SAH1": Decimal("301"),
+        "CUSR0000SACL1E": Decimal("400"),
+        "CUUR0000SACL1E": Decimal("401"),
+        "CUSR0000SASLE": Decimal("500"),
+        "CUUR0000SASLE": Decimal("501"),
         "WPSFD4": Decimal("150"),
         "WPUFD4": Decimal("151"),
     }
@@ -315,7 +327,7 @@ def _real_rates_snapshot():
 
 
 @pytest.mark.django_db
-def test_inflation_contract_uses_six_monthly_bls_series():
+def test_inflation_contract_uses_twelve_monthly_bls_series():
     expected = set(INFLATION_SERIES)
     assert set(MACRO_REQUIRED_SERIES["inflation"]["bls"]) == expected
     assert expected <= set(BLS_SERIES)
@@ -367,6 +379,15 @@ def test_inflation_publication_uses_sa_momentum_nsa_yoy_and_full_lineage():
     assert metrics["pce-price-index-mom"]["value"] == pytest.approx(0.7751938)
     assert metrics["pce-price-index-yoy"]["value"] == pytest.approx(8.3333333)
     assert metrics["core-pce-price-index-yoy"]["value"] == pytest.approx(4.0)
+    assert metrics["shelter-cpi-yoy"]["metadata"]["input_series"] == [
+        "cuur0000sah1"
+    ]
+    assert metrics["core-goods-cpi-mom"]["metadata"]["input_series"] == [
+        "cusr0000sacl1e"
+    ]
+    assert metrics["services-less-energy-cpi-yoy"]["metadata"][
+        "input_series"
+    ] == ["cuur0000sasle"]
     assert metrics["headline-cpi-mom"]["metadata"]["seasonal_basis"] == (
         "seasonally_adjusted"
     )
@@ -406,6 +427,9 @@ def test_inflation_publication_uses_sa_momentum_nsa_yoy_and_full_lineage():
     assert chart_keys == {
         "headline-cpi-rates",
         "core-cpi-rates",
+        "shelter-cpi-rates",
+        "core-goods-cpi-rates",
+        "services-less-energy-cpi-rates",
         "final-demand-ppi-rates",
         "pce-price-rates",
         "core-pce-price-rates",
@@ -414,7 +438,11 @@ def test_inflation_publication_uses_sa_momentum_nsa_yoy_and_full_lineage():
         assert chart["time_axis"] == "date"
         for row in chart["data"]:
             assert not {"CPI", "核心 CPI", "PPI"} & set(row)
-    latest_ppi = snapshot.data["charts"][2]["data"][-1]
+    latest_ppi = next(
+        item
+        for item in snapshot.data["charts"]
+        if item["key"] == "final-demand-ppi-rates"
+    )["data"][-1]
     assert latest_ppi["_lineage"]["最终需求 PPI 同比"]["preliminary"] is True
     pce_chart = next(item for item in snapshot.data["charts"] if item["key"] == "pce-price-rates")
     latest_pce = pce_chart["data"][-1]
@@ -439,6 +467,9 @@ def test_inflation_publication_uses_sa_momentum_nsa_yoy_and_full_lineage():
         ({("CUSR0000SA0", date(2025, 11, 1))}, {}),
         ({("CUUR0000SA0", date(2025, 5, 1))}, {}),
         ({("CUUR0000SA0", LATEST_PERIOD)}, {}),
+        ({("CUSR0000SAH1", LATEST_PERIOD)}, {}),
+        ({("CUUR0000SACL1E", date(2025, 5, 1))}, {}),
+        ({("CUSR0000SASLE", date(2026, 2, 1))}, {}),
         ({}, {("CUSR0000SA0", date(2026, 4, 1)): Decimal("0")}),
         ({}, {("CUSR0000SA0", date(2026, 2, 1)): Decimal("-1")}),
         ({}, {("CUUR0000SA0", date(2025, 5, 1)): Decimal("0")}),
@@ -597,7 +628,18 @@ def test_inflation_get_controls_slice_group_and_sanitize(client):
     default = client.get("/economy/inflation/")
     assert default.context["selected_period"] == "3y"
     assert default.context["selected_tab"] == "overview"
-    assert len(default.context["charts"]) == 5
+    assert len(default.context["charts"]) == 8
+
+    components = client.get("/economy/inflation/", {"tab": "components"})
+    assert components.status_code == 200
+    assert [item["key"] for item in components.context["charts"]] == [
+        "shelter-cpi-rates",
+        "core-goods-cpi-rates",
+        "services-less-energy-cpi-rates",
+    ]
+    components_body = html.unescape(components.content.decode())
+    assert "BLS Shelter" in components_body
+    assert "不将其标注为“超级核心”" in components_body
 
     pce = client.get("/economy/inflation/", {"tab": "pce"})
     assert pce.status_code == 200
@@ -621,6 +663,9 @@ def test_inflation_reuses_real_rates_breakeven_proxy_when_available(client):
     _real_rates_snapshot()
     run = _inflation_run()
     pce_run = _pce_inflation_run()
+    assert _inflation_page_is_buildable(
+        batch_id=run.batch_id, bea_pio_batch_id=pce_run.batch_id
+    )
     publish_official_dashboards(
         keys={"inflation"},
         source_batches={
@@ -658,7 +703,7 @@ def test_inflation_catalog_marks_official_inputs_and_missing_layers():
     }
     assert requirements["bls-inflation-official"]["status"] == "live"
     assert requirements["bea-pce-inflation"]["status"] == "live"
-    assert requirements["bls-inflation-components"]["status"] == "needs_source"
+    assert requirements["bls-inflation-components"]["status"] == "live"
     assert requirements["inflation-market-expectations"]["status"] == "live"
     assert requirements["inflation-vintage-trail"]["status"] == "needs_source"
     assert all(item["page_key"] == "inflation" for item in requirements.values())
