@@ -9,10 +9,10 @@ success_metrics:
 current_milestone:
   id: AI-RESEARCH-008
   title: 修正 Census 当期零售发布与完整历史
-  status: IN_PROGRESS
-health: GREEN
-next_action: Implement the credential-gated Census MARTS current/history contract and legacy-workbook revision witness; production publication then requires a free CENSUS_API_KEY.
-updated_at: '2026-07-13T08:08:00+08:00'
+  status: BLOCKED
+health: YELLOW
+next_action: Provision a free CENSUS_API_KEY in Mina's protected shared environment, recreate the app services, rerun refresh_macro_data, and complete the May 2026 production audit.
+updated_at: '2026-07-13T08:35:19+08:00'
 validation_commands:
   - .venv/bin/ruff check .
   - .venv/bin/pytest -q
