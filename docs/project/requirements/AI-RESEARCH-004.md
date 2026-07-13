@@ -10,8 +10,8 @@ task_id: atlas-inflation-official-20260712
 branch: main
 worktree: local
 dependencies: []
-updated_at: '2026-07-13T14:56:18+08:00'
-next_action: PCE inflation follow-up is deployed; remaining inflation gaps are detailed CPI/service components, market expectations and full release vintage.
+updated_at: '2026-07-13T15:12:00+08:00'
+next_action: PCE inflation and Treasury/TIPS BEI proxy follow-ups are deployed; remaining inflation gaps are detailed CPI/service components, real traded breakeven or 5Y5Y feeds, and full release vintage.
 evidence:
 - Production currently publishes headline CPI, core CPI and final-demand PPI index levels, which are not the
   month-over-month or year-over-year inflation rates expected by the page contract.
@@ -45,6 +45,21 @@ evidence:
 - 'Production inflation snapshot 133 has five charts: headline CPI, core CPI, final-demand PPI,
   PCE price and core PCE price. Public /economy/inflation/?tab=pce returns 200 and displays
   PCE +4.1% YoY and core PCE +3.4% YoY from U.S. Bureau of Economic Analysis Personal Income and Outlays.'
+- '2026-07-13 BEI proxy follow-up: commit 5ff9adf reuses the audited real-rates Treasury
+  nominal and TIPS par-curve snapshot on the inflation page, adds a shareable expectations tab,
+  publishes market-5y-bei and market-10y-bei metrics with component snapshot lineage, and marks
+  inflation-market-expectations LIVE while preserving real traded breakeven and 5Y5Y as separate
+  source gaps.'
+- 'Mina release 5ff9adf was deployed on port 3080 after backup
+  /srv/atlasmacro/backups/pre-5ff9adf0d90c-20260713T070513Z.dump, SHA-256
+  68079fb969060fb197ca60467482fefb62e17d760b78b34253e318d6dea9c32b. Production
+  sync_data_requirements now reports live=35, needs_source=13, license_review=3 and
+  purchase_required=36.'
+- 'Production inflation snapshot 136 has six charts including market-breakeven-inflation.
+  Public /economy/inflation/?tab=expectations returns 200 and displays Treasury 曲线派生
+  盈亏平衡通胀, 5Y BEI 2.28%, 10Y BEI 2.24%, and the explicit not-traded-breakeven label.
+  GitHub public repository created at https://github.com/dake2482/atlas-macro and main is
+  tracking origin/main.'
 started_at: '2026-07-12T23:24:28+08:00'
 ---
 
@@ -58,8 +73,8 @@ started_at: '2026-07-12T23:24:28+08:00'
 - [x] 3M/6M 年化动能使用明确的几何年化公式，保留输入序列、数值日、批次、来源、许可与 preliminary 状态。
 - [x] 通胀页按总体、核心与生产者价格分组图表，支持可分享的 1y/3y/5y GET 时间窗口，不展示不兼容单位。
 - [x] 通胀页使用独立 BLS 同批发布门；与通胀无关的 Treasury/Fed/DOL 失败不阻断新快照，BLS 必需输入失败则保留上版并标 stale。
-- [x] 官方序列未覆盖的通胀分项、PCE 或修订 vintage 保持明确的数据源/采购状态，不用演示数值填充。
-- [x] 后续补齐：PCE 与核心 PCE 价格指数使用 BEA PIO Section 2 官方工作簿发布；剩余未覆盖层只保留分项、市场预期与完整 vintage。
+- [x] 官方序列未覆盖的通胀分项、真实交易 breakeven、5Y5Y 或修订 vintage 保持明确的数据源/采购状态，不用演示数值填充。
+- [x] 后续补齐：PCE 与核心 PCE 价格指数使用 BEA PIO Section 2 官方工作簿发布；5Y/10Y 市场预期使用 Treasury/TIPS 官方曲线派生代理发布；剩余未覆盖层只保留分项、真实交易 breakeven、5Y5Y 与完整 vintage。
 - [x] 公式、精度、缺月、批次、stale 保留、路由、血缘、响应式和生产刷新验收通过。
 
 ## Verification plan
