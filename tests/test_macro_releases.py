@@ -292,12 +292,18 @@ def _bea_pio_section2_workbook(
     section_206.title = "T20600-M"
     section_20801 = workbook.create_sheet("T20801-M")
     section_20806 = workbook.create_sheet("T20806-M")
+    section_20804 = workbook.create_sheet("T20804-M")
     for sheet, title in (
         (section_206, "Table 2.6. Personal Income and Its Disposition, Monthly"),
         (
             section_20801,
             "Table 2.8.1. Percent Change From Preceding Period in Real "
             "Personal Consumption Expenditures by Major Type of Product, Monthly",
+        ),
+        (
+            section_20804,
+            "Table 2.8.4. Price Indexes for Personal Consumption Expenditures "
+            "by Major Type of Product, Monthly",
         ),
         (
             section_20806,
@@ -314,6 +320,7 @@ def _bea_pio_section2_workbook(
     section_20806["A2"] = (
         "[Millions of chained (2017) dollars; seasonally adjusted at annual rates]"
     )
+    section_20804["A2"] = "[Index numbers, 2017=100; seasonally adjusted]"
 
     def monthly_periods(start_year: int, start_month: int) -> list[str]:
         periods = []
@@ -328,10 +335,12 @@ def _bea_pio_section2_workbook(
 
     periods_206 = monthly_periods(1959, 1)
     periods_20801 = monthly_periods(1959, 2)
+    periods_20804 = monthly_periods(1959, 1)
     periods_20806 = monthly_periods(2007, 1)
     for sheet, periods in (
         (section_206, periods_206),
         (section_20801, periods_20801),
+        (section_20804, periods_20804),
         (section_20806, periods_20806),
     ):
         sheet["A3"] = f"Monthly data from {periods[0]} to {periods[-1]}"
@@ -390,6 +399,23 @@ def _bea_pio_section2_workbook(
         section_20806.cell(9, offset, 15000000)
     section_20806.cell(9, 3 + len(periods_20806) - 1, 16729609)
     section_20806.cell(9, 3 + len(periods_20806), 16773429)
+    section_20804.cell(9, 2, "Personal consumption expenditures (PCE)")
+    section_20804.cell(9, 3, "DPCERG")
+    section_20804.cell(33, 2, "PCE excluding food and energy")
+    section_20804.cell(33, 3, "DPCCRG")
+    for offset, _period in enumerate(periods_20804, start=4):
+        section_20804.cell(9, offset, 100.0)
+        section_20804.cell(33, offset, 200.0)
+    section_20804.cell(9, 3 + len(periods_20804) - 12, 120.0)
+    section_20804.cell(9, 3 + len(periods_20804) - 6, 124.0)
+    section_20804.cell(9, 3 + len(periods_20804) - 3, 125.0)
+    section_20804.cell(9, 3 + len(periods_20804) - 1, 129.0)
+    section_20804.cell(9, 3 + len(periods_20804), 130.0)
+    section_20804.cell(33, 3 + len(periods_20804) - 12, 250.0)
+    section_20804.cell(33, 3 + len(periods_20804) - 6, 254.0)
+    section_20804.cell(33, 3 + len(periods_20804) - 3, 255.0)
+    section_20804.cell(33, 3 + len(periods_20804) - 1, 259.0)
+    section_20804.cell(33, 3 + len(periods_20804), 260.0)
     return _workbook_bytes(workbook)
 
 
@@ -545,7 +571,7 @@ def test_bea_pio_provider_parses_full_history_codes_and_cross_checks_summary():
     ).personal_income_outlays()
 
     assert result.ok
-    assert result.row_count == 5084
+    assert result.row_count == 6702
     assert result.metadata["latest_value_date"] == "2026-05-01"
     assert result.metadata["source_revision_date"] == "2026-06-25"
     assert result.metadata["summary_cross_check"] == "passed"
@@ -581,6 +607,18 @@ def test_bea_pio_provider_parses_full_history_codes_and_cross_checks_summary():
     assert by_series_and_date[("BEA-REAL-PCE-SAAR", "2026-05-01")][
         "value"
     ] == Decimal("16773429")
+    assert by_series_and_date[("BEA-PCE-PRICE-INDEX", "2026-05-01")][
+        "value"
+    ] == Decimal("130")
+    assert by_series_and_date[("BEA-CORE-PCE-PRICE-INDEX", "2026-05-01")][
+        "value"
+    ] == Decimal("260")
+    assert by_series_and_date[("BEA-PCE-PRICE-INDEX", "2026-05-01")]["metadata"][
+        "official_series_code"
+    ] == "DPCERG"
+    assert by_series_and_date[("BEA-CORE-PCE-PRICE-INDEX", "2026-05-01")]["metadata"][
+        "official_series_code"
+    ] == "DPCCRG"
     real_pce = by_series_and_date[("BEA-REAL-PCE-MOM", "2026-05-01")]
     assert real_pce["metadata"]["official_series_code"] == "DPCERAM"
     assert real_pce["metadata"]["vintage_status"] == "current_release_vintage"

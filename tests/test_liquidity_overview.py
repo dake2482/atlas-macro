@@ -733,11 +733,12 @@ def test_all_three_refresh_entrypoints_invoke_liquidity_coordinator(monkeypatch)
     provider_sources = {
         "NYFedMarketsProvider": "ny-fed-markets",
         "TreasuryRatesProvider": "us-treasury-rates",
-        "FiscalDataProvider": "treasury-fiscal-data",
-        "BLSProvider": "bls",
-        "DOLWeeklyClaimsProvider": "dol-eta-ui",
-        "FederalReserveRSSProvider": "federal-reserve",
-        "FederalReserveH41Provider": "federal-reserve",
+            "FiscalDataProvider": "treasury-fiscal-data",
+            "BLSProvider": "bls",
+            "BEAPIOReleaseProvider": "bea-pio-release",
+            "DOLWeeklyClaimsProvider": "dol-eta-ui",
+            "FederalReserveRSSProvider": "federal-reserve",
+            "FederalReserveH41Provider": "federal-reserve",
         "FederalReservePRATESProvider": "federal-reserve",
     }
     for class_name, source_key in provider_sources.items():
@@ -768,6 +769,6 @@ def test_all_three_refresh_entrypoints_invoke_liquidity_coordinator(monkeypatch)
     refresh_prates_data()
 
     assert len(calls) == 3
-    assert len(calls[0]) == 15
+    assert len(calls[0]) == 16
     assert calls[1] == ["h41:fixture"]
     assert calls[2] == ["iorb:fixture"]

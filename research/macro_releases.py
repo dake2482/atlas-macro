@@ -648,6 +648,22 @@ class BEAPIOReleaseProvider(_ReleaseWorkbookProvider):
             "seasonal_adjustment": "seasonally adjusted at annual rates",
             "requires_reference_year": True,
         },
+        "BEA-PCE-PRICE-INDEX": {
+            "sheet": "T20804-M",
+            "code": "DPCERG",
+            "label": "Personal consumption expenditures price index",
+            "unit": "chain-type price index",
+            "seasonal_adjustment": "seasonally adjusted",
+            "requires_reference_year": True,
+        },
+        "BEA-CORE-PCE-PRICE-INDEX": {
+            "sheet": "T20804-M",
+            "code": "DPCCRG",
+            "label": "PCE price index excluding food and energy",
+            "unit": "chain-type price index",
+            "seasonal_adjustment": "seasonally adjusted",
+            "requires_reference_year": True,
+        },
     }
     SHEET_CONTRACTS = {
         "T20600-M": (
@@ -664,11 +680,16 @@ class BEAPIOReleaseProvider(_ReleaseWorkbookProvider):
             "millions of chained",
             "seasonally adjusted at annual rates",
         ),
+        "T20804-M": (
+            "price indexes for personal consumption expenditures",
+            "index numbers",
+        ),
     }
     LATEST_ACCEPTABLE_HISTORY_START = {
         "T20600-M": "1959-01-01",
         "T20801-M": "1959-02-01",
         "T20806-M": "2007-01-01",
+        "T20804-M": "1959-01-01",
     }
     SUMMARY_SERIES = frozenset(
         {
@@ -934,9 +955,13 @@ class BEAPIOReleaseProvider(_ReleaseWorkbookProvider):
                             f"{sheet_contract} {str(row[1] or '').casefold()}",
                         )
                         if not reference_match:
+                            reference_match = re.search(
+                                r"\b(\d{4})\s*=\s*100\b",
+                                f"{sheet_contract} {str(row[1] or '').casefold()}",
+                            )
+                        if not reference_match:
                             raise ValueError(
-                                f"BEA Section 2 series {series_id} has no chained-dollar "
-                                "reference year"
+                                f"BEA Section 2 series {series_id} has no reference year"
                             )
                         reference_year = int(reference_match.group(1))
                     count = 0

@@ -501,7 +501,8 @@ PAGE_CONFIGS = {
         "eyebrow": "Inflation Stack",
         "description": (
             "使用 BLS 季调与未季调配对指数展示总体 CPI、核心 CPI 与最终需求"
-            "PPI 的环比、同比及 3M/6M 年化动能；PCE、通胀分项、市场预期和"
+            "PPI 的环比、同比及 3M/6M 年化动能；BEA PIO Section 2 展示 PCE"
+            " 与核心 PCE 价格指数；通胀分项、市场预期和"
             "历史 vintage 缺口在数据台账中单列。"
         ),
         "period_options": [
@@ -527,6 +528,11 @@ PAGE_CONFIGS = {
                 "label": "生产者价格",
                 "chart_keys": ["final-demand-ppi-rates"],
             },
+            {
+                "value": "pce",
+                "label": "PCE",
+                "chart_keys": ["pce-price-rates", "core-pce-price-rates"],
+            },
         ],
         "default_tab": "overview",
         "metrics": [
@@ -542,9 +548,13 @@ PAGE_CONFIGS = {
             metric("最终需求 PPI 同比"),
             metric("最终需求 PPI 3M 年化"),
             metric("最终需求 PPI 6M 年化"),
+            metric("PCE 价格指数 环比"),
+            metric("PCE 价格指数 同比"),
+            metric("核心 PCE 价格指数 环比"),
+            metric("核心 PCE 价格指数 同比"),
         ],
         "analysis": (
-            "当前只对通过同批完整性检查的 BLS 实现通胀层作可复算展示；"
+            "当前只对通过同批完整性检查的 BLS 与 BEA PIO 通胀层作可复算展示；"
             "未接入层保持空缺，不用指数水平或演示数值替代。"
         ),
     },

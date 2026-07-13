@@ -184,7 +184,7 @@ EMPLOYMENT_PUBLICATION_GROUPS = {
     "employment": frozenset({"bls", "dol-eta-ui"}),
 }
 INFLATION_PUBLICATION_GROUPS = {
-    "inflation": frozenset({"bls"}),
+    "inflation": frozenset({"bls", "bea-pio-release"}),
 }
 FED_FUNDS_DATASETS = {
     "sofr": ("ny-fed-markets", "reference-rate:sofr"),
@@ -286,6 +286,14 @@ INFLATION_REQUIRED_METRIC_KEYS = frozenset(
         "final-demand-ppi-yoy",
         "final-demand-ppi-3m-annualized",
         "final-demand-ppi-6m-annualized",
+        "pce-price-index-mom",
+        "pce-price-index-yoy",
+        "pce-price-index-3m-annualized",
+        "pce-price-index-6m-annualized",
+        "core-pce-price-index-mom",
+        "core-pce-price-index-yoy",
+        "core-pce-price-index-3m-annualized",
+        "core-pce-price-index-6m-annualized",
     }
 )
 MACRO_REQUIRED_SERIES = {
@@ -317,6 +325,12 @@ MACRO_REQUIRED_SERIES = {
                 "CUUR0000SA0L1E",
                 "WPSFD4",
                 "WPUFD4",
+            }
+        ),
+        "bea-pio-release": frozenset(
+            {
+                "BEA-PCE-PRICE-INDEX",
+                "BEA-CORE-PCE-PRICE-INDEX",
             }
         ),
     },
@@ -1584,7 +1598,7 @@ def _inflation_lineage(payload: dict[str, Any]) -> dict[str, Any]:
         "fresh_until": payload["fresh_until"],
         "batch_id": payload["batch_id"],
         "quality_status": payload["quality_status"],
-        "license_scope": "Original calculation from attributed BLS inputs",
+        "license_scope": "Original calculation from attributed official inputs",
         "fallback_source": None,
     }
 
@@ -1594,19 +1608,30 @@ def _inflation_series_data(
     key_prefix: str,
     label: str,
     seasonally_adjusted_series: str,
-    not_seasonally_adjusted_series: str,
+    not_seasonally_adjusted_series: str | None,
     batch_id: uuid.UUID | str | None,
+    input_source_key: str,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Build SA momentum and official NSA 12-month rates for one price index."""
+    """Build exact-month inflation rates for one official price index."""
 
     sa = _inflation_observation_map(
         seasonally_adjusted_series, batch_id=batch_id
     )
-    nsa = _inflation_observation_map(
-        not_seasonally_adjusted_series, batch_id=batch_id
+    nsa = (
+        _inflation_observation_map(
+            not_seasonally_adjusted_series, batch_id=batch_id
+        )
+        if not_seasonally_adjusted_series
+        else sa
     )
     if not sa or not nsa or max(sa) != max(nsa):
         return [], []
+    yoy_series = not_seasonally_adjusted_series or seasonally_adjusted_series
+    yoy_basis = (
+        "not_seasonally_adjusted"
+        if not_seasonally_adjusted_series
+        else "seasonally_adjusted"
+    )
 
     rate_specs = (
         (
@@ -1655,10 +1680,10 @@ def _inflation_series_data(
             12,
             False,
             False,
-            "not_seasonally_adjusted",
+            yoy_basis,
             (
-                f"100 * ({not_seasonally_adjusted_series}_t / "
-                f"{not_seasonally_adjusted_series}_t-12 - 1)"
+                f"100 * ({yoy_series}_t / "
+                f"{yoy_series}_t-12 - 1)"
             ),
         ),
     )
@@ -1668,7 +1693,7 @@ def _inflation_series_data(
     for period in sorted(set(sa) | set(nsa)):
         row: dict[str, Any] = {
             "date": period.isoformat(),
-            "_source_keys": ["bls", "internal"],
+            "_source_keys": [input_source_key, "internal"],
             "_lineage": {},
         }
         for (
@@ -2700,7 +2725,9 @@ def _treasury_curve_page_data(
 
 
 def _inflation_page_data(
-    *, batch_id: uuid.UUID | str | None
+    *,
+    batch_id: uuid.UUID | str | None,
+    bea_pio_batch_id: uuid.UUID | str | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
     headline_metrics, headline_rows = _inflation_series_data(
         key_prefix="headline-cpi",
@@ -2708,6 +2735,7 @@ def _inflation_page_data(
         seasonally_adjusted_series="CUSR0000SA0",
         not_seasonally_adjusted_series="CUUR0000SA0",
         batch_id=batch_id,
+        input_source_key="bls",
     )
     core_metrics, core_rows = _inflation_series_data(
         key_prefix="core-cpi",
@@ -2715,6 +2743,7 @@ def _inflation_page_data(
         seasonally_adjusted_series="CUSR0000SA0L1E",
         not_seasonally_adjusted_series="CUUR0000SA0L1E",
         batch_id=batch_id,
+        input_source_key="bls",
     )
     producer_metrics, producer_rows = _inflation_series_data(
         key_prefix="final-demand-ppi",
@@ -2722,6 +2751,23 @@ def _inflation_page_data(
         seasonally_adjusted_series="WPSFD4",
         not_seasonally_adjusted_series="WPUFD4",
         batch_id=batch_id,
+        input_source_key="bls",
+    )
+    pce_metrics, pce_rows = _inflation_series_data(
+        key_prefix="pce-price-index",
+        label="PCE 价格指数",
+        seasonally_adjusted_series="BEA-PCE-PRICE-INDEX",
+        not_seasonally_adjusted_series=None,
+        batch_id=bea_pio_batch_id,
+        input_source_key="bea-pio-release",
+    )
+    core_pce_metrics, core_pce_rows = _inflation_series_data(
+        key_prefix="core-pce-price-index",
+        label="核心 PCE 价格指数",
+        seasonally_adjusted_series="BEA-CORE-PCE-PRICE-INDEX",
+        not_seasonally_adjusted_series=None,
+        batch_id=bea_pio_batch_id,
+        input_source_key="bea-pio-release",
     )
     charts = _existing(
         _lineage_chart(
@@ -2765,37 +2811,84 @@ def _inflation_page_data(
             ],
             tab="producer",
         ),
+        _lineage_chart(
+            key="pce-price-rates",
+            title="PCE 价格指数通胀率与短周期动能",
+            description=(
+                "使用 BEA PIO Section 2 的 PCE chain-type price index；"
+                "环比、同比和短期动能均由同一当前 release vintage 透明计算。"
+            ),
+            rows=pce_rows,
+            fields=[
+                "PCE 价格指数 环比",
+                "PCE 价格指数 同比",
+                "PCE 价格指数 3M 年化",
+                "PCE 价格指数 6M 年化",
+            ],
+            tab="pce",
+        ),
+        _lineage_chart(
+            key="core-pce-price-rates",
+            title="核心 PCE 价格指数通胀率与短周期动能",
+            description=(
+                "剔除食品和能源，使用 BEA PIO Section 2 的核心 PCE price index；"
+                "全部绑定同一 BEA PIO release-workbook 批次。"
+            ),
+            rows=core_pce_rows,
+            fields=[
+                "核心 PCE 价格指数 环比",
+                "核心 PCE 价格指数 同比",
+                "核心 PCE 价格指数 3M 年化",
+                "核心 PCE 价格指数 6M 年化",
+            ],
+            tab="pce",
+        ),
     )
     sections = [
         {
             "title": "口径、公式与修订",
             "body": (
-                "环比与 3M/6M 年化只使用季调指数；同比只使用未季调指数。"
+                "CPI/PPI 环比与 3M/6M 年化只使用季调指数，同比只使用未季调指数。"
+                "PCE 与核心 PCE 来自 BEA PIO Section 2 的季调 chain-type price index。"
                 "3M/6M 按复合增长率年化，缺失精确自然月时保留图表空档，不做"
-                "最近日期替代。CPI 季调因子可年度回修；PPI 最近四个月可能修订。"
+                "最近日期替代。CPI 季调因子可年度回修；PPI 和 PCE 发布值可能修订。"
             ),
             "full_width": True,
         },
         {
             "title": "尚未接入的通胀层",
             "body": (
-                "核心 PCE、住房与服务分拆、5Y/10Y 盈亏平衡通胀和完整发布 vintage "
+                "住房与服务分拆、5Y/10Y 盈亏平衡通胀和完整发布 vintage "
                 "尚未进入本页原子快照；其来源状态与后续接入建议见下方数据覆盖台账。"
             ),
             "full_width": True,
         },
     ]
-    return [*headline_metrics, *core_metrics, *producer_metrics], charts, sections
+    return [
+        *headline_metrics,
+        *core_metrics,
+        *producer_metrics,
+        *pce_metrics,
+        *core_pce_metrics,
+    ], charts, sections
 
 
-def _inflation_page_is_buildable(*, batch_id: uuid.UUID | str | None) -> bool:
-    metrics, charts, _ = _inflation_page_data(batch_id=batch_id)
+def _inflation_page_is_buildable(
+    *,
+    batch_id: uuid.UUID | str | None,
+    bea_pio_batch_id: uuid.UUID | str | None = None,
+) -> bool:
+    metrics, charts, _ = _inflation_page_data(
+        batch_id=batch_id, bea_pio_batch_id=bea_pio_batch_id
+    )
     metric_keys = {str(item.get("key") or "") for item in metrics}
     chart_by_key = {str(item.get("key") or ""): item for item in charts}
     expected_chart_keys = {
         "headline-cpi-rates",
         "core-cpi-rates",
         "final-demand-ppi-rates",
+        "pce-price-rates",
+        "core-pce-price-rates",
     }
     if (
         not INFLATION_REQUIRED_METRIC_KEYS <= metric_keys
@@ -2820,6 +2913,18 @@ def _inflation_page_is_buildable(*, batch_id: uuid.UUID | str | None) -> bool:
             "最终需求 PPI 同比",
             "最终需求 PPI 3M 年化",
             "最终需求 PPI 6M 年化",
+        },
+        "pce-price-rates": {
+            "PCE 价格指数 环比",
+            "PCE 价格指数 同比",
+            "PCE 价格指数 3M 年化",
+            "PCE 价格指数 6M 年化",
+        },
+        "core-pce-price-rates": {
+            "核心 PCE 价格指数 环比",
+            "核心 PCE 价格指数 同比",
+            "核心 PCE 价格指数 3M 年化",
+            "核心 PCE 价格指数 6M 年化",
         },
     }
     for chart_key, required_fields in required_latest_fields.items():
@@ -7312,7 +7417,8 @@ def publish_official_dashboards(
             inflation_charts,
             inflation_sections,
         ) = _inflation_page_data(
-            batch_id=normalized_source_batches.get("bls")
+            batch_id=normalized_source_batches.get("bls"),
+            bea_pio_batch_id=normalized_source_batches.get("bea-pio-release"),
         )
     if selected_keys is None or "fed-funds" in selected_keys:
         if prepared_fed_funds_data is not None:
@@ -7815,6 +7921,16 @@ def refresh_official_data(*, current_year: int | None = None) -> dict[str, Any]:
             ),
         ),
         (
+            BEAPIOReleaseProvider(),
+            (
+                (
+                    "personal_income_outlays",
+                    {},
+                    _store_release_workbook_observations,
+                ),
+            ),
+        ),
+        (
             DOLWeeklyClaimsProvider(),
             (
                 (
@@ -7895,13 +8011,22 @@ def refresh_official_data(*, current_year: int | None = None) -> dict[str, Any]:
         inflation_completed, runs
     )
     inflation_bls_runs = [run for run in runs if run.source.key == "bls"]
+    inflation_bea_pio_runs = [
+        run for run in runs if run.source.key == "bea-pio-release"
+    ]
     inflation_batch_id = (
         inflation_bls_runs[0].batch_id
         if len(inflation_bls_runs) == 1
         else None
     )
+    inflation_bea_pio_batch_id = (
+        inflation_bea_pio_runs[0].batch_id
+        if len(inflation_bea_pio_runs) == 1
+        else None
+    )
     if inflation_publishable and not _inflation_page_is_buildable(
-        batch_id=inflation_batch_id
+        batch_id=inflation_batch_id,
+        bea_pio_batch_id=inflation_bea_pio_batch_id,
     ):
         inflation_publishable = set()
     stale_inflation_keys = set(INFLATION_PUBLICATION_GROUPS) - set(
@@ -7912,11 +8037,18 @@ def refresh_official_data(*, current_year: int | None = None) -> dict[str, Any]:
         runs,
         groups=INFLATION_PUBLICATION_GROUPS,
     )
-    if inflation_publishable and inflation_batch_id is not None:
+    if (
+        inflation_publishable
+        and inflation_batch_id is not None
+        and inflation_bea_pio_batch_id is not None
+    ):
         dashboards.extend(
             publish_official_dashboards(
                 keys=inflation_publishable,
-                source_batches={"bls": inflation_batch_id},
+                source_batches={
+                    "bls": inflation_batch_id,
+                    "bea-pio-release": inflation_bea_pio_batch_id,
+                },
             )
         )
     stale_dashboard_keys = stale_employment_keys | stale_inflation_keys

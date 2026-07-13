@@ -361,13 +361,13 @@ DATA_REQUIREMENTS = [
         "key": "bea-pce-inflation",
         "page_key": "inflation",
         "metric_name": "PCE 与核心 PCE 价格指数通胀率",
-        "status": NEEDS_SOURCE,
+        "status": LIVE,
         "source_name": "U.S. Bureau of Economic Analysis Personal Income and Outlays",
         "source_url": "https://www.bea.gov/data/income-saving/personal-income",
         "reason": (
-            "官方免费来源已知，但当前 PIO 适配器只入库实际 PCE 环比、"
-            "实际可支配收入和储蓄率，尚未解析 PCE/核心 PCE 价格指数。"
-            "专用适配器及同批发布门完成前不展示 PCE 通胀数值。"
+            "BEA PIO Section 2 T20804-M 工作簿解析 PCE 与核心 PCE chain-type "
+            "price index；环比、同比和 3M/6M 年化均按精确自然月透明派生，"
+            "并与 BLS CPI/PPI 一起进入通胀页同批发布门。"
         ),
         "proxy_description": "不以 CPI、实际 PCE 增速或演示值替代 PCE 价格通胀。",
         "priority": 2,
