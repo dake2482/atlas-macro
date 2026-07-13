@@ -64,6 +64,7 @@ from .providers import (
     TreasuryRatesProvider,
 )
 from .services import (
+    current_display_source_key_sets,
     ensure_source,
     public_display_license_q,
     public_source_notices,
@@ -115,10 +116,34 @@ CORE_PUBLICATION_KEYS = frozenset(
     {
         "transmission-chain",
         "operations",
-        "rrp-tga",
         "global-dollar",
         "subsurface",
-        "auctions",
+    }
+)
+AUCTION_CONTRACT_VERSION = 1
+RRP_TGA_CONTRACT_VERSION = 1
+AUCTION_DATASET = (
+    "treasury-fiscal-data",
+    "treasury-securities-auctions",
+)
+INDEPENDENT_PUBLICATION_KEYS = frozenset({"auctions", "rrp-tga"})
+AUCTION_REQUIRED_METRIC_KEYS = frozenset(
+    {
+        "days-to-next-auction",
+        "formal-auction-gross-7d",
+        "issue-gross-7d",
+        "issue-gross-14d",
+        "latest-bid-to-cover",
+    }
+)
+RRP_TGA_REQUIRED_METRIC_KEYS = frozenset(
+    {
+        "onrrp",
+        "onrrp-rate",
+        "onrrp-participants",
+        "tga",
+        "issue-gross-7d",
+        "issue-gross-14d",
     }
 )
 TREASURY_CURVE_CONTRACT_VERSION = 1
@@ -219,6 +244,11 @@ LIQUIDITY_DATASETS = {
     "h41": ("federal-reserve", "h41"),
     "onrrp": ("ny-fed-markets", "repo:reverse-repo-fixed-results"),
     "tga": ("treasury-fiscal-data", "daily-treasury-statement:tga"),
+}
+RRP_TGA_DATASETS = {
+    "onrrp": LIQUIDITY_DATASETS["onrrp"],
+    "tga": LIQUIDITY_DATASETS["tga"],
+    "auctions": AUCTION_DATASET,
 }
 LIQUIDITY_FED_FUNDS_METRIC_KEYS = frozenset(
     {"sofr", "iorb", "sofr-effr", "sofr-iorb"}
@@ -5939,6 +5969,1868 @@ def _coordinate_liquidity_dashboard(
     return dashboards, set()
 
 
+def _latest_auction_attempt() -> IngestionRun | None:
+    source_key, dataset = AUCTION_DATASET
+    return (
+        IngestionRun.objects.filter(source__key=source_key, dataset=dataset)
+        .order_by("-started_at", "-id")
+        .first()
+    )
+
+
+def _auction_run_state(
+    run: IngestionRun | None,
+    *,
+    status: str | None = None,
+    reason: str | None = None,
+) -> dict[str, Any]:
+    source_key, dataset = AUCTION_DATASET
+    return {
+        "component": "auctions",
+        "kind": "ingestion_run",
+        "source": source_key,
+        "dataset": dataset,
+        "status": status or (run.status if run else "missing"),
+        "reason": (
+            reason
+            or (run.error if run else "required auction dataset run missing")
+        )[:320],
+        "ingestion_run_id": run.pk if run else None,
+        "batch_id": str(run.batch_id) if run else None,
+        "row_count": run.row_count if run else 0,
+        "refresh_cycle_id": (
+            str((run.metadata or {}).get("refresh_cycle_id") or "")
+            if run
+            else ""
+        ),
+        "completed_at": (
+            run.completed_at.isoformat() if run and run.completed_at else None
+        ),
+    }
+
+
+def _auction_run_contract_error(
+    run: IngestionRun,
+    *,
+    today_et: date,
+    now: datetime,
+) -> str | None:
+    metadata = dict(run.metadata or {})
+    if run.status != IngestionRun.Status.SUCCESS:
+        return "latest exact auction run did not complete successfully"
+    if not metadata.get("coverage_complete"):
+        return "bounded auction and issue slices are not both complete"
+    if not metadata.get("refresh_cycle_id"):
+        return "auction run has no refresh cycle identity"
+    if metadata.get("as_of_date_et") != today_et.isoformat():
+        return "auction run is not for the current America/New_York date"
+    fetched_at = _parse_payload_datetime(metadata.get("fetched_at"))
+    if fetched_at is None:
+        return "auction run has no valid fetched_at"
+    if fetched_at > now + timedelta(minutes=5):
+        return "auction run fetched_at is in the future"
+    if fetched_at.astimezone(ZoneInfo("America/New_York")).date() != today_et:
+        return "auction run was not fetched during the current ET date"
+    expected = {
+        "auction_window": {
+            "lower": (today_et - timedelta(days=90)).isoformat(),
+            "upper_exclusive": (today_et + timedelta(days=14)).isoformat(),
+            "date_field": "auction_date",
+        },
+        "issue_window": {
+            "lower": today_et.isoformat(),
+            "upper_exclusive": (today_et + timedelta(days=14)).isoformat(),
+            "date_field": "issue_date",
+        },
+    }
+    slices = {
+        str(item.get("name") or ""): item
+        for item in metadata.get("slices", [])
+        if isinstance(item, dict)
+    }
+    if set(slices) != set(expected):
+        return "auction run does not contain the two required bounded slices"
+    for name, bounds in expected.items():
+        state = slices[name]
+        if not state.get("coverage_complete"):
+            return f"{name} is not complete"
+        if any(state.get(key) != value for key, value in bounds.items()):
+            return f"{name} bounds do not match the current v1 contract"
+        if state.get("rejected_count", 0) != 0:
+            return f"{name} contains rejected upstream rows"
+        returned = state.get("returned_count")
+        normalized = state.get("normalized_count", returned)
+        total = state.get("total_count")
+        count = state.get("count")
+        if not all(
+            isinstance(value, int)
+            for value in (returned, normalized, total, count)
+        ):
+            return f"{name} lacks complete integer row counts"
+        if not returned == normalized == total == count:
+            return f"{name} row counts do not reconcile"
+        pages = state.get("total_pages")
+        if total == 0 and pages not in {0, 1}:
+            return f"{name} has invalid empty-page metadata"
+        if total > 0 and pages != 1:
+            return f"{name} spans more than one fetched page"
+    return None
+
+
+def _select_auction_run(
+    trigger_runs: Iterable[IngestionRun],
+    *,
+    today_et: date,
+    now: datetime,
+) -> tuple[IngestionRun | None, list[dict[str, Any]], bool]:
+    source_key, dataset = AUCTION_DATASET
+    relevant = [
+        run
+        for run in trigger_runs
+        if run.source.key == source_key and run.dataset == dataset
+    ]
+    if not relevant:
+        return None, [], False
+    latest = _latest_auction_attempt()
+    # A delayed/replayed run is a complete no-op. It must not stale or replace
+    # the state established by the newer exact source+dataset attempt.
+    if latest is None or len(relevant) != 1 or relevant[0].pk != latest.pk:
+        return None, [], False
+    error = _auction_run_contract_error(latest, today_et=today_et, now=now)
+    if error:
+        return (
+            None,
+            [_auction_run_state(latest, status="invalid", reason=error)],
+            True,
+        )
+    return latest, [_auction_run_state(latest, status="valid")], True
+
+
+def _auction_event_datetime(value: date) -> str:
+    return datetime.combine(
+        value,
+        time.min,
+        tzinfo=ZoneInfo("America/New_York"),
+    ).isoformat()
+
+
+def _auction_input_lineage(
+    item: TreasuryAuction,
+    *,
+    event_date: date,
+    value: Decimal | None = None,
+    field: str | None = None,
+    unit: str = "",
+    fresh_until: datetime,
+) -> dict[str, Any]:
+    return {
+        "record_identity": f"{item.cusip}:{item.auction_date.isoformat()}",
+        "cusip": item.cusip,
+        "security_term": item.security_term,
+        "field": field,
+        "value": float(value) if value is not None else None,
+        "raw_value": str(value) if value is not None else None,
+        "unit": unit,
+        "source_key": item.source.key,
+        "source_name": item.source.name,
+        "source_keys": [item.source.key],
+        "license_scope": item.source.license_scope,
+        "event_date": event_date.isoformat(),
+        "value_date": _auction_event_datetime(event_date),
+        "as_of": item.fetched_at.isoformat(),
+        "fetched_at": item.fetched_at.isoformat(),
+        "fresh_until": fresh_until.isoformat(),
+        "batch_id": str(item.batch_id),
+        "quality_status": item.quality_status,
+        "fallback_source": None,
+    }
+
+
+def _auction_row_payload(
+    item: TreasuryAuction,
+    *,
+    event_date: date,
+    display_value: str,
+    status: str,
+    description: str,
+    fresh_until: datetime,
+    lineage_field: str = "offering_amount",
+    lineage_value: Decimal | None = None,
+    lineage_unit: str = "USD gross par",
+    additional_lineage_fields: tuple[
+        tuple[str, Decimal | None, str], ...
+    ] = (),
+) -> dict[str, Any]:
+    primary_value = (
+        item.offering_amount
+        if lineage_field == "offering_amount" and lineage_value is None
+        else lineage_value
+    )
+    lineage = _auction_input_lineage(
+        item,
+        event_date=event_date,
+        value=primary_value,
+        field=lineage_field,
+        unit=lineage_unit,
+        fresh_until=fresh_until,
+    )
+    additional_lineage = [
+        _auction_input_lineage(
+            item,
+            event_date=event_date,
+            value=value,
+            field=field,
+            unit=unit,
+            fresh_until=fresh_until,
+        )
+        for field, value, unit in additional_lineage_fields
+        if value is not None
+    ]
+    return {
+        "key": f"{item.cusip}-{item.auction_date.isoformat()}",
+        "label": f"{event_date.isoformat()} · {item.security_term}",
+        "display_value": display_value,
+        "status": status,
+        "description": description,
+        "source": item.source.name,
+        "source_key": item.source.key,
+        "source_keys": [item.source.key],
+        "value_date": lineage["value_date"],
+        "as_of": lineage["as_of"],
+        "fetched_at": lineage["fetched_at"],
+        "fresh_until": lineage["fresh_until"],
+        "batch_id": lineage["batch_id"],
+        "quality_status": lineage["quality_status"],
+        "license_scope": lineage["license_scope"],
+        "fallback_source": None,
+        "display_lineage": lineage,
+        "additional_lineage": additional_lineage,
+        "input_lineage": [lineage, *additional_lineage],
+    }
+
+
+def _auction_derived_metric(
+    *,
+    key: str,
+    label: str,
+    value: Decimal | int | None,
+    display_value: str,
+    unit: str,
+    value_date: date,
+    fetched_at: datetime,
+    fresh_until: datetime,
+    batch_id: uuid.UUID,
+    formula: str,
+    inputs: list[dict[str, Any]],
+) -> dict[str, Any]:
+    return {
+        "key": key,
+        "label": label,
+        "value": float(value) if value is not None else None,
+        "display_value": display_value,
+        "change": None,
+        "unit": unit,
+        "quality_status": Observation.Quality.ESTIMATED,
+        "source": "Atlas Macro 计算：U.S. Treasury FiscalData",
+        "source_key": "internal",
+        "source_keys": ["internal", "treasury-fiscal-data"],
+        "fallback_source": None,
+        "value_date": _auction_event_datetime(value_date),
+        "as_of": fetched_at.isoformat(),
+        "fetched_at": fetched_at.isoformat(),
+        "fresh_until": fresh_until.isoformat(),
+        "batch_id": str(batch_id),
+        "metadata": {
+            "formula": formula,
+            "input_series": ["treasury-securities-auctions"],
+            "input_batch_ids": [str(batch_id)],
+            "input_value_dates": sorted(
+                {
+                    str(item.get("value_date") or "")
+                    for item in inputs
+                    if item.get("value_date")
+                }
+            ),
+            "input_lineage": inputs,
+            "calculation_owner": "Atlas Macro",
+        },
+    }
+
+
+def _auction_direct_metric(
+    *,
+    key: str,
+    label: str,
+    value: Decimal | None,
+    display_value: str,
+    item: TreasuryAuction | None,
+    value_date: date,
+    fetched_at: datetime,
+    fresh_until: datetime,
+    batch_id: uuid.UUID,
+) -> dict[str, Any]:
+    inputs = (
+        [
+            _auction_input_lineage(
+                item,
+                event_date=value_date,
+                value=value,
+                field="bid_to_cover_ratio",
+                unit="ratio",
+                fresh_until=fresh_until,
+            )
+        ]
+        if item is not None
+        else []
+    )
+    return {
+        "key": key,
+        "label": label,
+        "value": float(value) if value is not None else None,
+        "display_value": display_value,
+        "change": None,
+        "unit": "x",
+        "quality_status": Observation.Quality.FRESH,
+        "source": "U.S. Department of the Treasury, FiscalData",
+        "source_key": "treasury-fiscal-data",
+        "source_keys": ["treasury-fiscal-data"],
+        "fallback_source": None,
+        "value_date": _auction_event_datetime(value_date),
+        "as_of": fetched_at.isoformat(),
+        "fetched_at": fetched_at.isoformat(),
+        "fresh_until": fresh_until.isoformat(),
+        "batch_id": str(batch_id),
+        "metadata": {
+            "source_field": "bid_to_cover_ratio",
+            "input_series": ["treasury-securities-auctions"],
+            "input_batch_ids": [str(batch_id)],
+            "input_value_dates": [
+                item.auction_date.isoformat() if item is not None else value_date.isoformat()
+            ],
+            "input_lineage": inputs,
+        },
+    }
+
+
+def _auction_page_data(
+    run: IngestionRun,
+    *,
+    today_et: date,
+    now: datetime,
+) -> tuple[
+    tuple[
+        list[dict[str, Any]],
+        list[dict[str, Any]],
+        list[dict[str, Any]],
+        dict[str, Any],
+    ]
+    | None,
+    list[dict[str, Any]],
+]:
+    public_keys, derived_keys = current_display_source_key_sets(
+        {"internal", "treasury-fiscal-data"}
+    )
+    if "treasury-fiscal-data" not in public_keys:
+        return None, [
+            _auction_run_state(
+                run,
+                status="unlicensed",
+                reason="Treasury source is not currently licensed for public display",
+            )
+        ]
+    if not {"internal", "treasury-fiscal-data"} <= derived_keys:
+        return None, [
+            _auction_run_state(
+                run,
+                status="unlicensed",
+                reason="required direct or derived display licence is not current",
+            )
+        ]
+    fetched_at = _parse_payload_datetime((run.metadata or {}).get("fetched_at"))
+    if fetched_at is None or fetched_at > now + timedelta(minutes=5):
+        return None, [
+            _auction_run_state(
+                run, status="invalid", reason="invalid or future fetched_at"
+            )
+        ]
+    fresh_until = datetime.combine(
+        today_et + timedelta(days=2),
+        time(hour=10),
+        tzinfo=ZoneInfo("America/New_York"),
+    ).astimezone(UTC)
+    auctions = list(
+        TreasuryAuction.objects.filter(batch_id=run.batch_id)
+        .filter(public_display_license_q())
+        .select_related("source")
+        .distinct()
+        .order_by("auction_date", "cusip")
+    )
+    if len(auctions) != run.row_count:
+        return None, [
+            _auction_run_state(
+                run,
+                status="invalid",
+                reason="exact-batch auction rows do not match run.row_count",
+            )
+        ]
+    identities: set[tuple[str, date]] = set()
+    for item in auctions:
+        identity = (item.cusip, item.auction_date)
+        if identity in identities:
+            return None, [
+                _auction_run_state(
+                    run, status="invalid", reason="duplicate auction identity"
+                )
+            ]
+        identities.add(identity)
+        dates = [
+            item.announcement_date,
+            item.auction_date,
+            item.issue_date,
+            item.maturity_date,
+        ]
+        ordered_dates = [value for value in dates if value is not None]
+        if ordered_dates != sorted(ordered_dates):
+            return None, [
+                _auction_run_state(
+                    run,
+                    status="invalid",
+                    reason=f"invalid event date order for {item.cusip}",
+                )
+            ]
+        if (
+            item.source.key != "treasury-fiscal-data"
+            or item.batch_id != run.batch_id
+            or item.quality_status != Observation.Quality.FRESH
+            or item.fetched_at != fetched_at
+            or item.fetched_at > now + timedelta(minutes=5)
+        ):
+            return None, [
+                _auction_run_state(
+                    run,
+                    status="invalid",
+                    reason="exact-batch row has wrong source, quality, batch or fetched_at",
+                )
+            ]
+
+    auction_end = today_et + timedelta(days=14)
+    issue_end = today_et + timedelta(days=14)
+    recent_start = today_et - timedelta(days=90)
+    formal = [
+        item
+        for item in auctions
+        if today_et <= item.auction_date < auction_end
+        and item.bid_to_cover_ratio is None
+        and item.announcement_date is not None
+        and item.announcement_date <= today_et
+    ]
+    issues = [
+        item
+        for item in auctions
+        if item.issue_date is not None and today_et <= item.issue_date < issue_end
+    ]
+    results = [
+        item
+        for item in auctions
+        if recent_start <= item.auction_date <= today_et
+        and item.bid_to_cover_ratio is not None
+    ]
+    if any(
+        item.offering_amount is None or item.offering_amount <= 0
+        for item in [*formal, *issues, *results]
+    ):
+        return None, [
+            _auction_run_state(
+                run,
+                status="invalid",
+                reason=(
+                    "a published formal, issue or result row has a missing or "
+                    "non-positive offering amount"
+                ),
+            )
+        ]
+
+    seven_day_end = today_et + timedelta(days=7)
+    formal_7d = [item for item in formal if item.auction_date < seven_day_end]
+    issues_7d = [
+        item for item in issues if item.issue_date and item.issue_date < seven_day_end
+    ]
+    gross_formal_7d = sum(
+        (item.offering_amount or Decimal("0") for item in formal_7d),
+        Decimal("0"),
+    )
+    gross_issue_7d = sum(
+        (item.offering_amount or Decimal("0") for item in issues_7d),
+        Decimal("0"),
+    )
+    gross_issue_14d = sum(
+        (item.offering_amount or Decimal("0") for item in issues),
+        Decimal("0"),
+    )
+
+    def offering_lineage(item: TreasuryAuction, event_date: date) -> dict[str, Any]:
+        return _auction_input_lineage(
+            item,
+            event_date=event_date,
+            value=item.offering_amount,
+            field="offering_amount",
+            unit="USD gross par",
+            fresh_until=fresh_until,
+        )
+
+    next_item = formal[0] if formal else None
+    next_inputs = (
+        [offering_lineage(next_item, next_item.auction_date)] if next_item else []
+    )
+    days_to_next = (next_item.auction_date - today_et).days if next_item else None
+    next_display = (
+        f"{days_to_next} 天 · {next_item.auction_date.isoformat()} · "
+        f"{next_item.security_term}"
+        if next_item is not None
+        else "未来 14 天无已公告待拍卖项目"
+    )
+    latest_result = max(results, key=lambda item: (item.auction_date, item.cusip)) if results else None
+    latest_btc = latest_result.bid_to_cover_ratio if latest_result else None
+    latest_btc_date = latest_result.auction_date if latest_result else today_et
+    metrics = [
+        _auction_derived_metric(
+            key="days-to-next-auction",
+            label="距下次正式拍卖",
+            value=days_to_next,
+            display_value=next_display,
+            unit="days",
+            value_date=(next_item.auction_date if next_item else today_et),
+            fetched_at=fetched_at,
+            fresh_until=fresh_until,
+            batch_id=run.batch_id,
+            formula="next formal auction_date - ET as_of_date",
+            inputs=next_inputs,
+        ),
+        _auction_derived_metric(
+            key="formal-auction-gross-7d",
+            label="未来 7 天正式拍卖公告面值",
+            value=gross_formal_7d / Decimal("1000000000"),
+            display_value=f"${gross_formal_7d / Decimal('1000000000'):,.1f}B",
+            unit="USD bn gross par",
+            value_date=today_et,
+            fetched_at=fetched_at,
+            fresh_until=fresh_until,
+            batch_id=run.batch_id,
+            formula="sum(offering_amount) for formal auction_date in [ET today, ET today+7d)",
+            inputs=[offering_lineage(item, item.auction_date) for item in formal_7d],
+        ),
+        _auction_derived_metric(
+            key="issue-gross-7d",
+            label="未来 7 天发行/结算公告面值",
+            value=gross_issue_7d / Decimal("1000000000"),
+            display_value=f"${gross_issue_7d / Decimal('1000000000'):,.1f}B",
+            unit="USD bn gross par",
+            value_date=today_et,
+            fetched_at=fetched_at,
+            fresh_until=fresh_until,
+            batch_id=run.batch_id,
+            formula="sum(offering_amount) for issue_date in [ET today, ET today+7d)",
+            inputs=[
+                offering_lineage(item, item.issue_date)
+                for item in issues_7d
+                if item.issue_date is not None
+            ],
+        ),
+        _auction_derived_metric(
+            key="issue-gross-14d",
+            label="未来 14 天发行/结算公告面值",
+            value=gross_issue_14d / Decimal("1000000000"),
+            display_value=f"${gross_issue_14d / Decimal('1000000000'):,.1f}B",
+            unit="USD bn gross par",
+            value_date=today_et,
+            fetched_at=fetched_at,
+            fresh_until=fresh_until,
+            batch_id=run.batch_id,
+            formula="sum(offering_amount) for issue_date in [ET today, ET today+14d)",
+            inputs=[
+                offering_lineage(item, item.issue_date)
+                for item in issues
+                if item.issue_date is not None
+            ],
+        ),
+        _auction_direct_metric(
+            key="latest-bid-to-cover",
+            label="最近拍卖 Bid-to-Cover",
+            value=latest_btc,
+            display_value=(f"{latest_btc:.2f}x" if latest_btc is not None else "近 90 天暂无已完成结果"),
+            item=latest_result,
+            value_date=latest_btc_date,
+            fetched_at=fetched_at,
+            fresh_until=fresh_until,
+            batch_id=run.batch_id,
+        ),
+    ]
+
+    formal_rows = [
+        _auction_row_payload(
+            item,
+            event_date=item.auction_date,
+            display_value=f"${(item.offering_amount or Decimal('0')) / Decimal('1000000000'):,.1f}B",
+            status="待拍卖",
+            description=(
+                f"CUSIP {item.cusip}；公告面值，不代表财政部实际净融资或 TGA 流入"
+            ),
+            fresh_until=fresh_until,
+        )
+        for item in formal
+    ]
+    issue_rows = [
+        _auction_row_payload(
+            item,
+            event_date=item.issue_date,
+            display_value=f"${(item.offering_amount or Decimal('0')) / Decimal('1000000000'):,.1f}B",
+            status=(
+                "已完成拍卖，待发行/结算"
+                if item.bid_to_cover_ratio is not None
+                else "计划发行/结算"
+            ),
+            description=(
+                f"拍卖日 {item.auction_date.isoformat()}；gross announced face amount，"
+                "不是实际现金流、TGA 变动或净流动性预测"
+            ),
+            fresh_until=fresh_until,
+        )
+        for item in issues
+        if item.issue_date is not None
+    ]
+    result_rows = [
+        _auction_row_payload(
+            item,
+            event_date=item.auction_date,
+            display_value=f"{item.bid_to_cover_ratio:.2f}x",
+            status=(f"高收益率 {item.high_yield:.3f}%" if item.high_yield is not None else "结果已公布"),
+            description=(
+                f"CUSIP {item.cusip}；公告面值 "
+                f"${item.offering_amount / Decimal('1000000000'):,.1f}B"
+                if item.offering_amount is not None
+                else f"CUSIP {item.cusip}；公告面值未提供"
+            ),
+            fresh_until=fresh_until,
+            lineage_field="bid_to_cover_ratio",
+            lineage_value=item.bid_to_cover_ratio,
+            lineage_unit="ratio",
+            additional_lineage_fields=(
+                ("offering_amount", item.offering_amount, "USD gross par"),
+                ("high_yield", item.high_yield, "%"),
+            ),
+        )
+        for item in sorted(results, key=lambda value: (value.auction_date, value.cusip), reverse=True)
+    ]
+
+    chart_rows = []
+    for offset in range(14):
+        event_date = today_et + timedelta(days=offset)
+        daily = [item for item in issues if item.issue_date == event_date]
+        daily_total = sum(
+            (item.offering_amount or Decimal("0") for item in daily), Decimal("0")
+        )
+        daily_inputs = [offering_lineage(item, event_date) for item in daily]
+        chart_rows.append(
+            {
+                "date": event_date.isoformat(),
+                "Gross announced issue amount": float(
+                    daily_total / Decimal("1000000000")
+                ),
+                "_source_keys": ["internal", "treasury-fiscal-data"],
+                "_lineage": {
+                    "Gross announced issue amount": {
+                        "source_key": "internal",
+                        "source_name": ensure_source("internal").name,
+                        "source_keys": ["internal", "treasury-fiscal-data"],
+                        "license_scope": ensure_source("internal").license_scope,
+                        "value_date": _auction_event_datetime(event_date),
+                        "as_of": fetched_at.isoformat(),
+                        "fetched_at": fetched_at.isoformat(),
+                        "fresh_until": fresh_until.isoformat(),
+                        "batch_id": str(run.batch_id),
+                        "input_batch_ids": [str(run.batch_id)],
+                        "input_lineage": daily_inputs,
+                        "formula": "sum(offering_amount) grouped by issue_date",
+                        "quality_status": Observation.Quality.ESTIMATED,
+                        "fallback_source": None,
+                    }
+                },
+            }
+        )
+    chart = _lineage_chart(
+        key="gross-issue-calendar",
+        title="未来 14 天发行/结算公告面值",
+        description=(
+            "按 issue_date 汇总 Treasury offering_amount，单位十亿美元；"
+            "这是 gross announced face amount，不是实际现金流、TGA 变动、"
+            "净融资或净流动性预测。"
+        ),
+        rows=chart_rows,
+        fields=("Gross announced issue amount",),
+        tab="issue-calendar",
+        frequency="daily",
+    )
+    if chart is None:
+        return None, [
+            _auction_run_state(
+                run, status="invalid", reason="gross issue chart contract failed"
+            )
+        ]
+    sections = [
+        {
+            "key": "formal-auctions-14d",
+            "title": "未来 14 天正式拍卖日历",
+            "description": "仅含尚未公布结果的正式拍卖；当日结果公布后移入结果表，不重复展示。",
+            "rows": formal_rows,
+            "status": Observation.Quality.FRESH,
+            "source_key": "treasury-fiscal-data",
+            "source_keys": ["treasury-fiscal-data"],
+            "as_of": fetched_at.isoformat(),
+            "fetched_at": fetched_at.isoformat(),
+            "fresh_until": fresh_until.isoformat(),
+            "batch_id": str(run.batch_id),
+            "license_scope": ensure_source("treasury-fiscal-data").license_scope,
+            "fallback_source": None,
+            "full_width": True,
+        },
+        {
+            "key": "issue-settlement-14d",
+            "title": "未来 14 天发行/结算日历",
+            "description": (
+                "保留拍卖已经完成但 issue_date 尚未来临的证券。金额为公告总面值，"
+                "不能据此推导 TGA 方向、实际净融资或流动性变化。"
+            ),
+            "rows": issue_rows,
+            "status": Observation.Quality.FRESH,
+            "source_key": "treasury-fiscal-data",
+            "source_keys": ["treasury-fiscal-data"],
+            "as_of": fetched_at.isoformat(),
+            "fetched_at": fetched_at.isoformat(),
+            "fresh_until": fresh_until.isoformat(),
+            "batch_id": str(run.batch_id),
+            "license_scope": ensure_source("treasury-fiscal-data").license_scope,
+            "fallback_source": None,
+            "full_width": True,
+        },
+        {
+            "key": "recent-results-90d",
+            "title": "近 90 天拍卖结果",
+            "description": "Bid-to-Cover 与拍卖高收益率来自同一完整官方批次；不包含真实 WI Tail。",
+            "rows": result_rows,
+            "status": Observation.Quality.FRESH,
+            "source_key": "treasury-fiscal-data",
+            "source_keys": ["treasury-fiscal-data"],
+            "as_of": fetched_at.isoformat(),
+            "fetched_at": fetched_at.isoformat(),
+            "fresh_until": fresh_until.isoformat(),
+            "batch_id": str(run.batch_id),
+            "license_scope": ensure_source("treasury-fiscal-data").license_scope,
+            "fallback_source": None,
+            "full_width": True,
+        },
+    ]
+    extra_data = {
+        "contract_version": AUCTION_CONTRACT_VERSION,
+        "as_of_date_et": today_et.isoformat(),
+        "timezone": "America/New_York",
+        "window_semantics": "half-open [start, end)",
+        "coverage_complete": True,
+        "component_snapshots": [
+            _auction_run_state(run, status="valid")
+        ],
+        "model_disclaimer": (
+            "offering_amount is gross announced face amount; it is not actual cash, "
+            "net financing, a TGA forecast or a net-liquidity forecast"
+        ),
+    }
+    return (metrics, [chart], sections, extra_data), []
+
+
+def _latest_auction_snapshot() -> DashboardSnapshot | None:
+    return (
+        DashboardSnapshot.objects.filter(
+            key="auctions",
+            is_published=True,
+            data__contract_version=AUCTION_CONTRACT_VERSION,
+        )
+        .exclude(source__key="demo-market")
+        .order_by("-created_at", "-id")
+        .first()
+    )
+
+
+def _mark_auction_stale(
+    components: list[dict[str, Any]], *, reason: str
+) -> None:
+    latest = (
+        DashboardSnapshot.objects.select_for_update()
+        .filter(
+            key="auctions",
+            is_published=True,
+            data__contract_version=AUCTION_CONTRACT_VERSION,
+        )
+        .exclude(source__key="demo-market")
+        .order_by("-created_at", "-id")
+        .first()
+    )
+    if latest is None:
+        return
+    component_summary = "；".join(
+        f"{item.get('component', 'auctions')}[{item.get('status', 'invalid')}] "
+        f"{item.get('reason', 'unknown failure')}"
+        for item in components
+    )
+    data = dict(latest.data or {})
+    data["refresh_failure"] = {
+        "checked_at": timezone.now().isoformat(),
+        "reason": f"{reason} 失败组件：{component_summary}",
+        "components": components,
+    }
+    latest.data = data
+    latest.quality_status = Observation.Quality.STALE
+    latest.save(update_fields=["data", "quality_status", "updated_at"])
+
+
+def _auction_snapshot_contract_is_valid(
+    snapshot: DashboardSnapshot,
+    *,
+    run: IngestionRun,
+    today_et: date,
+) -> bool:
+    data = dict(snapshot.data or {})
+    metrics = list(data.get("metrics", []))
+    charts = list(data.get("charts", []))
+    sections = list(data.get("sections", []))
+    if (
+        data.get("contract_version") != AUCTION_CONTRACT_VERSION
+        or data.get("as_of_date_et") != today_et.isoformat()
+        or not data.get("coverage_complete")
+        or data.get("refresh_failure")
+        or data.get("publication_batch_id") != str(snapshot.batch_id)
+        or set(data.get("component_batches", [])) != {str(run.batch_id)}
+        or {str(item.get("key") or "") for item in metrics}
+        != set(AUCTION_REQUIRED_METRIC_KEYS)
+        or {str(item.get("key") or "") for item in charts}
+        != {"gross-issue-calendar"}
+        or {str(item.get("key") or "") for item in sections}
+        != {"formal-auctions-14d", "issue-settlement-14d", "recent-results-90d"}
+    ):
+        return False
+    for item in metrics:
+        if (
+            not item.get("source_key")
+            or not item.get("license_scope")
+            or "fallback_source" not in item
+            or item.get("batch_id") != str(run.batch_id)
+            or not item.get("fetched_at")
+            or not item.get("value_date")
+        ):
+            return False
+        if item.get("source_key") == "internal" and not (
+            item.get("metadata") or {}
+        ).get("input_lineage") and item.get("value") not in {0, 0.0, None}:
+            return False
+    for section in sections:
+        if section.get("batch_id") != str(run.batch_id):
+            return False
+        for row in section.get("rows", []):
+            if (
+                row.get("batch_id") != str(run.batch_id)
+                or not row.get("license_scope")
+                or "fallback_source" not in row
+                or not row.get("input_lineage")
+            ):
+                return False
+    chart = charts[0]
+    chart_rows = list(chart.get("data", []))
+    expected_dates = {
+        (today_et + timedelta(days=offset)).isoformat()
+        for offset in range(14)
+    }
+    if {str(row.get("date") or "") for row in chart_rows} != expected_dates:
+        return False
+    field = "Gross announced issue amount"
+    for row in chart_rows:
+        lineage = (row.get("_lineage") or {}).get(field)
+        if (
+            not isinstance(lineage, dict)
+            or lineage.get("batch_id") != str(run.batch_id)
+            or lineage.get("fallback_source") is not None
+            or not lineage.get("license_scope")
+            or field not in row
+        ):
+            return False
+    by_date = {
+        date.fromisoformat(str(row["date"])): Decimal(str(row[field]))
+        for row in chart_rows
+    }
+    metric_by_key = {item["key"]: item for item in metrics}
+    if (
+        sum(
+            (
+                by_date[today_et + timedelta(days=offset)]
+                for offset in range(7)
+            ),
+            Decimal("0"),
+        )
+        != Decimal(str(metric_by_key["issue-gross-7d"]["value"]))
+        or sum(by_date.values(), Decimal("0"))
+        != Decimal(str(metric_by_key["issue-gross-14d"]["value"]))
+    ):
+        return False
+    section_by_key = {item["key"]: item for item in sections}
+    formal_row_keys = {
+        row.get("key")
+        for row in section_by_key["formal-auctions-14d"].get("rows", [])
+    }
+    result_row_keys = {
+        row.get("key")
+        for row in section_by_key["recent-results-90d"].get("rows", [])
+    }
+    if formal_row_keys & result_row_keys:
+        return False
+    normalized = {
+        item.key: item
+        for item in MetricSnapshot.objects.filter(
+            batch_id=snapshot.batch_id,
+            key__startswith="auctions-",
+        )
+    }
+    for metric in metrics:
+        if metric.get("value") is None:
+            continue
+        item = normalized.get(f"auctions-{metric['key']}")
+        if (
+            item is None
+            or item.value != Decimal(str(metric["value"]))
+            or item.source.key != metric["source_key"]
+            or item.fallback_source_id is not None
+            or item.value_date
+            != _parse_payload_datetime(metric.get("value_date"))
+            or item.fetched_at
+            != _parse_payload_datetime(metric.get("fetched_at"))
+            or item.metadata.get("component_batch_id")
+            != metric.get("batch_id")
+            or item.metadata.get("input_lineage")
+            != (metric.get("metadata") or {}).get("input_lineage")
+            or not item.license_scope
+        ):
+            return False
+    return True
+
+
+@transaction.atomic
+def _coordinate_auction_dashboard(
+    trigger_runs: Iterable[IngestionRun],
+    *,
+    as_of_date: date | None = None,
+) -> tuple[list[DashboardSnapshot], set[str]]:
+    for source_key in ("internal", "treasury-fiscal-data"):
+        ensure_source(source_key)
+    list(
+        Source.objects.select_for_update()
+        .filter(key__in=("internal", "treasury-fiscal-data"))
+        .order_by("key")
+        .values_list("pk", flat=True)
+    )
+    now = timezone.now()
+    today_et = as_of_date or now.astimezone(
+        ZoneInfo("America/New_York")
+    ).date()
+    selected, states, triggered = _select_auction_run(
+        trigger_runs, today_et=today_et, now=now
+    )
+    if not triggered:
+        return [], set()
+    if selected is None:
+        _mark_auction_stale(
+            states,
+            reason=(
+                "最新拍卖刷新未形成当前 ET 日、完整且可公开的双窗口批次；"
+                "继续保留上一版完整快照。"
+            ),
+        )
+        return [], {"auctions"}
+    prepared, failures = _auction_page_data(
+        selected, today_et=today_et, now=now
+    )
+    if prepared is None:
+        _mark_auction_stale(
+            failures,
+            reason=(
+                "拍卖日历未通过精确批次、许可、日期或金额后置检查；"
+                "继续保留上一版。"
+            ),
+        )
+        return [], {"auctions"}
+    metrics, charts, sections, extra_data = prepared
+    previous = _latest_auction_snapshot()
+    if previous is not None:
+        try:
+            previous_date = date.fromisoformat(
+                str((previous.data or {}).get("as_of_date_et") or "")
+            )
+        except ValueError:
+            previous_date = previous.as_of.astimezone(
+                ZoneInfo("America/New_York")
+            ).date()
+        if today_et < previous_date:
+            _mark_auction_stale(
+                [
+                    _auction_run_state(
+                        selected,
+                        status="stale",
+                        reason="candidate ET date is older than published v1 snapshot",
+                    )
+                ],
+                reason="候选拍卖日历日期发生回退；拒绝发布并保留上一版。",
+            )
+            return [], {"auctions"}
+    try:
+        with transaction.atomic():
+            publication_batch = uuid.uuid4()
+            snapshot = _publish_dashboard(
+                key="auctions",
+                title="国债拍卖",
+                summary=(
+                    "正式拍卖、发行/结算和近 90 天结果来自 Treasury FiscalData "
+                    "同一完整批次。offering_amount 只表示公告总面值，不是实际现金、"
+                    "TGA 变动、净融资或净流动性预测；官方源不含真实 WI Tail。"
+                ),
+                metrics=metrics,
+                charts=charts,
+                sections=sections,
+                extra_data=extra_data,
+                required_metric_keys=AUCTION_REQUIRED_METRIC_KEYS,
+                batch_id=publication_batch,
+            )
+            latest = _latest_auction_snapshot()
+            if latest is None or not _auction_snapshot_contract_is_valid(
+                latest, run=selected, today_et=today_et
+            ):
+                raise ValueError("auction publication postcondition failed")
+    except (ValueError, StopIteration):
+        _mark_auction_stale(
+            [
+                _auction_run_state(
+                    selected,
+                    status="invalid",
+                    reason="publication postcondition failed",
+                )
+            ],
+            reason=(
+                "拍卖 v1 发布后置条件未满足；新写入已回滚，继续保留"
+                "上一版完整快照。"
+            ),
+        )
+        return [], {"auctions"}
+    return ([snapshot] if snapshot is not None else []), set()
+
+
+def _rrp_tga_run_identity(run: IngestionRun) -> str | None:
+    for identity, (source_key, dataset) in RRP_TGA_DATASETS.items():
+        if run.source.key == source_key and run.dataset == dataset:
+            return identity
+    return None
+
+
+def _latest_rrp_tga_attempt(identity: str) -> IngestionRun | None:
+    source_key, dataset = RRP_TGA_DATASETS[identity]
+    return (
+        IngestionRun.objects.filter(source__key=source_key, dataset=dataset)
+        .order_by("-started_at", "-id")
+        .first()
+    )
+
+
+def _rrp_tga_run_state(
+    identity: str,
+    run: IngestionRun | None,
+    *,
+    status: str | None = None,
+    reason: str | None = None,
+) -> dict[str, Any]:
+    source_key, dataset = RRP_TGA_DATASETS[identity]
+    return {
+        "component": identity,
+        "kind": "ingestion_run",
+        "source": source_key,
+        "dataset": dataset,
+        "status": status or (run.status if run else "missing"),
+        "reason": (
+            reason
+            or (run.error if run else "required dataset run missing")
+        )[:320],
+        "ingestion_run_id": run.pk if run else None,
+        "batch_id": str(run.batch_id) if run else None,
+        "row_count": run.row_count if run else 0,
+        "refresh_cycle_id": (
+            str((run.metadata or {}).get("refresh_cycle_id") or "")
+            if run
+            else ""
+        ),
+        "completed_at": (
+            run.completed_at.isoformat() if run and run.completed_at else None
+        ),
+    }
+
+
+def _select_rrp_tga_runs(
+    trigger_runs: Iterable[IngestionRun],
+    *,
+    today_et: date,
+    now: datetime,
+) -> tuple[dict[str, IngestionRun] | None, list[dict[str, Any]], bool]:
+    relevant: dict[str, list[IngestionRun]] = {
+        identity: [] for identity in RRP_TGA_DATASETS
+    }
+    for run in trigger_runs:
+        identity = _rrp_tga_run_identity(run)
+        if identity:
+            relevant[identity].append(run)
+    if not any(relevant.values()):
+        return None, [], False
+    for identity, identity_runs in relevant.items():
+        if not identity_runs:
+            continue
+        latest = _latest_rrp_tga_attempt(identity)
+        if latest is None or len(identity_runs) != 1 or identity_runs[0].pk != latest.pk:
+            return None, [], False
+    selected = {
+        identity: _latest_rrp_tga_attempt(identity)
+        for identity in RRP_TGA_DATASETS
+    }
+    states = [
+        _rrp_tga_run_state(identity, selected[identity])
+        for identity in RRP_TGA_DATASETS
+    ]
+    if any(run is None for run in selected.values()):
+        return None, states, True
+    complete = {
+        identity: run for identity, run in selected.items() if run is not None
+    }
+    for identity, run in complete.items():
+        if run.status != IngestionRun.Status.SUCCESS:
+            return None, states, True
+        if identity != "auctions" and run.row_count <= 0:
+            return None, states, True
+        fetched_at = _parse_payload_datetime((run.metadata or {}).get("fetched_at"))
+        if (
+            fetched_at is None
+            or fetched_at > now + timedelta(minutes=5)
+            or fetched_at.astimezone(ZoneInfo("America/New_York")).date()
+            != today_et
+        ):
+            return (
+                None,
+                [
+                    _rrp_tga_run_state(
+                        key,
+                        item,
+                        status="invalid",
+                        reason=(
+                            "required run lacks a current non-future ET fetched_at"
+                            if key == identity
+                            else None
+                        ),
+                    )
+                    for key, item in complete.items()
+                ],
+                True,
+            )
+    auction_error = _auction_run_contract_error(
+        complete["auctions"], today_et=today_et, now=now
+    )
+    if auction_error:
+        return (
+            None,
+            [
+                _rrp_tga_run_state(
+                    identity,
+                    run,
+                    status="invalid" if identity == "auctions" else None,
+                    reason=auction_error if identity == "auctions" else None,
+                )
+                for identity, run in complete.items()
+            ],
+            True,
+        )
+    cycles = {
+        str((run.metadata or {}).get("refresh_cycle_id") or "")
+        for run in complete.values()
+    }
+    if len(cycles) != 1 or not next(iter(cycles), ""):
+        return (
+            None,
+            [
+                _rrp_tga_run_state(
+                    identity,
+                    run,
+                    status="invalid-cycle",
+                    reason="ON RRP, TGA and auctions are not from one refresh cycle",
+                )
+                for identity, run in complete.items()
+            ],
+            True,
+        )
+    return complete, states, True
+
+
+def _rrp_tga_observation_metric(
+    *,
+    key: str,
+    label: str,
+    observation: Observation,
+    scale: Decimal,
+    decimals: int,
+    unit: str,
+    fresh_until: datetime,
+) -> dict[str, Any]:
+    value = observation.value * scale
+    lineage = _liquidity_input_lineage(
+        observation, component_fresh_until=fresh_until
+    )
+    return {
+        "key": key,
+        "label": label,
+        "value": float(value),
+        "display_value": f"{value:,.{decimals}f}{unit}",
+        "change": None,
+        "unit": unit,
+        "quality_status": observation.quality_status,
+        "source": observation.source.name,
+        "source_key": observation.source.key,
+        "source_keys": [observation.source.key],
+        "fallback_source": None,
+        "value_date": observation.value_date.isoformat(),
+        "as_of": observation.as_of.isoformat(),
+        "fetched_at": observation.fetched_at.isoformat(),
+        "fresh_until": fresh_until.isoformat(),
+        "batch_id": str(observation.batch_id),
+        "metadata": {
+            "source_field": observation.series.key,
+            "input_series": [observation.series.key],
+            "input_batch_ids": [str(observation.batch_id)],
+            "input_value_dates": [observation.value_date.isoformat()],
+            "input_lineage": [lineage],
+        },
+    }
+
+
+def _rrp_tga_page_data(
+    selected: dict[str, IngestionRun],
+    *,
+    today_et: date,
+    now: datetime,
+) -> tuple[
+    tuple[
+        list[dict[str, Any]],
+        list[dict[str, Any]],
+        list[dict[str, Any]],
+        dict[str, Any],
+    ]
+    | None,
+    list[dict[str, Any]],
+]:
+    required_sources = {"internal", "ny-fed-markets", "treasury-fiscal-data"}
+    public_keys, derived_keys = current_display_source_key_sets(required_sources)
+    if not required_sources <= public_keys or not required_sources <= derived_keys:
+        return None, [
+            _rrp_tga_run_state(
+                identity,
+                run,
+                status="unlicensed",
+                reason="a required direct or derived display licence is not current",
+            )
+            for identity, run in selected.items()
+        ]
+
+    series_batches = {
+        "ONRRP": selected["onrrp"].batch_id,
+        "ONRRP-RATE": selected["onrrp"].batch_id,
+        "ONRRP-PARTICIPANTS": selected["onrrp"].batch_id,
+        "TGA": selected["tga"].batch_id,
+    }
+    expected_sources = {
+        "ONRRP": "ny-fed-markets",
+        "ONRRP-RATE": "ny-fed-markets",
+        "ONRRP-PARTICIPANTS": "ny-fed-markets",
+        "TGA": "treasury-fiscal-data",
+    }
+    observations: dict[str, list[Observation]] = {}
+    latest: dict[str, Observation] = {}
+    deadlines: dict[str, datetime] = {}
+    for series_key, batch_id in series_batches.items():
+        rows = list(
+            _real_observations(
+                series_key,
+                source_key=expected_sources[series_key],
+                batch_id=batch_id,
+            )
+        )
+        if not rows:
+            return None, [
+                _rrp_tga_run_state(
+                    "onrrp" if series_key.startswith("ONRRP") else "tga",
+                    selected[
+                        "onrrp" if series_key.startswith("ONRRP") else "tga"
+                    ],
+                    status="missing",
+                    reason=f"exact-batch {series_key} observations are missing",
+                )
+            ]
+        deduped: dict[date, Observation] = {}
+        for item in rows:
+            if item.value_date.date() > today_et:
+                return None, [
+                    _rrp_tga_run_state(
+                        "onrrp" if series_key.startswith("ONRRP") else "tga",
+                        selected[
+                            "onrrp" if series_key.startswith("ONRRP") else "tga"
+                        ],
+                        status="invalid",
+                        reason=f"exact-batch {series_key} contains a future value date",
+                    )
+                ]
+            if item.value_date.date() in deduped:
+                return None, [
+                    _rrp_tga_run_state(
+                        "onrrp" if series_key.startswith("ONRRP") else "tga",
+                        selected[
+                            "onrrp"
+                            if series_key.startswith("ONRRP")
+                            else "tga"
+                        ],
+                        status="invalid",
+                        reason=(
+                            f"exact-batch {series_key} contains duplicate "
+                            "observations for one value date"
+                        ),
+                    )
+                ]
+            deduped[item.value_date.date()] = item
+        if not deduped:
+            return None, [
+                _rrp_tga_run_state(
+                    "onrrp" if series_key.startswith("ONRRP") else "tga",
+                    selected[
+                        "onrrp" if series_key.startswith("ONRRP") else "tga"
+                    ],
+                    status="invalid",
+                    reason=f"exact-batch {series_key} has no non-future observation",
+                )
+            ]
+        ordered = [deduped[key] for key in sorted(deduped, reverse=True)]
+        run = selected["onrrp" if series_key.startswith("ONRRP") else "tga"]
+        run_fetched = _parse_payload_datetime((run.metadata or {}).get("fetched_at"))
+        if any(
+            item.source.key != expected_sources[series_key]
+            or item.batch_id != batch_id
+            or item.fallback_source_id
+            or item.quality_status != Observation.Quality.FRESH
+            or item.fetched_at != run_fetched
+            for item in ordered
+        ):
+            return None, [
+                _rrp_tga_run_state(
+                    "onrrp" if series_key.startswith("ONRRP") else "tga",
+                    run,
+                    status="invalid",
+                    reason=(
+                        f"an exact-batch {series_key} history point is fallback, "
+                        "invalid quality, mixed-batch or from the wrong source/fetch"
+                    ),
+                )
+            ]
+        observations[series_key] = ordered
+        current = ordered[0]
+        deadline = _fresh_until(current)
+        if (
+            deadline < now
+        ):
+            return None, [
+                _rrp_tga_run_state(
+                    "onrrp" if series_key.startswith("ONRRP") else "tga",
+                    run,
+                    status="invalid",
+                    reason=(
+                        f"latest exact-batch {series_key} is stale, fallback, "
+                        "mixed-batch or from the wrong source"
+                    ),
+                )
+            ]
+        latest[series_key] = current
+        deadlines[series_key] = deadline
+
+    onrrp_current_dates = {
+        latest[series_key].value_date
+        for series_key in ("ONRRP", "ONRRP-RATE", "ONRRP-PARTICIPANTS")
+    }
+    if len(onrrp_current_dates) != 1:
+        return None, [
+            _rrp_tga_run_state(
+                "onrrp",
+                selected["onrrp"],
+                status="invalid",
+                reason=(
+                    "ON RRP balance, rate and participants do not share one "
+                    "current operation value date"
+                ),
+            )
+        ]
+
+    auction_prepared, auction_failures = _auction_page_data(
+        selected["auctions"], today_et=today_et, now=now
+    )
+    if auction_prepared is None:
+        return None, auction_failures
+    auction_metrics, auction_charts, auction_sections, _auction_extra = (
+        auction_prepared
+    )
+    issue_metrics = {
+        item["key"]: item
+        for item in auction_metrics
+        if item["key"] in {"issue-gross-7d", "issue-gross-14d"}
+    }
+    issue_chart = next(
+        item for item in auction_charts if item["key"] == "gross-issue-calendar"
+    )
+    issue_section = next(
+        item
+        for item in auction_sections
+        if item["key"] == "issue-settlement-14d"
+    )
+
+    metrics = [
+        _rrp_tga_observation_metric(
+            key="onrrp",
+            label="ON RRP",
+            observation=latest["ONRRP"],
+            scale=Decimal("0.001"),
+            decimals=3,
+            unit=" USD bn",
+            fresh_until=deadlines["ONRRP"],
+        ),
+        _rrp_tga_observation_metric(
+            key="onrrp-rate",
+            label="ON RRP 利率",
+            observation=latest["ONRRP-RATE"],
+            scale=Decimal("1"),
+            decimals=2,
+            unit="%",
+            fresh_until=deadlines["ONRRP-RATE"],
+        ),
+        _rrp_tga_observation_metric(
+            key="onrrp-participants",
+            label="ON RRP 交易对手",
+            observation=latest["ONRRP-PARTICIPANTS"],
+            scale=Decimal("1"),
+            decimals=0,
+            unit=" 家",
+            fresh_until=deadlines["ONRRP-PARTICIPANTS"],
+        ),
+        _rrp_tga_observation_metric(
+            key="tga",
+            label="TGA",
+            observation=latest["TGA"],
+            scale=Decimal("0.001"),
+            decimals=3,
+            unit=" USD bn",
+            fresh_until=deadlines["TGA"],
+        ),
+        issue_metrics["issue-gross-7d"],
+        issue_metrics["issue-gross-14d"],
+    ]
+
+    history_by_date: dict[date, dict[str, Any]] = {}
+    for series_key, label in (("ONRRP", "ON RRP"), ("TGA", "TGA")):
+        for item in reversed(observations[series_key][:90]):
+            period = item.value_date.date()
+            row = history_by_date.setdefault(period, {"date": period.isoformat()})
+            row[label] = float(item.value * Decimal("0.001"))
+            row.setdefault("_source_keys", []).append(item.source.key)
+            row.setdefault("_lineage", {})[label] = _liquidity_input_lineage(
+                item, component_fresh_until=deadlines[series_key]
+            )
+    history = _lineage_chart(
+        key="rrp-tga-history",
+        title="ON RRP 与 TGA 历史",
+        description=(
+            "分别保留纽约联储 ON RRP 与 Treasury DTS TGA 的精确本批次历史；"
+            "不同有效日不强行拼成净流动性。单位：十亿美元。"
+        ),
+        rows=[history_by_date[key] for key in sorted(history_by_date)],
+        fields=("ON RRP", "TGA"),
+        tab="balances",
+        frequency="daily",
+        include_internal=False,
+    )
+    if history is None:
+        return None, [
+            _rrp_tga_run_state(
+                "onrrp",
+                selected["onrrp"],
+                status="invalid",
+                reason="exact-batch ON RRP/TGA history chart is not buildable",
+            )
+        ]
+    extra_data = {
+        "contract_version": RRP_TGA_CONTRACT_VERSION,
+        "as_of_date_et": today_et.isoformat(),
+        "timezone": "America/New_York",
+        "coverage_complete": True,
+        "refresh_cycle_id": str(
+            (selected["auctions"].metadata or {}).get("refresh_cycle_id")
+        ),
+        "component_snapshots": [
+            _rrp_tga_run_state(identity, run, status="valid")
+            for identity, run in selected.items()
+        ],
+        "model_disclaimer": (
+            "The issue calendar is gross announced face amount, not actual cash, "
+            "a TGA forecast, net financing or a net-liquidity forecast."
+        ),
+    }
+    sections = [
+        issue_section,
+        {
+            "key": "interpretation-boundary",
+            "title": "口径边界",
+            "body": (
+                "ON RRP 和 TGA 显示各自官方最近有效值；发行/结算表仅汇总公告总面值。"
+                "三者不被合成为未来净抽水，也不预测实际财政现金流。"
+            ),
+            "status": Observation.Quality.ESTIMATED,
+            "source_key": "internal",
+            "source_keys": [
+                "internal",
+                "ny-fed-markets",
+                "treasury-fiscal-data",
+            ],
+            "as_of": min(item["as_of"] for item in metrics),
+            "fetched_at": max(item["fetched_at"] for item in metrics),
+            "fresh_until": min(item["fresh_until"] for item in metrics),
+            "batch_id": ",".join(
+                sorted(str(run.batch_id) for run in selected.values())
+            ),
+            "license_scope": ensure_source("internal").license_scope,
+            "fallback_source": None,
+            "full_width": True,
+        },
+    ]
+    return (metrics, [history, issue_chart], sections, extra_data), []
+
+
+def _latest_rrp_tga_snapshot() -> DashboardSnapshot | None:
+    return (
+        DashboardSnapshot.objects.filter(
+            key="rrp-tga",
+            is_published=True,
+            data__contract_version=RRP_TGA_CONTRACT_VERSION,
+        )
+        .exclude(source__key="demo-market")
+        .order_by("-created_at", "-id")
+        .first()
+    )
+
+
+def _mark_rrp_tga_stale(
+    components: list[dict[str, Any]], *, reason: str
+) -> None:
+    latest = (
+        DashboardSnapshot.objects.select_for_update()
+        .filter(
+            key="rrp-tga",
+            is_published=True,
+            data__contract_version=RRP_TGA_CONTRACT_VERSION,
+        )
+        .exclude(source__key="demo-market")
+        .order_by("-created_at", "-id")
+        .first()
+    )
+    if latest is None:
+        return
+    summary = "；".join(
+        f"{item.get('component', 'unknown')}[{item.get('status', 'invalid')}] "
+        f"{item.get('reason', 'unknown failure')}"
+        for item in components
+    )
+    data = dict(latest.data or {})
+    data["refresh_failure"] = {
+        "checked_at": timezone.now().isoformat(),
+        "reason": f"{reason} 失败组件：{summary}",
+        "components": components,
+    }
+    latest.data = data
+    latest.quality_status = Observation.Quality.STALE
+    latest.save(update_fields=["data", "quality_status", "updated_at"])
+
+
+def _rrp_tga_snapshot_contract_is_valid(
+    snapshot: DashboardSnapshot,
+    *,
+    selected: dict[str, IngestionRun],
+    today_et: date,
+) -> bool:
+    data = dict(snapshot.data or {})
+    metrics = list(data.get("metrics", []))
+    charts = list(data.get("charts", []))
+    expected_batches = {str(run.batch_id) for run in selected.values()}
+    if (
+        data.get("contract_version") != RRP_TGA_CONTRACT_VERSION
+        or data.get("as_of_date_et") != today_et.isoformat()
+        or not data.get("coverage_complete")
+        or data.get("refresh_failure")
+        or data.get("publication_batch_id") != str(snapshot.batch_id)
+        or set(data.get("component_batches", [])) != expected_batches
+        or {str(item.get("key") or "") for item in metrics}
+        != set(RRP_TGA_REQUIRED_METRIC_KEYS)
+        or {str(item.get("key") or "") for item in charts}
+        != {"rrp-tga-history", "gross-issue-calendar"}
+    ):
+        return False
+    chart_by_key = {item["key"]: item for item in charts}
+    for chart in charts:
+        if (
+            not chart.get("batch_ids")
+            or not chart.get("license_scopes")
+            or chart.get("fallback_sources")
+        ):
+            return False
+    expected_history = {
+        "ON RRP": ("ny-fed-markets", str(selected["onrrp"].batch_id)),
+        "TGA": ("treasury-fiscal-data", str(selected["tga"].batch_id)),
+    }
+    for row in chart_by_key["rrp-tga-history"].get("data", []):
+        if not row.get("date"):
+            return False
+        for field, (source_key, batch_id) in expected_history.items():
+            if field not in row:
+                continue
+            lineage = (row.get("_lineage") or {}).get(field)
+            if (
+                not isinstance(lineage, dict)
+                or lineage.get("source_key") != source_key
+                or lineage.get("batch_id") != batch_id
+                or lineage.get("fallback_source") is not None
+                or not lineage.get("license_scope")
+                or not lineage.get("fetched_at")
+                or not lineage.get("value_date")
+                or str(lineage["value_date"])[:10] != str(row["date"])
+            ):
+                return False
+    issue_chart_rows = list(
+        chart_by_key["gross-issue-calendar"].get("data", [])
+    )
+    expected_issue_dates = {
+        (today_et + timedelta(days=offset)).isoformat()
+        for offset in range(14)
+    }
+    issue_field = "Gross announced issue amount"
+    if {
+        str(row.get("date") or "") for row in issue_chart_rows
+    } != expected_issue_dates:
+        return False
+    for row in issue_chart_rows:
+        lineage = (row.get("_lineage") or {}).get(issue_field)
+        if (
+            issue_field not in row
+            or not isinstance(lineage, dict)
+            or lineage.get("source_key") != "internal"
+            or lineage.get("batch_id") != str(selected["auctions"].batch_id)
+            or lineage.get("fallback_source") is not None
+            or not lineage.get("license_scope")
+            or not lineage.get("fetched_at")
+            or not lineage.get("value_date")
+        ):
+            return False
+    metric_by_key = {item["key"]: item for item in metrics}
+    issue_by_date = {
+        date.fromisoformat(str(row["date"])): Decimal(str(row[issue_field]))
+        for row in issue_chart_rows
+    }
+    if (
+        sum(
+            (
+                issue_by_date[today_et + timedelta(days=offset)]
+                for offset in range(7)
+            ),
+            Decimal("0"),
+        )
+        != Decimal(str(metric_by_key["issue-gross-7d"]["value"]))
+        or sum(issue_by_date.values(), Decimal("0"))
+        != Decimal(str(metric_by_key["issue-gross-14d"]["value"]))
+    ):
+        return False
+    for item in metrics:
+        if (
+            not item.get("license_scope")
+            or "fallback_source" not in item
+            or not item.get("batch_id")
+            or not item.get("fetched_at")
+            or not (item.get("metadata") or {}).get("input_lineage")
+            and item.get("value") not in {0, 0.0}
+        ):
+            return False
+    issue_section = next(
+        (
+            item
+            for item in data.get("sections", [])
+            if item.get("key") == "issue-settlement-14d"
+        ),
+        None,
+    )
+    if issue_section is None:
+        return False
+    for row in issue_section.get("rows", []):
+        if (
+            row.get("batch_id") != str(selected["auctions"].batch_id)
+            or not row.get("license_scope")
+            or "fallback_source" not in row
+            or not row.get("input_lineage")
+        ):
+            return False
+    normalized = {
+        item.key: item
+        for item in MetricSnapshot.objects.filter(
+            batch_id=snapshot.batch_id, key__startswith="rrp-tga-"
+        )
+    }
+    for metric in metrics:
+        stored = normalized.get(f"rrp-tga-{metric['key']}")
+        if (
+            stored is None
+            or stored.value != Decimal(str(metric["value"]))
+            or stored.source.key != metric["source_key"]
+            or stored.fallback_source_id is not None
+            or stored.value_date
+            != _parse_payload_datetime(metric.get("value_date"))
+            or stored.fetched_at
+            != _parse_payload_datetime(metric.get("fetched_at"))
+            or stored.metadata.get("component_batch_id")
+            != metric.get("batch_id")
+            or stored.metadata.get("input_lineage")
+            != (metric.get("metadata") or {}).get("input_lineage")
+            or not stored.license_scope
+        ):
+            return False
+    return True
+
+
+@transaction.atomic
+def _coordinate_rrp_tga_dashboard(
+    trigger_runs: Iterable[IngestionRun],
+    *,
+    as_of_date: date | None = None,
+) -> tuple[list[DashboardSnapshot], set[str]]:
+    source_keys = {
+        "internal",
+        *(source_key for source_key, _dataset in RRP_TGA_DATASETS.values()),
+    }
+    for source_key in source_keys:
+        ensure_source(source_key)
+    list(
+        Source.objects.select_for_update()
+        .filter(key__in=source_keys)
+        .order_by("key")
+        .values_list("pk", flat=True)
+    )
+    now = timezone.now()
+    today_et = as_of_date or now.astimezone(
+        ZoneInfo("America/New_York")
+    ).date()
+    selected, states, triggered = _select_rrp_tga_runs(
+        trigger_runs, today_et=today_et, now=now
+    )
+    if not triggered:
+        return [], set()
+    if selected is None:
+        _mark_rrp_tga_stale(
+            states,
+            reason=(
+                "ON RRP、TGA 与拍卖日历未形成当前 ET 日同一刷新周期的"
+                "三个完整批次；继续保留上一版。"
+            ),
+        )
+        return [], {"rrp-tga"}
+    prepared, failures = _rrp_tga_page_data(
+        selected, today_et=today_et, now=now
+    )
+    if prepared is None:
+        _mark_rrp_tga_stale(
+            failures,
+            reason=(
+                "RRP/TGA 页面未通过精确批次、许可、新鲜度或血缘检查；"
+                "继续保留上一版完整快照。"
+            ),
+        )
+        return [], {"rrp-tga"}
+    metrics, charts, sections, extra_data = prepared
+    previous = _latest_rrp_tga_snapshot()
+    if previous is not None:
+        try:
+            previous_date = date.fromisoformat(
+                str((previous.data or {}).get("as_of_date_et") or "")
+            )
+        except ValueError:
+            previous_date = previous.as_of.astimezone(
+                ZoneInfo("America/New_York")
+            ).date()
+        if today_et < previous_date:
+            _mark_rrp_tga_stale(
+                [
+                    _rrp_tga_run_state(
+                        "auctions",
+                        selected["auctions"],
+                        status="stale",
+                        reason="candidate ET date is older than published v1 snapshot",
+                    )
+                ],
+                reason="候选 RRP/TGA 日期发生回退；拒绝发布并保留上一版。",
+            )
+            return [], {"rrp-tga"}
+    try:
+        with transaction.atomic():
+            publication_batch = uuid.uuid4()
+            snapshot = _publish_dashboard(
+                key="rrp-tga",
+                title="RRP 与 TGA",
+                summary=(
+                    "ON RRP、TGA 与 Treasury 发行/结算日历只在同一完整刷新周期"
+                    "发布。发行金额是公告总面值，不是实际现金、未来 TGA 方向、"
+                    "净融资或净流动性预测，也不与不同有效日余额合成净抽水。"
+                ),
+                metrics=metrics,
+                charts=charts,
+                sections=sections,
+                extra_data=extra_data,
+                required_metric_keys=RRP_TGA_REQUIRED_METRIC_KEYS,
+                batch_id=publication_batch,
+            )
+            latest = _latest_rrp_tga_snapshot()
+            if latest is None or not _rrp_tga_snapshot_contract_is_valid(
+                latest, selected=selected, today_et=today_et
+            ):
+                raise ValueError("rrp-tga publication postcondition failed")
+    except (ValueError, StopIteration):
+        _mark_rrp_tga_stale(
+            [
+                _rrp_tga_run_state(
+                    "auctions",
+                    selected["auctions"],
+                    status="invalid",
+                    reason="publication postcondition failed",
+                )
+            ],
+            reason=(
+                "RRP/TGA v1 发布后置条件未满足；新写入已回滚，继续保留"
+                "上一版完整快照。"
+            ),
+        )
+        return [], {"rrp-tga"}
+    return ([snapshot] if snapshot is not None else []), set()
+
+
 def _latest_treasury_contract_snapshot(page_key: str) -> DashboardSnapshot | None:
     return (
         DashboardSnapshot.objects.filter(
@@ -6579,117 +8471,6 @@ def _sofr_market_history(*, limit: int = 120) -> list[dict[str, Any]]:
     return rows
 
 
-def _auction_snapshot_data() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    today = timezone.localdate()
-    upcoming = list(
-        TreasuryAuction.objects.filter(auction_date__gte=today)
-        .filter(public_display_license_q())
-        .distinct()
-        .select_related("source")
-        .order_by("auction_date")[:20]
-    )
-    completed = list(
-        TreasuryAuction.objects.filter(auction_date__lte=today, bid_to_cover_ratio__isnull=False)
-        .filter(public_display_license_q())
-        .distinct()
-        .select_related("source")
-        .order_by("-auction_date")[:20]
-    )
-    metrics: list[dict[str, Any]] = []
-    if upcoming:
-        item = upcoming[0]
-        fresh_until = item.fetched_at + timedelta(days=2)
-        quality_status = (
-            Observation.Quality.STALE
-            if timezone.now() > fresh_until
-            else item.quality_status
-        )
-        metrics.append(
-            {
-                "key": "next-auction",
-                "label": "下次拍卖",
-                "value": 0,
-                "display_value": f"{item.auction_date} · {item.security_term}",
-                "change": None,
-                "quality_status": quality_status,
-                "source": item.source.name,
-                "source_key": item.source.key,
-                "source_keys": [item.source.key],
-                "as_of": item.fetched_at.isoformat(),
-                "value_date": item.auction_date.isoformat(),
-                "fetched_at": item.fetched_at.isoformat(),
-                "fresh_until": fresh_until.isoformat(),
-                "batch_id": str(item.batch_id),
-            }
-        )
-        if item.offering_amount is not None:
-            metrics.append(
-                {
-                    "key": "next-offering",
-                    "label": "下次发行额",
-                    "value": float(item.offering_amount / Decimal("1000000000")),
-                    "display_value": f"${item.offering_amount / Decimal('1000000000'):,.1f}B",
-                    "change": None,
-                    "quality_status": quality_status,
-                    "source": item.source.name,
-                    "source_key": item.source.key,
-                    "source_keys": [item.source.key],
-                    "as_of": item.fetched_at.isoformat(),
-                    "value_date": item.auction_date.isoformat(),
-                    "fetched_at": item.fetched_at.isoformat(),
-                    "fresh_until": fresh_until.isoformat(),
-                    "batch_id": str(item.batch_id),
-                }
-            )
-    if completed:
-        item = completed[0]
-        fresh_until = item.fetched_at + timedelta(days=2)
-        quality_status = (
-            Observation.Quality.STALE
-            if timezone.now() > fresh_until
-            else item.quality_status
-        )
-        metrics.append(
-            {
-                "key": "latest-bid-cover",
-                "label": "最近 Bid-to-Cover",
-                "value": float(item.bid_to_cover_ratio),
-                "display_value": f"{item.bid_to_cover_ratio:.2f}x",
-                "change": None,
-                "quality_status": quality_status,
-                "source": item.source.name,
-                "source_key": item.source.key,
-                "source_keys": [item.source.key],
-                "as_of": item.fetched_at.isoformat(),
-                "value_date": item.auction_date.isoformat(),
-                "fetched_at": item.fetched_at.isoformat(),
-                "fresh_until": fresh_until.isoformat(),
-                "batch_id": str(item.batch_id),
-            }
-        )
-    rows = [
-        {
-            "label": f"{item.security_type} · {item.security_term}",
-            "display_value": (
-                f"${item.offering_amount / Decimal('1000000000'):,.1f}B"
-                if item.offering_amount is not None
-                else "待公布"
-            ),
-            "status": (
-                f"Bid/Cover {item.bid_to_cover_ratio:.2f}x"
-                if item.bid_to_cover_ratio is not None
-                else "已公告，结果待发布"
-            ),
-            "source": item.source.name,
-            "source_key": item.source.key,
-            "source_keys": [item.source.key],
-            "as_of": item.auction_date.isoformat(),
-        }
-        for item in [*upcoming, *completed]
-    ]
-    return metrics, rows
-
-
 def _store_board_archive_observations(result, source, run) -> int:
     """Persist Board DDP rows plus an immutable ZIP download fingerprint."""
 
@@ -7025,6 +8806,24 @@ def _payload_source_keys(value: Any) -> set[str]:
     return set()
 
 
+def _payload_fallback_source_keys(value: Any) -> set[str]:
+    if isinstance(value, dict):
+        keys = {
+            str(value[field])
+            for field in ("fallback_source", "fallback_source_key")
+            if value.get(field)
+        }
+        for nested in value.values():
+            keys.update(_payload_fallback_source_keys(nested))
+        return keys
+    if isinstance(value, list):
+        keys: set[str] = set()
+        for nested in value:
+            keys.update(_payload_fallback_source_keys(nested))
+        return keys
+    return set()
+
+
 def _payload_batch_ids(value: Any) -> set[str]:
     def normalized(raw: Any) -> set[str]:
         return {
@@ -7140,6 +8939,21 @@ def _publish_dashboard(
         chart.setdefault("data", [])
         chart.setdefault("kind", "line")
         chart.setdefault("title", "趋势")
+        chart_source_keys = set(chart.get("source_keys", [])) | _payload_source_keys(
+            chart.get("data", [])
+        )
+        chart["source_keys"] = sorted(chart_source_keys)
+        chart_sources = {
+            item.key: item
+            for item in Source.objects.filter(key__in=chart_source_keys)
+        }
+        chart["license_scopes"] = [
+            f"{chart_sources[key].name}: {chart_sources[key].license_scope}"
+            for key in sorted(chart_sources)
+        ]
+        chart["fallback_sources"] = sorted(
+            _payload_fallback_source_keys(chart)
+        )
 
     as_of_values = [
         datetime.fromisoformat(item["as_of"])
@@ -7455,6 +9269,10 @@ def publish_official_dashboards(
 
     batch_id = uuid.uuid4()
     selected_keys = set(keys) if keys is not None else None
+    if selected_keys is not None:
+        selected_keys -= INDEPENDENT_PUBLICATION_KEYS
+        if not selected_keys:
+            return []
     normalized_source_batches = dict(source_batches or {})
     normalized_dataset_batches = dict(dataset_batches or {})
     treasury_prepared = dict(prepared_treasury_curve_data or {})
@@ -7479,7 +9297,6 @@ def publish_official_dashboards(
             normalized_source_batches["census-release"] = latest_census_release_batch
     hqm_curve = _curve_rows("hqm-par", ("2y", "5y", "10y", "30y"))
     sofr_market_metrics = _sofr_market_metrics()
-    auction_metrics, auction_rows = _auction_snapshot_data()
     consumer_metrics: list[dict[str, Any]] = []
     consumer_charts: list[dict[str, Any]] = []
     employment_metrics: list[dict[str, Any]] = []
@@ -7906,20 +9723,6 @@ def publish_official_dashboards(
             ),
         },
         {
-            "key": "rrp-tga",
-            "title": "RRP 与 TGA",
-            "summary": "TGA 来自 Treasury FiscalData 每日财政报表；ON RRP 来自纽约联储最近有效操作结果，周末不把 latest 空响应当成 0。",
-            "metrics": _existing(
-                _metric(
-                    "ONRRP", "ON RRP", decimals=3, scale=Decimal("0.001"), suffix=" USD bn"
-                ),
-                _metric("ONRRP-RATE", "ON RRP 利率", suffix="%"),
-                _metric("ONRRP-PARTICIPANTS", "交易对手", decimals=0, suffix=" 家"),
-                _metric("TGA", "TGA", scale=Decimal("0.001"), suffix=" USD bn"),
-            ),
-            "chart_data": _history_rows({"TGA": "TGA", "ONRRP": "ON RRP"}, limit=90),
-        },
-        {
             "key": "reserves",
             "title": "银行准备金",
             "summary": "准备金余额直接来自 Federal Reserve H.4.1；银行资产占比与充裕度阈值在分母及方法完成前保持空缺。",
@@ -7960,28 +9763,6 @@ def publish_official_dashboards(
                 _metric("SRP-RATE", "常备回购利率", suffix="%"),
             ),
             "chart_data": _sofr_market_history(),
-        },
-        {
-            "key": "auctions",
-            "title": "国债拍卖",
-            "summary": "拍卖日历、发行额和结果直接来自 Treasury FiscalData；官方源不含 WI yield，因此不发布真实 Tail。",
-            "metrics": auction_metrics,
-            "chart_data": [
-                item["value"] for item in auction_metrics if item["key"] == "latest-bid-cover"
-            ],
-            "sections": [
-                {
-                    "title": "近期拍卖",
-                    "rows": auction_rows,
-                    "fresh_until": _earliest_fresh_until(auction_metrics),
-                    "status": (
-                        "fresh"
-                        if auction_metrics
-                        and all(item["quality_status"] == "fresh" for item in auction_metrics)
-                        else "stale"
-                    ),
-                }
-            ],
         },
         {
             "key": "economy",
@@ -8310,6 +10091,16 @@ def refresh_official_data(*, current_year: int | None = None) -> dict[str, Any]:
     )
     dashboards.extend(liquidity_dashboards)
     stale_dashboard_keys |= stale_liquidity_keys
+    auction_dashboards, stale_auction_keys = _coordinate_auction_dashboard(
+        runs
+    )
+    dashboards.extend(auction_dashboards)
+    stale_dashboard_keys |= stale_auction_keys
+    rrp_tga_dashboards, stale_rrp_tga_keys = _coordinate_rrp_tga_dashboard(
+        runs
+    )
+    dashboards.extend(rrp_tga_dashboards)
+    stale_dashboard_keys |= stale_rrp_tga_keys
     economy_dashboards, stale_economy_keys = _coordinate_economy_dashboard()
     dashboards.extend(economy_dashboards)
     stale_dashboard_keys |= stale_economy_keys

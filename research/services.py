@@ -9,6 +9,7 @@ from collections.abc import Callable, Iterable, Mapping
 from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from django.db import transaction
 from django.db.models import Q
@@ -89,13 +90,25 @@ SOURCE_CATALOG: dict[str, dict[str, Any]] = {
         "homepage": "https://fiscaldata.treasury.gov/",
         "kind": "official",
         "license_status": Source.LicenseStatus.OPEN,
-        "license_scope": "Attributed U.S. government fiscal data",
+        "license_scope": (
+            "Attributed U.S. government FiscalData API output; Treasury seals, "
+            "marks, site layout and third-party intellectual property excluded"
+        ),
         "redistribution_allowed": True,
         "public_display_allowed": True,
         "derived_display_allowed": True,
         "historical_storage_allowed": True,
         "ai_use_allowed": True,
+        "terms_url": (
+            "https://www.treasurydirect.gov/legal-information/developers/"
+            "web-api-terms/"
+        ),
         "attribution": "U.S. Department of the Treasury, FiscalData",
+        "required_notice": (
+            "Source: U.S. Department of the Treasury, FiscalData API. Atlas Macro "
+            "is not affiliated with or endorsed by the U.S. Department of the Treasury. "
+            "Treasury seals, marks, site layout and third-party material are not reproduced."
+        ),
     },
     "bls": {
         "name": "U.S. Bureau of Labor Statistics",
@@ -754,13 +767,19 @@ def record_provider_result(
     partial_quality = bool(result.metadata.get("missing_series")) or (
         result.metadata.get("quality_status") == "partial"
     )
+    allow_empty_success = bool(
+        result.provider == "treasury-fiscal-data"
+        and result.dataset == "treasury-securities-auctions"
+        and result.metadata.get("coverage_complete")
+        and result.metadata.get("allow_empty_success")
+    )
     status = (
         IngestionRun.Status.PARTIAL
-        if row_count == 0 or partial_quality
+        if (row_count == 0 and not allow_empty_success) or partial_quality
         else IngestionRun.Status.SUCCESS
     )
     metadata = dict(result.metadata)
-    if row_count == 0:
+    if row_count == 0 and not allow_empty_success:
         metadata.setdefault("quality_reason", "provider returned no persistable rows")
     return finish_ingestion(
         run,
@@ -1436,11 +1455,13 @@ def store_fed_documents(result: ProviderResult, _: Source, __: IngestionRun) -> 
             "document_type": record["document_type"],
             "title": record["title"],
             "speaker": "",
-            "summary": record.get("summary", ""),
+            "official_description": record.get("official_description", ""),
+            "summary": "",
             "key_points": [],
             "published_at": published_at,
-            "hawkish_score": 0,
+            "hawkish_score": None,
             "original_url": record["original_url"],
+            "analysis_status": FedDocument.AnalysisStatus.DRAFT,
         }
         document, created = FedDocument.objects.get_or_create(
             slug=record["slug"],
@@ -1450,6 +1471,7 @@ def store_fed_documents(result: ProviderResult, _: Source, __: IngestionRun) -> 
             upstream_fields = {
                 "document_type": record["document_type"],
                 "title": record["title"],
+                "official_description": record.get("official_description", ""),
                 "published_at": published_at,
                 "original_url": record["original_url"],
             }
@@ -1460,12 +1482,161 @@ def store_fed_documents(result: ProviderResult, _: Source, __: IngestionRun) -> 
     return count
 
 
+def _validated_auction_window_contract(
+    result: ProviderResult,
+) -> tuple[date, date, date, date, set[tuple[str, date]], datetime]:
+    if (
+        result.provider != "treasury-fiscal-data"
+        or result.dataset != "treasury-securities-auctions"
+    ):
+        raise ValueError("auction persistence received the wrong provider or dataset")
+    metadata = dict(result.metadata or {})
+    if metadata.get("coverage_complete") is not True:
+        raise ValueError("auction result is not complete")
+    if metadata.get("timezone") != "America/New_York":
+        raise ValueError("auction result has invalid timezone semantics")
+    raw_as_of = str(metadata.get("as_of_date_et") or "")
+    as_of_date = parse_date(raw_as_of)
+    if as_of_date is None or raw_as_of != as_of_date.isoformat():
+        raise ValueError("auction result has invalid ET as_of_date")
+    fetched_at = result.fetched_at
+    if timezone.is_naive(fetched_at):
+        fetched_at = timezone.make_aware(fetched_at, UTC)
+    if fetched_at > timezone.now() + timedelta(minutes=5):
+        raise ValueError("auction result fetched_at is in the future")
+    if (
+        fetched_at.astimezone(ZoneInfo("America/New_York")).date()
+        != as_of_date
+    ):
+        raise ValueError("auction result fetched_at does not match its ET as_of_date")
+    expected = {
+        "auction_window": {
+            "date_field": "auction_date",
+            "lower": as_of_date - timedelta(days=90),
+            "upper": as_of_date + timedelta(days=14),
+        },
+        "issue_window": {
+            "date_field": "issue_date",
+            "lower": as_of_date,
+            "upper": as_of_date + timedelta(days=14),
+        },
+    }
+    raw_slices = metadata.get("slices")
+    if not isinstance(raw_slices, list) or len(raw_slices) != 2:
+        raise ValueError("complete auction result must contain exactly two slices")
+    if not all(isinstance(item, Mapping) for item in raw_slices):
+        raise ValueError("auction slice metadata must be mappings")
+    slices = {str(item.get("name") or ""): item for item in raw_slices}
+    if len(slices) != 2 or set(slices) != set(expected):
+        raise ValueError("auction result has missing or duplicate bounded slices")
+    for name, contract in expected.items():
+        state = slices[name]
+        if state.get("coverage_complete") is not True:
+            raise ValueError(f"{name} is not complete")
+        if state.get("date_field") != contract["date_field"]:
+            raise ValueError(f"{name} has the wrong date field")
+        if state.get("lower") != contract["lower"].isoformat() or state.get(
+            "upper_exclusive"
+        ) != contract["upper"].isoformat():
+            raise ValueError(f"{name} has unsafe or unexpected bounds")
+        counts = {
+            key: state.get(key)
+            for key in (
+                "returned_count",
+                "normalized_count",
+                "rejected_count",
+                "total_count",
+                "count",
+                "total_pages",
+                "page_size",
+            )
+        }
+        if not all(type(value) is int for value in counts.values()):
+            raise ValueError(f"{name} lacks complete integer pagination metadata")
+        if any(value < 0 for value in counts.values()):
+            raise ValueError(f"{name} contains negative pagination metadata")
+        if counts["rejected_count"] != 0 or not (
+            counts["returned_count"]
+            == counts["normalized_count"]
+            == counts["total_count"]
+            == counts["count"]
+        ):
+            raise ValueError(f"{name} row counts do not reconcile")
+        if counts["page_size"] <= 0 or counts["total_count"] > counts["page_size"]:
+            raise ValueError(f"{name} page size cannot prove full coverage")
+        if counts["total_count"] == 0:
+            if counts["total_pages"] not in {0, 1}:
+                raise ValueError(f"{name} has invalid empty pagination")
+        elif counts["total_pages"] != 1:
+            raise ValueError(f"{name} spans more than one fetched page")
+
+    merged_count = metadata.get("merged_record_count")
+    deduplicated_count = metadata.get("deduplicated_record_count")
+    if type(merged_count) is not int or type(deduplicated_count) is not int:
+        raise ValueError("auction result lacks merged/deduplicated row counts")
+    returned_total = sum(
+        int(slices[name]["returned_count"]) for name in expected
+    )
+    if (
+        merged_count != len(result.records)
+        or deduplicated_count != returned_total - merged_count
+        or merged_count < 0
+        or deduplicated_count < 0
+    ):
+        raise ValueError("auction result merged/deduplicated counts do not reconcile")
+
+    auction_lower = expected["auction_window"]["lower"]
+    auction_upper = expected["auction_window"]["upper"]
+    issue_lower = expected["issue_window"]["lower"]
+    issue_upper = expected["issue_window"]["upper"]
+    incoming_identities: set[tuple[str, date]] = set()
+    for record in result.records:
+        cusip = str(record.get("cusip") or "")
+        auction_date = parse_date(str(record.get("auction_date") or ""))
+        if not cusip or auction_date is None:
+            raise ValueError("auction record has an invalid identity")
+        identity = (cusip, auction_date)
+        if identity in incoming_identities:
+            raise ValueError("auction result contains a duplicate identity")
+        incoming_identities.add(identity)
+        raw_issue_date = record.get("issue_date")
+        issue_date = parse_date(str(raw_issue_date or ""))
+        if raw_issue_date not in (None, "") and issue_date is None:
+            raise ValueError("auction record has an invalid issue_date")
+        if not (
+            auction_lower <= auction_date < auction_upper
+            or issue_date is not None and issue_lower <= issue_date < issue_upper
+        ):
+            raise ValueError("auction record is outside both proven bounded slices")
+    return (
+        auction_lower,
+        auction_upper,
+        issue_lower,
+        issue_upper,
+        incoming_identities,
+        fetched_at,
+    )
+
+
 def store_treasury_auctions(result: ProviderResult, source: Source, run: IngestionRun) -> int:
+    (
+        auction_lower,
+        auction_upper,
+        issue_lower,
+        issue_upper,
+        incoming_identities,
+        fetched_at,
+    ) = _validated_auction_window_contract(result)
+    if source.key != "treasury-fiscal-data" or run.dataset != result.dataset:
+        raise ValueError("auction persistence source/run identity mismatch")
     count = 0
     for record in result.records:
+        auction_date = parse_date(record["auction_date"])
+        if auction_date is None:
+            raise ValueError("auction record has an invalid auction_date")
         TreasuryAuction.objects.update_or_create(
             cusip=record["cusip"],
-            auction_date=parse_date(record["auction_date"]),
+            auction_date=auction_date,
             defaults={
                 "security_type": record["security_type"],
                 "security_term": record["security_term"],
@@ -1480,13 +1651,28 @@ def store_treasury_auctions(result: ProviderResult, source: Source, run: Ingesti
                 "indirect_bidder_accepted": record.get("indirect_bidder_accepted"),
                 "direct_bidder_accepted": record.get("direct_bidder_accepted"),
                 "primary_dealer_accepted": record.get("primary_dealer_accepted"),
-                "fetched_at": timezone.now(),
+                "fetched_at": fetched_at,
                 "batch_id": run.batch_id,
                 "source": source,
                 "quality_status": Observation.Quality.FRESH,
             },
         )
         count += 1
+
+    covered = TreasuryAuction.objects.filter(source=source).filter(
+        Q(
+            auction_date__gte=auction_lower,
+            auction_date__lt=auction_upper,
+        )
+        | Q(issue_date__gte=issue_lower, issue_date__lt=issue_upper)
+    )
+    stale_ids = [
+        item.pk
+        for item in covered.only("pk", "cusip", "auction_date")
+        if (item.cusip, item.auction_date) not in incoming_identities
+    ]
+    if stale_ids:
+        TreasuryAuction.objects.filter(pk__in=stale_ids).delete()
     return count
 
 

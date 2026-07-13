@@ -13,7 +13,7 @@ import re
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from email.utils import parsedate_to_datetime
 from pathlib import PurePosixPath
@@ -971,16 +971,48 @@ class FiscalDataProvider(HTTPProvider):
             )
         return ProviderResult(provider=self.key, dataset=dataset, records=records)
 
-    def treasury_auctions(self, *, page_size: int = 1000) -> ProviderResult:
+    def treasury_auctions(
+        self,
+        *,
+        page_size: int = 1000,
+        as_of_date: date | None = None,
+    ) -> ProviderResult:
         dataset = "treasury-securities-auctions"
-        payload, failure = self._get_json(
-            dataset,
-            "/services/api/fiscal_service/v1/accounting/od/auctions_query",
-            params={"sort": "-auction_date", "page[size]": min(int(page_size), 10000)},
+        today_et = as_of_date or datetime.now(
+            ZoneInfo("America/New_York")
+        ).date()
+        bounded_page_size = max(1, min(int(page_size), 10000))
+        auction_start = today_et - timedelta(days=90)
+        auction_end = today_et + timedelta(days=14)
+        issue_end = today_et + timedelta(days=14)
+        endpoint = "/services/api/fiscal_service/v1/accounting/od/auctions_query"
+        requests = (
+            {
+                "name": "auction_window",
+                "filter": (
+                    f"auction_date:gte:{auction_start.isoformat()},"
+                    f"auction_date:lt:{auction_end.isoformat()}"
+                ),
+                "sort": "auction_date,cusip",
+                "lower": auction_start.isoformat(),
+                "upper_exclusive": auction_end.isoformat(),
+                "date_field": "auction_date",
+                "priority": 2,
+            },
+            {
+                "name": "issue_window",
+                "filter": (
+                    f"issue_date:gte:{today_et.isoformat()},"
+                    f"issue_date:lt:{issue_end.isoformat()}"
+                ),
+                "sort": "issue_date,auction_date,cusip",
+                "lower": today_et.isoformat(),
+                "upper_exclusive": issue_end.isoformat(),
+                "date_field": "issue_date",
+                "priority": 1,
+            },
         )
-        if failure:
-            return failure
-        fields = (
+        numeric_fields = (
             "offering_amt",
             "total_tendered",
             "total_accepted",
@@ -990,22 +1022,262 @@ class FiscalDataProvider(HTTPProvider):
             "direct_bidder_accepted",
             "primary_dealer_accepted",
         )
-        records = []
-        for item in payload.get("data", []):
-            if not item.get("cusip") or not item.get("auction_date"):
-                continue
-            record = {
-                "cusip": item["cusip"],
-                "security_type": item.get("security_type") or "",
-                "security_term": item.get("security_term") or "",
-                "announcement_date": item.get("announcemt_date"),
-                "auction_date": item["auction_date"],
-                "issue_date": item.get("issue_date"),
-                "maturity_date": item.get("maturity_date"),
+        requested_fields = (
+            "record_date",
+            "cusip",
+            "security_type",
+            "security_term",
+            "announcemt_date",
+            "auction_date",
+            "issue_date",
+            "maturity_date",
+            *numeric_fields,
+        )
+        slice_states: list[dict[str, Any]] = []
+        slice_records: list[tuple[int, dict[str, Any]]] = []
+        coverage_complete = True
+        for request_spec in requests:
+            params = {
+                "fields": ",".join(requested_fields),
+                "filter": request_spec["filter"],
+                "sort": request_spec["sort"],
+                "page[size]": bounded_page_size,
             }
-            record.update({field: _decimal_or_none(item.get(field)) for field in fields})
-            records.append(record)
-        return ProviderResult(provider=self.key, dataset=dataset, records=records)
+            payload, failure = self._get_json(dataset, endpoint, params=params)
+            if failure:
+                slice_states.append(
+                    {
+                        **request_spec,
+                        "page_size": bounded_page_size,
+                        "returned_count": 0,
+                        "total_count": None,
+                        "total_pages": None,
+                        "count": None,
+                        "coverage_complete": False,
+                        "error": failure.error,
+                    }
+                )
+                return ProviderResult(
+                    provider=self.key,
+                    dataset=dataset,
+                    error=f"{request_spec['name']}: {failure.error}"[:2000],
+                    metadata={
+                        "as_of_date_et": today_et.isoformat(),
+                        "timezone": "America/New_York",
+                        "coverage_complete": False,
+                        "slices": slice_states,
+                    },
+                )
+            data = payload.get("data") if isinstance(payload, dict) else None
+            meta = payload.get("meta") if isinstance(payload, dict) else None
+            rows = data if isinstance(data, list) else []
+
+            def meta_int(key: str) -> int | None:
+                if not isinstance(meta, dict) or meta.get(key) in (None, ""):
+                    return None
+                try:
+                    return int(meta[key])
+                except (TypeError, ValueError):
+                    return None
+
+            total_count = meta_int("total-count")
+            total_pages = meta_int("total-pages")
+            count = meta_int("count")
+            valid_rows: list[dict[str, Any]] = []
+            rejected_count = 0
+            slice_lower = date.fromisoformat(str(request_spec["lower"]))
+            slice_upper = date.fromisoformat(
+                str(request_spec["upper_exclusive"])
+            )
+            for item in rows:
+                if not isinstance(item, dict):
+                    rejected_count += 1
+                    continue
+                required_values = (item.get("cusip"), item.get("auction_date"))
+                if not all(required_values):
+                    rejected_count += 1
+                    continue
+                date_fields = (
+                    "record_date",
+                    "announcemt_date",
+                    "auction_date",
+                    "issue_date",
+                    "maturity_date",
+                )
+                try:
+                    for field in date_fields:
+                        raw_date = item.get(field)
+                        if raw_date not in (None, "", "null"):
+                            date.fromisoformat(str(raw_date))
+                except ValueError:
+                    rejected_count += 1
+                    continue
+                slice_raw_date = item.get(str(request_spec["date_field"]))
+                if slice_raw_date in (None, "", "null"):
+                    rejected_count += 1
+                    continue
+                slice_date = date.fromisoformat(str(slice_raw_date))
+                if not slice_lower <= slice_date < slice_upper:
+                    rejected_count += 1
+                    continue
+                numeric_values_are_valid = all(
+                    item.get(field) in (None, "", "null")
+                    or _decimal_or_none(item.get(field)) is not None
+                    for field in numeric_fields
+                )
+                if not numeric_values_are_valid:
+                    rejected_count += 1
+                    continue
+                valid_rows.append(item)
+
+            empty_complete = (
+                total_count == 0
+                and not rows
+                and total_pages in {0, 1}
+            )
+            nonempty_complete = (
+                total_count is not None
+                and total_count > 0
+                and total_pages == 1
+                and total_count == len(rows)
+                and total_count <= bounded_page_size
+            )
+            slice_complete = bool(
+                isinstance(data, list)
+                and isinstance(meta, dict)
+                and count == len(rows)
+                and rejected_count == 0
+                and len(valid_rows) == len(rows)
+                and (empty_complete or nonempty_complete)
+            )
+            coverage_complete = coverage_complete and slice_complete
+            slice_states.append(
+                {
+                    **request_spec,
+                    "page_size": bounded_page_size,
+                    "returned_count": len(rows),
+                    "normalized_count": len(valid_rows),
+                    "rejected_count": rejected_count,
+                    "total_count": total_count,
+                    "total_pages": total_pages,
+                    "count": count,
+                    "coverage_complete": slice_complete,
+                }
+            )
+            for item in valid_rows:
+                record = {
+                    "record_date": item.get("record_date"),
+                    "cusip": item["cusip"],
+                    "security_type": item.get("security_type") or "",
+                    "security_term": item.get("security_term") or "",
+                    "announcement_date": item.get("announcemt_date"),
+                    "auction_date": item["auction_date"],
+                    "issue_date": item.get("issue_date"),
+                    "maturity_date": item.get("maturity_date"),
+                }
+                record.update(
+                    {
+                        field: _decimal_or_none(item.get(field))
+                        for field in numeric_fields
+                    }
+                )
+                slice_records.append((int(request_spec["priority"]), record))
+
+        metadata = {
+            "as_of_date_et": today_et.isoformat(),
+            "timezone": "America/New_York",
+            "coverage_complete": coverage_complete,
+            "allow_empty_success": coverage_complete,
+            "record_date_semantics": (
+                "FiscalData record_date is not used as fetched_at or as_of; "
+                "ProviderResult.fetched_at records the actual retrieval time"
+            ),
+            "slices": slice_states,
+        }
+        if not coverage_complete:
+            return ProviderResult(
+                provider=self.key,
+                dataset=dataset,
+                records=[],
+                metadata={**metadata, "quality_status": "partial"},
+            )
+
+        merged: dict[tuple[str, str], tuple[int, dict[str, Any]]] = {}
+        for priority, candidate in slice_records:
+            identity = (str(candidate["cusip"]), str(candidate["auction_date"]))
+            current = merged.get(identity)
+            if current is None:
+                merged[identity] = (priority, candidate)
+                continue
+
+            def completeness(record: dict[str, Any]) -> int:
+                return sum(value not in (None, "") for value in record.values())
+
+            current_priority, current_record = current
+            conflicts = {
+                field
+                for field in candidate
+                if field != "record_date"
+                and candidate.get(field) not in (None, "")
+                and current_record.get(field) not in (None, "")
+                and candidate[field] != current_record[field]
+            }
+            if conflicts:
+                return ProviderResult(
+                    provider=self.key,
+                    dataset=dataset,
+                    error=(
+                        "conflicting duplicate auction identity "
+                        f"{identity[0]} {identity[1]}: {', '.join(sorted(conflicts))}"
+                    )[:2000],
+                    metadata={
+                        **metadata,
+                        "coverage_complete": False,
+                        "conflicting_identity": list(identity),
+                        "conflicting_fields": sorted(conflicts),
+                    },
+                )
+            candidate_rank = (
+                str(candidate.get("record_date") or ""),
+                completeness(candidate),
+                priority,
+            )
+            current_rank = (
+                str(current_record.get("record_date") or ""),
+                completeness(current_record),
+                current_priority,
+            )
+            preferred, fallback = (
+                (candidate, current_record)
+                if candidate_rank > current_rank
+                else (current_record, candidate)
+            )
+            combined = dict(preferred)
+            for field, value in fallback.items():
+                if combined.get(field) in (None, "") and value not in (None, ""):
+                    combined[field] = value
+            merged[identity] = (max(priority, current_priority), combined)
+
+        records = [
+            item[1]
+            for _identity, item in sorted(
+                merged.items(),
+                key=lambda pair: (
+                    str(pair[1][1].get("auction_date") or ""),
+                    str(pair[1][1].get("cusip") or ""),
+                ),
+            )
+        ]
+        return ProviderResult(
+            provider=self.key,
+            dataset=dataset,
+            records=records,
+            metadata={
+                **metadata,
+                "merged_record_count": len(records),
+                "deduplicated_record_count": len(slice_records) - len(records),
+            },
+        )
 
 
 class BLSProvider(HTTPProvider):
@@ -1240,7 +1512,7 @@ class FederalReserveRSSProvider(HTTPProvider):
                     "slug": filename.lower(),
                     "document_type": document_type,
                     "title": title,
-                    "summary": values.get("description", ""),
+                    "official_description": values.get("description", ""),
                     "published_at": published.isoformat() if published else None,
                     "original_url": url,
                     "category": values.get("category", ""),

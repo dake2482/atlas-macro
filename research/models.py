@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import uuid
+from urllib.parse import urlsplit
 
+from django.core.exceptions import ValidationError
+from django.core.validators import MaxValueValidator, MinValueValidator, URLValidator
 from django.db import models
 from django.urls import reverse
 
@@ -618,18 +621,164 @@ class FedDocument(TimestampedModel):
         SPEECH = "speech", "官员演讲"
         NEWS = "news", "联储公告"
 
+    class AnalysisStatus(models.TextChoices):
+        DRAFT = "draft", "待分析 / 待审核"
+        AI_GENERATED = "ai_generated", "AI 已生成（未人工审核）"
+        REVIEWED = "reviewed", "已人工审核"
+        REJECTED = "rejected", "已拒绝"
+
     document_type = models.CharField(max_length=20, choices=DocumentType.choices, db_index=True)
     slug = models.SlugField(max_length=180, unique=True)
     title = models.CharField(max_length=320)
     speaker = models.CharField(max_length=120, blank=True)
-    summary = models.TextField()
+    official_description = models.TextField(blank=True)
+    summary = models.TextField(blank=True)
     key_points = models.JSONField(default=list)
     published_at = models.DateTimeField()
-    hawkish_score = models.SmallIntegerField(default=0)
+    hawkish_score = models.SmallIntegerField(
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(-5), MaxValueValidator(5)],
+    )
     original_url = models.URLField(max_length=800)
+    analysis_status = models.CharField(
+        max_length=20,
+        choices=AnalysisStatus.choices,
+        default=AnalysisStatus.DRAFT,
+        db_index=True,
+    )
+    analysis_model = models.CharField(max_length=160, blank=True)
+    analysis_prompt_version = models.CharField(max_length=80, blank=True)
+    analysis_generated_at = models.DateTimeField(null=True, blank=True)
+    analysis_evidence = models.JSONField(default=list, blank=True)
+    reviewed_by = models.CharField(max_length=160, blank=True)
+    reviewed_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         ordering = ["-published_at"]
+        constraints = [
+            models.CheckConstraint(
+                condition=(
+                    models.Q(hawkish_score__isnull=True)
+                    | models.Q(hawkish_score__gte=-5, hawkish_score__lte=5)
+                ),
+                name="fed_hawkish_score_range",
+            )
+        ]
+
+    @staticmethod
+    def _is_safe_evidence_url(value) -> bool:
+        if not isinstance(value, str) or not value.strip() or value != value.strip():
+            return False
+        try:
+            parsed = urlsplit(value)
+            hostname = parsed.hostname
+        except ValueError:
+            return False
+        if (
+            parsed.scheme.lower() != "https"
+            or not parsed.netloc
+            or not hostname
+            or parsed.username is not None
+            or parsed.password is not None
+        ):
+            return False
+        try:
+            URLValidator(schemes=["https"])(value)
+        except ValidationError:
+            return False
+        return True
+
+    @classmethod
+    def _is_valid_evidence_item(cls, item) -> bool:
+        if not isinstance(item, dict):
+            return False
+        has_stable_identifier = any(
+            isinstance(item.get(key), str)
+            and bool(item[key].strip())
+            and item[key] == item[key].strip()
+            for key in ("id", "source_id")
+        )
+        if not has_stable_identifier:
+            return False
+        if "url" in item and not cls._is_safe_evidence_url(item["url"]):
+            return False
+        return True
+
+    @classmethod
+    def _is_valid_evidence_list(cls, evidence) -> bool:
+        return bool(
+            isinstance(evidence, list)
+            and evidence
+            and all(cls._is_valid_evidence_item(item) for item in evidence)
+        )
+
+    @property
+    def analysis_provenance_complete(self) -> bool:
+        return bool(
+            self.summary.strip()
+            and self.analysis_model.strip()
+            and self.analysis_prompt_version.strip()
+            and self.analysis_generated_at
+            and self._is_valid_evidence_list(self.analysis_evidence)
+        )
+
+    @property
+    def has_public_analysis(self) -> bool:
+        if self.analysis_status not in {
+            self.AnalysisStatus.AI_GENERATED,
+            self.AnalysisStatus.REVIEWED,
+        }:
+            return False
+        if not self.analysis_provenance_complete:
+            return False
+        if self.analysis_status == self.AnalysisStatus.REVIEWED:
+            return bool(self.reviewed_by.strip() and self.reviewed_at)
+        return True
+
+    @property
+    def has_public_score(self) -> bool:
+        return self.has_public_analysis and self.hawkish_score is not None
+
+    @property
+    def public_analysis_evidence(self) -> list[dict]:
+        if not self.has_public_analysis:
+            return []
+        return self.analysis_evidence
+
+    def clean(self) -> None:
+        super().clean()
+        errors: dict[str, str] = {}
+        public_statuses = {
+            self.AnalysisStatus.AI_GENERATED,
+            self.AnalysisStatus.REVIEWED,
+        }
+        if self.analysis_status in public_statuses:
+            required = {
+                "summary": self.summary.strip(),
+                "analysis_model": self.analysis_model.strip(),
+                "analysis_prompt_version": self.analysis_prompt_version.strip(),
+                "analysis_generated_at": self.analysis_generated_at,
+                "analysis_evidence": self.analysis_evidence,
+            }
+            for field, value in required.items():
+                if not value:
+                    errors[field] = "AI 已生成或已审核状态必须提供完整分析来源。"
+            if not self._is_valid_evidence_list(self.analysis_evidence):
+                errors["analysis_evidence"] = (
+                    "证据必须是非空对象列表；每项需含非空 id/source_id，"
+                    "可选链接只能使用无凭据的绝对 HTTPS URL。"
+                )
+        if self.analysis_status in {
+            self.AnalysisStatus.REVIEWED,
+            self.AnalysisStatus.REJECTED,
+        }:
+            if not self.reviewed_by.strip():
+                errors["reviewed_by"] = "审核或拒绝状态必须记录审核人。"
+            if self.reviewed_at is None:
+                errors["reviewed_at"] = "审核或拒绝状态必须记录审核时间。"
+        if errors:
+            raise ValidationError(errors)
 
 
 class SupplyChainNode(TimestampedModel):

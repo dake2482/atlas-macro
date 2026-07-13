@@ -328,7 +328,8 @@ def test_ny_fed_desk_observations_publish_operations_and_global_dollar_pages():
 
     dashboards = {item.key: item for item in publish_official_dashboards()}
 
-    assert {"operations", "rrp-tga", "global-dollar"} <= dashboards.keys()
+    assert {"operations", "global-dollar"} <= dashboards.keys()
+    assert "rrp-tga" not in dashboards
     operations = {item["key"]: item for item in dashboards["operations"].data["metrics"]}
     assert operations["onrrp"]["display_value"] == "0.545 USD bn"
     assert operations["soma-total"]["display_value"] == "6.34 USD tn"

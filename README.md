@@ -146,7 +146,7 @@ Important settings are:
 | `MARKET_DATA_API_KEY` | Credential for a redistribution-approved provider |
 | `AI_PROVIDER` / `AI_API_KEY` | Optional evidence-bound analysis provider |
 
-Do not publish the defaults in `.env.example`. Production must use a random
+Do not use the defaults from `.env.example` in production. Production must use a random
 `DJANGO_SECRET_KEY`, `DJANGO_DEBUG=0`, explicit hosts and trusted origins,
 encrypted secrets, TLS at the edge, and a licensed market-data provider.
 

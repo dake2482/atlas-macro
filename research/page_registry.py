@@ -226,14 +226,16 @@ PAGE_CONFIGS = {
     "auctions": {
         "title": "国债拍卖",
         "eyebrow": "Auction Monitor",
-        "description": "未来 21 天发行日历与近 90 天拍卖质量。",
-        "metrics": [
-            metric("下次拍卖", "3Y", "2 天后", source="Treasury"),
-            metric("发行额", "$58B", "计划"),
-            metric("近次 Bid/Cover", "2.47x", "+0.08x"),
-            metric("近次 Tail", "+0.4bp", "温和偏弱"),
-        ],
-        "analysis": "需求尚可但间接投标占比回落，关注中长端供给集中期对期限溢价的冲击。",
+        "description": (
+            "未来 14 天正式拍卖与发行/结算公告面值，以及近 90 天官方结果；"
+            "金额不是实际现金、TGA 变动、净融资或净流动性预测。"
+        ),
+        "snapshot_contract_version": 1,
+        "metrics": [],
+        "analysis": (
+            "页面仅发布当前 ET 日、双窗口完整且许可可公开的 FiscalData 批次；"
+            "官方源不含 when-issued 收益率，因此不展示真实 Tail。"
+        ),
     },
     "real-rates": {
         "title": "实际利率",
@@ -351,14 +353,16 @@ PAGE_CONFIGS = {
     "rrp-tga": {
         "title": "RRP 与 TGA",
         "eyebrow": "Fiscal Liquidity",
-        "description": "财政收支、发行和逆回购缓冲共同决定未来 14 天净抽水。",
-        "metrics": [
-            metric("RRP", "$0.32T", "日 -$9B", source="NY Fed"),
-            metric("TGA", "$0.76T", "日 +$24B", source="Treasury DTS"),
-            metric("7D 净冲击", "-$84B", "抽水"),
-            metric("14D 净冲击", "-$126B", "偏紧"),
-        ],
-        "analysis": "发行与税收推高 TGA，RRP 缓冲继续下降，短期流动性偏紧。",
+        "description": (
+            "并列展示 ON RRP、TGA 官方余额及未来 14 天发行/结算公告总面值；"
+            "不把公告面值冒充实际现金、未来 TGA 方向或净流动性冲击。"
+        ),
+        "snapshot_contract_version": 1,
+        "metrics": [],
+        "analysis": (
+            "三个组件只在同一完整刷新周期发布；不同有效日的余额不强行"
+            "相减，发行/结算日历也不用于生成未来净抽水预测。"
+        ),
     },
     "reserves": {
         "title": "银行准备金",

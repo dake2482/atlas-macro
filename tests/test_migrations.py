@@ -9,7 +9,7 @@ from django.db import connection, migrations, models
 from django.db.migrations.executor import MigrationExecutor
 from django.utils import timezone
 
-from research.models import Source, SourceLicense, Thesis
+from research.models import FedDocument, Source, SourceLicense, Thesis
 from tests.thesis_factories import build_complete_thesis
 
 
@@ -199,3 +199,164 @@ def test_source_license_schema_operations_are_ordered_safely():
         ("research", "0009_sourcelicense_is_current_and_more")
     ]
     assert SourceLicense._meta.ordering == ["-created_at", "-pk"]
+
+
+@pytest.mark.django_db
+def test_fed_provenance_migration_splits_typical_rss_and_retains_legacy_analysis():
+    migration = import_module(
+        "research.migrations.0017_fed_document_analysis_provenance"
+    )
+    typical = FedDocument.objects.create(
+        document_type=FedDocument.DocumentType.NEWS,
+        slug="migration-typical-rss",
+        title="Typical RSS row",
+        summary="Official RSS description stored in the old summary field",
+        key_points=[],
+        published_at=timezone.now(),
+        hawkish_score=0,
+        original_url=(
+            "https://www.federalreserve.gov/newsevents/pressreleases/"
+            "migration-typical-rss.htm"
+        ),
+    )
+    enriched = FedDocument.objects.create(
+        document_type=FedDocument.DocumentType.SPEECH,
+        slug="migration-legacy-enrichment",
+        title="Legacy enrichment",
+        speaker="Governor Fixture",
+        summary="Legacy analysis must be retained but not published",
+        key_points=["Legacy point"],
+        published_at=timezone.now(),
+        hawkish_score=3,
+        original_url=(
+            "https://www.federalreserve.gov/newsevents/speech/"
+            "migration-legacy-enrichment.htm"
+        ),
+    )
+
+    migration.split_official_description_from_legacy_analysis(
+        apps,
+        schema_editor=None,
+    )
+
+    typical.refresh_from_db()
+    assert typical.official_description == (
+        "Official RSS description stored in the old summary field"
+    )
+    assert typical.summary == ""
+    assert typical.hawkish_score is None
+    assert typical.analysis_status == FedDocument.AnalysisStatus.DRAFT
+    assert typical.analysis_evidence == []
+
+    enriched.refresh_from_db()
+    assert enriched.official_description == ""
+    assert enriched.summary == "Legacy analysis must be retained but not published"
+    assert enriched.key_points == ["Legacy point"]
+    assert enriched.hawkish_score == 3
+    assert enriched.analysis_status == FedDocument.AnalysisStatus.DRAFT
+    assert enriched.analysis_evidence[0]["kind"] == "legacy_unverified"
+    assert enriched.has_public_analysis is False
+
+
+def test_fed_provenance_migration_orders_split_before_score_constraint():
+    migration = import_module(
+        "research.migrations.0017_fed_document_analysis_provenance"
+    )
+    operations = migration.Migration.operations
+    split_index = next(
+        index
+        for index, operation in enumerate(operations)
+        if isinstance(operation, migrations.RunPython)
+    )
+    score_alter_index = next(
+        index
+        for index, operation in enumerate(operations)
+        if isinstance(operation, migrations.AlterField)
+        and operation.name == "hawkish_score"
+    )
+    constraint_index = next(
+        index
+        for index, operation in enumerate(operations)
+        if isinstance(operation, migrations.AddConstraint)
+        and operation.constraint.name == "fed_hawkish_score_range"
+    )
+    provenance_fields = {
+        operation.name: index
+        for index, operation in enumerate(operations)
+        if isinstance(operation, migrations.AddField)
+        and operation.name
+        in {
+            "official_description",
+            "analysis_status",
+            "analysis_model",
+            "analysis_prompt_version",
+            "analysis_generated_at",
+            "analysis_evidence",
+            "reviewed_by",
+            "reviewed_at",
+        }
+    }
+
+    assert len(provenance_fields) == 8
+    assert score_alter_index < split_index < constraint_index
+    assert all(index < split_index for index in provenance_fields.values())
+    assert migration.Migration.dependencies == [
+        ("research", "0016_sec_company_facts_and_capex_projection")
+    ]
+
+
+@pytest.mark.django_db(transaction=True)
+def test_real_0016_to_0017_fed_migration_fails_closed_and_preserves_legacy_values():
+    executor = MigrationExecutor(connection)
+    old_target = [("research", "0016_sec_company_facts_and_capex_projection")]
+    new_target = [("research", "0017_fed_document_analysis_provenance")]
+    executor.migrate(old_target)
+    old_apps = executor.loader.project_state(old_target).apps
+    OldFedDocument = old_apps.get_model("research", "FedDocument")
+    typical = OldFedDocument.objects.create(
+        document_type="news",
+        slug="executor-typical-fed-rss",
+        title="Executor typical RSS",
+        summary="Executor official description",
+        key_points=[],
+        published_at=timezone.now(),
+        hawkish_score=0,
+        original_url=(
+            "https://www.federalreserve.gov/newsevents/pressreleases/"
+            "executor-typical-fed-rss.htm"
+        ),
+    )
+    enriched = OldFedDocument.objects.create(
+        document_type="speech",
+        slug="executor-enriched-fed-row",
+        title="Executor enriched row",
+        speaker="Governor Executor",
+        summary="Executor legacy enrichment",
+        key_points=["Executor legacy point"],
+        published_at=timezone.now(),
+        hawkish_score=7,
+        original_url=(
+            "https://www.federalreserve.gov/newsevents/speech/"
+            "executor-enriched-fed-row.htm"
+        ),
+    )
+
+    executor = MigrationExecutor(connection)
+    executor.migrate(new_target)
+    new_apps = executor.loader.project_state(new_target).apps
+    NewFedDocument = new_apps.get_model("research", "FedDocument")
+
+    migrated_typical = NewFedDocument.objects.get(pk=typical.pk)
+    assert migrated_typical.official_description == "Executor official description"
+    assert migrated_typical.summary == ""
+    assert migrated_typical.hawkish_score is None
+    assert migrated_typical.analysis_status == "draft"
+    assert migrated_typical.analysis_evidence == []
+
+    migrated_enriched = NewFedDocument.objects.get(pk=enriched.pk)
+    assert migrated_enriched.summary == "Executor legacy enrichment"
+    assert migrated_enriched.key_points == ["Executor legacy point"]
+    assert migrated_enriched.hawkish_score is None
+    assert migrated_enriched.analysis_status == "draft"
+    assert migrated_enriched.analysis_evidence[0]["kind"] == "legacy_unverified"
+    assert migrated_enriched.analysis_evidence[0]["legacy_hawkish_score"] == 7

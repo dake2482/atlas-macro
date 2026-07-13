@@ -7,12 +7,16 @@ success_metrics:
   - Demo or fallback records are never presented as verified official data.
   - Django checks, lint, and deterministic tests remain green.
 current_milestone:
-  id: AI-RESEARCH-008
-  title: 分层补齐 Census 零售发布与完整历史
-  status: IN_PROGRESS
+  id: AI-RESEARCH-013
+  title: Treasury 拍卖与发行结算日历原子公开合同
+  status: REVIEW
+  evidence:
+    - Independent read-only final review found no P0 or P1 findings.
+    - Full pytest 509 tests and targeted pytest 140 tests passed; Ruff, Django system check, migration-drift check, production deployment check, and diff check also passed.
+    - Local 1440px and 390px browser acceptance passed for auctions and RRP/TGA with no horizontal overflow, readable long provenance, working mobile navigation, and no console warnings or errors.
 health: YELLOW
-next_action: Review AI-RESEARCH-011 locally; provision a real monitored SEC_USER_AGENT contact email before any production SEC refresh, while keeping the remaining 215 public-contract company routes pending. AI-RESEARCH-008 remains IN_PROGRESS and still requires CENSUS_API_KEY for the complete MARTS history.
-updated_at: '2026-07-13T17:30:00+08:00'
+next_action: After future explicit deployment authorization, back up production, run one complete same-cycle official Treasury/NY Fed refresh, deploy, then repeat post-deploy route and browser verification. AI-RESEARCH-012 still requires its scheduled evidence-review pipeline, AI-RESEARCH-011 still requires a monitored SEC_USER_AGENT, and AI-RESEARCH-008 still requires CENSUS_API_KEY.
+updated_at: '2026-07-13T19:43:00+08:00'
 validation_commands:
   - .venv/bin/ruff check .
   - .venv/bin/pytest -q

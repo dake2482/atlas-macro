@@ -6,7 +6,7 @@
   "scripts": {
     "build": "npm run build:css && npm run build:js",
     "build:css": "tailwindcss -c ./assets/tailwind.config.js -i ./assets/css/app.css -o ./research/static/research/css/app.css --minify",
-    "build:js": "esbuild ./assets/js/app.js --bundle --minify --sourcemap --target=es2020 --outfile=./research/static/research/js/app.js",
+    "build:js": "esbuild ./assets/js/app.js --bundle --minify --target=es2020 --outfile=./research/static/research/js/app.js",
     "dev:css": "tailwindcss -c ./assets/tailwind.config.js -i ./assets/css/app.css -o ./research/static/research/css/app.css --watch",
     "dev:js": "esbuild ./assets/js/app.js --bundle --sourcemap --target=es2020 --outfile=./research/static/research/js/app.js --watch"
   },

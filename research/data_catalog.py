@@ -169,10 +169,83 @@ DATA_REQUIREMENTS = [
         "source_name": "U.S. Treasury FiscalData auctions_query",
         "source_url": "https://fiscaldata.treasury.gov/datasets/treasury-securities-auctions-data/",
         "reason": (
-            "官方日历、发行额、Bid-to-Cover、投标和分配已结构化接入；"
+            "官方 auction_date 近 90 天/未来 14 天与 issue_date 未来 14 天"
+            "双窗口均在 meta 完整、一页覆盖且同批次时发布；公告总面值、"
+            "Bid-to-Cover 和 high yield 保留组件血缘。投标与 dealer/direct/"
+            "indirect 分配字段已规范化存储，但不属于当前 v1 公开展示合同。"
             "本条不包含需 when-issued 市场报价的真实 Tail。"
         ),
         "priority": 2,
+    },
+    {
+        "key": "treasury-gross-issue-settlement-calendar",
+        "page_key": "rrp-tga",
+        "metric_name": "未来 7/14 天国债发行/结算公告总面值",
+        "status": LIVE,
+        "source_name": "U.S. Treasury FiscalData auctions_query",
+        "source_url": "https://fiscaldata.treasury.gov/datasets/treasury-securities-auctions-data/",
+        "reason": (
+            "按 issue_date 半开区间汇总 offering_amount，并保留拍卖已完成但"
+            "尚未发行/结算的证券。该值是 gross announced face amount，"
+            "不是实际现金流、净融资、TGA 预测或净流动性冲击。"
+        ),
+        "priority": 2,
+    },
+    {
+        "key": "treasury-future-net-financing",
+        "page_key": "rrp-tga",
+        "metric_name": "未来实际净融资",
+        "status": NEEDS_SOURCE,
+        "source_name": (
+            "Treasury FiscalData Daily Treasury Statement and Monthly Statement "
+            "of the Public Debt"
+        ),
+        "source_url": "https://fiscaldata.treasury.gov/datasets/daily-treasury-statement/",
+        "reason": (
+            "公告总面值未扣除到期偿还、增发置换、非市场融资及最终结算差异，"
+            "不能替代未来实际净融资。"
+        ),
+        "proxy_description": (
+            "先以 DTS 实际 cash/debt transactions 和月度债务存量做事后核验；"
+            "未来值仍须补齐到期表、非市场项目与最终结算口径。"
+        ),
+        "priority": 1,
+    },
+    {
+        "key": "treasury-future-tga-cash-flow",
+        "page_key": "rrp-tga",
+        "metric_name": "未来 TGA 实际现金流方向与金额",
+        "status": NEEDS_SOURCE,
+        "source_name": "Treasury FiscalData Daily Treasury Statement",
+        "source_url": "https://fiscaldata.treasury.gov/datasets/daily-treasury-statement/",
+        "reason": (
+            "需要可核验的税收、支出、到期偿付、非市场项目和实际结算流水；"
+            "offering_amount 不代表 TGA 流入。"
+        ),
+        "proxy_description": (
+            "DTS 可提供已发生的 operating cash balance、deposits 和 withdrawals；"
+            "未来逐日方向需财政事件表与实际结算来源，不能由拍卖面值反推。"
+        ),
+        "priority": 1,
+    },
+    {
+        "key": "treasury-future-net-liquidity-impact",
+        "page_key": "rrp-tga",
+        "metric_name": "未来财政净流动性影响",
+        "status": NEEDS_SOURCE,
+        "source_name": (
+            "Federal Reserve H.4.1, New York Fed Markets and Treasury FiscalData"
+        ),
+        "source_url": "https://markets.newyorkfed.org/static/docs/markets-api.html",
+        "reason": (
+            "需要资金来源、RRP/准备金承接、结算时点与其他财政现金流的"
+            "同口径证据；公告发行总面值不得冒充净流动性抽离。"
+        ),
+        "proxy_description": (
+            "可在事后共同有效日计算透明余额代理；未来冲击需授权资金流/"
+            "when-issued 数据与完整财政事件模型，代理不得标成官方预测。"
+        ),
+        "priority": 1,
     },
     {
         "key": "treasury-auction-wi-tail",
@@ -185,7 +258,8 @@ DATA_REQUIREMENTS = [
             "TreasuryDirect 只能提供拍卖结果；真实 Tail 需要拍卖截止前的 when-issued 市场收益率。"
         ),
         "proxy_description": (
-            "拍卖高收益率减前一营业日 Treasury 官方收益率，标明为 EOD 近似、不是 WI Tail。"
+            "拍卖高收益率减前一营业日 Treasury 官方收益率，标明为 EOD 近似、"
+            "不是 WI Tail；发行公告总面值也不能作为 WI Tail 的替代数据。"
         ),
         "priority": 2,
     },
@@ -761,6 +835,23 @@ DATA_REQUIREMENTS = [
         "source_name": "Federal Reserve official RSS and documents",
         "source_url": "https://www.federalreserve.gov/feeds/feeds.htm",
         "reason": "官方 RSS 元数据、原文链接和去重已接入；鹰鸽评分仍须引用原文并经审核。",
+        "priority": 2,
+    },
+    {
+        "key": "fed-hawkish-dovish",
+        "page_key": "fed-hawkish-dovish",
+        "metric_name": "美联储文本证据绑定、鹰鸽分类与人工审核",
+        "status": NEEDS_SOURCE,
+        "source_name": "Atlas Macro analysis pipeline (not yet scheduled)",
+        "reason": (
+            "Federal Reserve 官方 RSS 元数据与原文链接已接入，但证据绑定分类、"
+            "模型与提示词版本记录、鹰鸽评分和人工审核尚未形成定时生产闭环。"
+            "未满足完整 provenance 的旧摘要与分数不会公开。"
+        ),
+        "proxy_description": (
+            "在闭环完成前仅展示明确标注的官方 RSS 描述；完整 AI 生成记录可标为"
+            "未人工审核，只有人工审核记录进入综合平均分。"
+        ),
         "priority": 2,
     },
     {

@@ -224,6 +224,7 @@ def test_unanalysed_fed_document_does_not_claim_neutral_score(client):
         document_type=FedDocument.DocumentType.NEWS,
         slug="official-unanalysed-document",
         title="Official unanalysed document",
+        official_description="Official RSS description only",
         summary="",
         key_points=[],
         published_at=timezone.now(),
@@ -234,7 +235,8 @@ def test_unanalysed_fed_document_does_not_claim_neutral_score(client):
     detail = client.get(f"/fed/news/{document.slug}/").content.decode()
 
     assert "待评分" in listing
-    assert "待摘要审核后评分" in detail
+    assert "官方 RSS 描述 / 摘要" in detail
+    assert "Official RSS description only" in detail
     assert "AI generated" not in detail
 
 

@@ -66,4 +66,3 @@ zrender/lib/zrender.js:
   * https://github.com/ecomfe/zrender/blob/master/LICENSE.txt
   *)
 */
-//# sourceMappingURL=app.js.map

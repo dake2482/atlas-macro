@@ -17,7 +17,7 @@ from django.contrib.postgres.search import (
 )
 from django.core.paginator import Paginator
 from django.db import connection
-from django.db.models import Avg, Count, F, Max, Min, Prefetch, Q, Sum
+from django.db.models import Count, F, Max, Min, Prefetch, Q, Sum
 from django.http import Http404, HttpResponse, JsonResponse
 from django.shortcuts import get_object_or_404, render
 from django.urls import get_resolver, reverse
@@ -879,6 +879,8 @@ def assets_overview(request):
 
 
 def dashboard_page(request, page_key: str):
+    if page_key == "fed-hawkish-dovish":
+        return fed_hawkish_dovish(request)
     try:
         config = get_page_config(page_key)
     except KeyError as exc:
@@ -1443,8 +1445,77 @@ def crypto_derivatives(request):
     )
 
 
+def _filter_fed_documents(request, queryset, *, allow_type: bool):
+    query = request.GET.get("q", "").strip()
+    selected_type = request.GET.get("type", "").strip() if allow_type else ""
+    valid_types = {value for value, _label in FedDocument.DocumentType.choices}
+    if selected_type in valid_types:
+        queryset = queryset.filter(document_type=selected_type)
+    else:
+        selected_type = ""
+    if query:
+        analysis_matches = queryset.filter(
+            analysis_status__in=(
+                FedDocument.AnalysisStatus.AI_GENERATED,
+                FedDocument.AnalysisStatus.REVIEWED,
+            ),
+            summary__icontains=query,
+        ).only(
+            "id",
+            "summary",
+            "analysis_status",
+            "analysis_model",
+            "analysis_prompt_version",
+            "analysis_generated_at",
+            "analysis_evidence",
+            "reviewed_by",
+            "reviewed_at",
+        )
+        public_analysis_ids = [
+            document.pk for document in analysis_matches if document.has_public_analysis
+        ]
+        queryset = queryset.filter(
+            Q(title__icontains=query)
+            | Q(speaker__icontains=query)
+            | Q(official_description__icontains=query)
+            | Q(pk__in=public_analysis_ids)
+        )
+    return queryset, {"q": query, "type": selected_type}
+
+
+def _reviewed_fed_average(documents) -> float | None:
+    scores = [
+        document.hawkish_score
+        for document in documents
+        if document.analysis_status == FedDocument.AnalysisStatus.REVIEWED
+        and document.has_public_score
+    ]
+    if not scores:
+        return None
+    return sum(scores) / len(scores)
+
+
+def _fed_list_context(*, title: str, mode: str, page_obj, filters: dict, average_score=None):
+    return {
+        "title": title,
+        "mode": mode,
+        "page_obj": page_obj,
+        "documents": page_obj.object_list,
+        "filters": filters,
+        "average_score": average_score,
+        "type_choices": FedDocument.DocumentType.choices,
+        "show_type_filter": mode in {"hub", "hawkish"},
+    }
+
+
 def fed_hub(request):
-    documents = _public_fed_documents()
+    documents, filters = _filter_fed_documents(
+        request,
+        _public_fed_documents(),
+        allow_type=True,
+    )
+    reviewed_average = _reviewed_fed_average(documents)
+    page_obj = Paginator(documents, 20).get_page(request.GET.get("page"))
     latest = {
         key: documents.filter(document_type=key).first()
         for key in [
@@ -1453,17 +1524,18 @@ def fed_hub(request):
             FedDocument.DocumentType.NEWS,
         ]
     }
-    scored_documents = documents.exclude(summary="")
-    average = scored_documents.aggregate(score=Avg("hawkish_score"))["score"]
     return render(
         request,
         "research/fed_list.html",
         {
-            "title": "美联储",
-            "mode": "hub",
+            **_fed_list_context(
+                title="美联储",
+                mode="hub",
+                page_obj=page_obj,
+                filters=filters,
+                average_score=reviewed_average,
+            ),
             "latest": latest,
-            "average_score": average,
-            "documents": documents[:8],
             "breadcrumbs": _breadcrumbs(("首页", "/"), ("美联储", "")),
         },
     )
@@ -1473,18 +1545,53 @@ def fed_list(request, doc_type: str):
     valid_types = {choice[0] for choice in FedDocument.DocumentType.choices}
     if doc_type not in valid_types:
         raise Http404("未知文档类型")
-    queryset = _public_fed_documents().filter(document_type=doc_type)
+    queryset, filters = _filter_fed_documents(
+        request,
+        _public_fed_documents().filter(document_type=doc_type),
+        allow_type=False,
+    )
     page_obj = Paginator(queryset, 20).get_page(request.GET.get("page"))
     labels = dict(FedDocument.DocumentType.choices)
     return render(
         request,
         "research/fed_list.html",
         {
-            "title": labels[doc_type],
-            "mode": doc_type,
-            "page_obj": page_obj,
-            "documents": page_obj.object_list,
+            **_fed_list_context(
+                title=labels[doc_type],
+                mode=doc_type,
+                page_obj=page_obj,
+                filters=filters,
+            ),
             "breadcrumbs": _breadcrumbs(("首页", "/"), ("美联储", "/fed/"), (labels[doc_type], "")),
+        },
+    )
+
+
+def fed_hawkish_dovish(request):
+    queryset, filters = _filter_fed_documents(
+        request,
+        _public_fed_documents(),
+        allow_type=True,
+    )
+    analysed_documents = [document for document in queryset if document.has_public_analysis]
+    average = _reviewed_fed_average(analysed_documents)
+    page_obj = Paginator(analysed_documents, 20).get_page(request.GET.get("page"))
+    return render(
+        request,
+        "research/fed_list.html",
+        {
+            **_fed_list_context(
+                title="鹰鸽追踪",
+                mode="hawkish",
+                page_obj=page_obj,
+                filters=filters,
+                average_score=average,
+            ),
+            "breadcrumbs": _breadcrumbs(
+                ("首页", "/"),
+                ("美联储", "/fed/"),
+                ("鹰鸽追踪", ""),
+            ),
         },
     )
 

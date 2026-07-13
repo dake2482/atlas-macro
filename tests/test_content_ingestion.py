@@ -68,8 +68,15 @@ def test_fed_document_refresh_preserves_existing_analysis_enrichment():
         summary="Reviewed policy summary",
         key_points=["Balance sheet", "Inflation persistence"],
         published_at=datetime(2026, 7, 1, tzinfo=UTC),
-        hawkish_score=7,
+        hawkish_score=3,
         original_url="https://www.federalreserve.gov/newsevents/speech/original.htm",
+        analysis_status=FedDocument.AnalysisStatus.REVIEWED,
+        analysis_model="fixture-model",
+        analysis_prompt_version="fed-v1",
+        analysis_generated_at=datetime(2026, 7, 1, tzinfo=UTC),
+        analysis_evidence=[{"id": "official-original"}],
+        reviewed_by="Fixture Reviewer",
+        reviewed_at=datetime(2026, 7, 2, tzinfo=UTC),
     )
     result = ProviderResult(
         provider="federal-reserve",
@@ -79,7 +86,7 @@ def test_fed_document_refresh_preserves_existing_analysis_enrichment():
                 "slug": document.slug,
                 "document_type": FedDocument.DocumentType.STATEMENT,
                 "title": "Corrected official title",
-                "summary": "Unreviewed upstream excerpt",
+                "official_description": "Corrected official RSS description",
                 "published_at": "2026-07-10T16:00:00+00:00",
                 "original_url": (
                     "https://www.federalreserve.gov/newsevents/pressreleases/monetary20260710a.htm"
@@ -95,7 +102,13 @@ def test_fed_document_refresh_preserves_existing_analysis_enrichment():
     assert document.title == "Corrected official title"
     assert document.published_at == datetime(2026, 7, 10, 16, tzinfo=UTC)
     assert document.original_url.endswith("monetary20260710a.htm")
+    assert document.official_description == "Corrected official RSS description"
     assert document.speaker == "Governor Example"
     assert document.summary == "Reviewed policy summary"
     assert document.key_points == ["Balance sheet", "Inflation persistence"]
-    assert document.hawkish_score == 7
+    assert document.hawkish_score == 3
+    assert document.analysis_status == FedDocument.AnalysisStatus.REVIEWED
+    assert document.analysis_model == "fixture-model"
+    assert document.analysis_prompt_version == "fed-v1"
+    assert document.analysis_evidence == [{"id": "official-original"}]
+    assert document.reviewed_by == "Fixture Reviewer"

@@ -1,6 +1,7 @@
 from django.contrib import admin, messages
 from django.core.exceptions import PermissionDenied
 from django.db import transaction
+from django.utils import timezone
 
 from . import models
 from .thesis_publication import publish_theses, unpublish_theses
@@ -173,6 +174,104 @@ class NewsItemAdmin(admin.ModelAdmin):
     search_fields = ("title", "summary")
 
 
+@admin.register(models.FedDocument)
+class FedDocumentAdmin(admin.ModelAdmin):
+    list_display = (
+        "title",
+        "document_type",
+        "published_at",
+        "analysis_status",
+        "hawkish_score",
+        "reviewed_by",
+        "reviewed_at",
+    )
+    list_filter = ("document_type", "analysis_status", "published_at")
+    search_fields = (
+        "title",
+        "speaker",
+        "official_description",
+        "summary",
+    )
+    readonly_fields = (
+        "document_type",
+        "slug",
+        "title",
+        "speaker",
+        "official_description",
+        "published_at",
+        "original_url",
+        "analysis_status",
+        "reviewed_by",
+        "reviewed_at",
+        "created_at",
+        "updated_at",
+    )
+    actions = ("mark_ai_generated", "review_selected", "reject_selected")
+
+    def has_add_permission(self, request):
+        return False
+
+    @admin.action(description="标记为 AI 已生成（未人工审核）")
+    def mark_ai_generated(self, request, queryset):
+        changed = 0
+        with transaction.atomic():
+            for document in queryset.select_for_update():
+                document.analysis_status = models.FedDocument.AnalysisStatus.AI_GENERATED
+                document.reviewed_by = ""
+                document.reviewed_at = None
+                document.full_clean()
+                document.save(
+                    update_fields=[
+                        "analysis_status",
+                        "reviewed_by",
+                        "reviewed_at",
+                        "updated_at",
+                    ]
+                )
+                changed += 1
+        self.message_user(request, f"已标记 {changed} 篇完整分析为 AI 未审核。")
+
+    @admin.action(description="人工审核通过所选分析")
+    def review_selected(self, request, queryset):
+        changed = 0
+        with transaction.atomic():
+            for document in queryset.select_for_update():
+                document.analysis_status = models.FedDocument.AnalysisStatus.REVIEWED
+                document.reviewed_by = request.user.get_username()
+                document.reviewed_at = timezone.now()
+                document.full_clean()
+                document.save(
+                    update_fields=[
+                        "analysis_status",
+                        "reviewed_by",
+                        "reviewed_at",
+                        "updated_at",
+                    ]
+                )
+                changed += 1
+        self.message_user(request, f"已人工审核 {changed} 篇分析。")
+
+    @admin.action(description="拒绝所选分析")
+    def reject_selected(self, request, queryset):
+        changed = 0
+        with transaction.atomic():
+            for document in queryset.select_for_update():
+                document.analysis_status = models.FedDocument.AnalysisStatus.REJECTED
+                document.reviewed_by = request.user.get_username()
+                document.reviewed_at = timezone.now()
+                document.full_clean()
+                document.save(
+                    update_fields=[
+                        "analysis_status",
+                        "reviewed_by",
+                        "reviewed_at",
+                        "updated_at",
+                    ]
+                )
+                changed += 1
+        self.message_user(request, f"已拒绝 {changed} 篇分析；公开页不会展示其摘要或评分。")
+
+
 @admin.register(models.Company)
 class CompanyAdmin(admin.ModelAdmin):
     list_display = ("name", "ticker", "sec_cik", "is_published", "quality_status", "data_as_of")
@@ -296,7 +395,6 @@ for model in [
     models.Outcome,
     models.ResearchMention,
     models.FundLetter,
-    models.FedDocument,
     models.SupplyChainEdge,
     models.ModelProfile,
     models.CodingAgentProfile,
