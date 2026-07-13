@@ -4,9 +4,9 @@
 
 - Purpose: Build a clean-room macro-research and AI supply-chain intelligence platform with traceable public sources, explicit data-quality labels, and original presentation.
 - Health: `YELLOW`
-- Milestone: `AI-RESEARCH-008` — 修正 Census 当期零售发布与完整历史 (`BLOCKED`)
-- Next action: Implement deterministic multi-year Treasury curve ingestion and the contract-v1 coordinator.
-- Updated: `2026-07-13T08:35:19+08:00`
+- Milestone: `AI-RESEARCH-010` — 首页与每日报告官方证据发布安全闭环 (`IN_PROGRESS`)
+- Next action: Implement one shared public-thesis eligibility gate and prove every public consumer excludes future, incomplete, demo, stale or unlicensed research.
+- Updated: `2026-07-13T10:00:47+08:00`
 - Git boundary: branch `main`; run `portfolio closeout AI-RESEARCH` for live delivery state.
 - Execution metadata: Codex 0/0 active/total; ZCode 0/0 active/total
 
@@ -14,8 +14,9 @@
 
 | Requirement | State | Priority | Executor | Task | Branch / worktree | Next action |
 |---|---|---|---|---|---|---|
-| AI-RESEARCH-009 | IN_PROGRESS | P1 | codex | atlas-treasury-curve-alignment-20260713 | main / local | Implement deterministic multi-year Treasury curve ingestion and the contract-v1 coordinator. |
+| AI-RESEARCH-010 | IN_PROGRESS | P0 | codex | atlas-daily-evidence-publication-safety-20260713 | main / local | Implement one shared public-thesis eligibility gate and prove every public consumer excludes future, incomplete, demo, stale or unlicensed research. |
 | AI-RESEARCH-008 | BLOCKED | P1 | codex | atlas-census-retail-alignment-20260713 | main / local | Provision a free CENSUS_API_KEY in Mina's protected shared environment, recreate the app services, rerun refresh_macro_data, and complete the May 2026 production audit. |
+| AI-RESEARCH-009 | REVIEW | P1 | codex | atlas-treasury-curve-alignment-20260713 | main / local | Run the project closeout gate after the pre-existing untracked docs/guides ownership is resolved; do not mix those user files into this requirement. |
 
 ## Blockers
 
@@ -23,4 +24,4 @@
 
 ## Latest verification evidence
 
-- The validated pre-release backup is /srv/atlasmacro/backups/20260713T002138Z.dump, size 7,868,138 bytes, SHA-256 a3d36c13e7717ca784fb97730885afac0cae13f5a353ba1d33d53a5ee0e4a2df; its pg_restore catalogue check passed.
+- Ruff, the full 343-test pytest suite and Django check passed. Mina loopback route smoke tests passed for rates, yield curve, real rates, bonds and asset overview; final 1440px and 390px Playwright checks passed without overflow, stale labels or JavaScript errors, and each selected chart rendered exactly one Canvas after entering the viewport.
