@@ -208,7 +208,7 @@ html[data-theme="dark"] {
   .button-ghost { background: transparent; }
   .icon-button { width: 2.35rem; padding: 0; }
 
-  .data-table-wrap { overflow-x: auto; }
+  .data-table-wrap { position: relative; max-width: 100%; overflow-x: auto; }
   .data-table { width: 100%; border-collapse: collapse; font-size: .75rem; }
   .data-table th {
     padding: .72rem .85rem; border-bottom: 1px solid var(--line-strong); background: var(--surface-2);
