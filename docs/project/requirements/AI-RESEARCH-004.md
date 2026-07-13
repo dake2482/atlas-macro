@@ -10,8 +10,8 @@ task_id: atlas-inflation-official-20260712
 branch: main
 worktree: local
 dependencies: []
-updated_at: '2026-07-13T15:12:00+08:00'
-next_action: PCE inflation and Treasury/TIPS BEI proxy follow-ups are deployed; remaining inflation gaps are detailed CPI/service components, real traded breakeven or 5Y5Y feeds, and full release vintage.
+updated_at: '2026-07-13T16:05:00+08:00'
+next_action: PCE inflation, Treasury/TIPS BEI proxy, and BLS CPI component follow-ups are deployed; remaining inflation gaps are real traded breakeven or 5Y5Y feeds and full release vintage.
 evidence:
 - Production currently publishes headline CPI, core CPI and final-demand PPI index levels, which are not the
   month-over-month or year-over-year inflation rates expected by the page contract.
@@ -60,6 +60,21 @@ evidence:
   盈亏平衡通胀, 5Y BEI 2.28%, 10Y BEI 2.24%, and the explicit not-traded-breakeven label.
   GitHub public repository created at https://github.com/dake2482/atlas-macro and main is
   tracking origin/main.'
+- '2026-07-13 BLS component follow-up: commit 335fc99 freezes seasonally adjusted and
+  not-seasonally-adjusted pairs for Shelter (SAH1), commodities less food and energy
+  commodities (SACL1E), and services less energy services (SASLE). The page publishes
+  MoM, YoY, 3M and 6M annualized rates from exact calendar months and explicitly states
+  that SASLE still includes Shelter and is not supercore inflation.'
+- 'The exact production BLS request returned all 24 requested series and 1,552 rows with
+  no missing series. Mina release 335fc99 was deployed after the validated backup
+  /srv/atlasmacro/backups/pre-335fc995f580-20260713T075721Z.dump (9,253,455 bytes),
+  SHA-256 7344016ec50c2d03d63648bb40121f3a32b93e1ff5592d8ba9302c9e9944c8a2.'
+- 'Production inflation snapshot 138 contains nine charts, including three component
+  charts and the Treasury BEI proxy. The component tab returns HTTP 200 and displays
+  May 2026 Shelter +0.3% MoM/+3.4% YoY, core goods -0.1% MoM/+1.1% YoY, and services
+  less energy +0.3% MoM/+3.4% YoY, all bound to BLS batch
+  c62e7a25-e503-47f3-81f5-8018aaaa85b3. The catalogue now reports live=36 and
+  needs_source=12.'
 started_at: '2026-07-12T23:24:28+08:00'
 ---
 
@@ -73,8 +88,9 @@ started_at: '2026-07-12T23:24:28+08:00'
 - [x] 3M/6M 年化动能使用明确的几何年化公式，保留输入序列、数值日、批次、来源、许可与 preliminary 状态。
 - [x] 通胀页按总体、核心与生产者价格分组图表，支持可分享的 1y/3y/5y GET 时间窗口，不展示不兼容单位。
 - [x] 通胀页使用独立 BLS 同批发布门；与通胀无关的 Treasury/Fed/DOL 失败不阻断新快照，BLS 必需输入失败则保留上版并标 stale。
-- [x] 官方序列未覆盖的通胀分项、真实交易 breakeven、5Y5Y 或修订 vintage 保持明确的数据源/采购状态，不用演示数值填充。
-- [x] 后续补齐：PCE 与核心 PCE 价格指数使用 BEA PIO Section 2 官方工作簿发布；5Y/10Y 市场预期使用 Treasury/TIPS 官方曲线派生代理发布；剩余未覆盖层只保留分项、真实交易 breakeven、5Y5Y 与完整 vintage。
+- [x] BLS 官方 Shelter、核心商品与不含能源服务的服务 CPI 分项已使用季调/未季调配对序列发布，服务口径明示仍含 Shelter，不冒充“超级核心”。
+- [x] 真实交易 breakeven、5Y5Y 和完整修订 vintage 继续保持明确的数据源/采购状态，不用演示数值填充。
+- [x] 后续补齐：PCE 与核心 PCE 价格指数使用 BEA PIO Section 2 官方工作簿发布；5Y/10Y 市场预期使用 Treasury/TIPS 官方曲线派生代理发布；剩余未覆盖层只保留真实交易 breakeven、5Y5Y 与完整 vintage。
 - [x] 公式、精度、缺月、批次、stale 保留、路由、血缘、响应式和生产刷新验收通过。
 
 ## Verification plan

@@ -11,8 +11,8 @@ current_milestone:
   title: 分层补齐 Census 零售发布与完整历史
   status: IN_PROGRESS
 health: YELLOW
-next_action: Continue page-by-page alignment; provision CENSUS_API_KEY to backfill the complete 1992-present MARTS history, while PCE inflation and Treasury/TIPS 5Y/10Y BEI proxy are now live on Mina.
-updated_at: '2026-07-13T15:12:00+08:00'
+next_action: Continue page-by-page alignment; provision CENSUS_API_KEY to backfill the complete 1992-present MARTS history, while PCE inflation, Treasury/TIPS 5Y/10Y BEI proxy, and BLS CPI components are now live on Mina. The next keyless official-source slice is SEC-reported hyperscaler total CapEx and fundamentals without inferring AI-only spend.
+updated_at: '2026-07-13T16:05:00+08:00'
 validation_commands:
   - .venv/bin/ruff check .
   - .venv/bin/pytest -q

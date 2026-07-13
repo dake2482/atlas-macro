@@ -6,7 +6,7 @@
 - Health: `YELLOW`
 - Milestone: `AI-RESEARCH-008` — 分层补齐 Census 零售发布与完整历史 (`IN_PROGRESS`)
 - Next action: Provision CENSUS_API_KEY to backfill the complete 1992-present MARTS history; current retail publication is live from Census marts_current.xlsx on Mina.
-- Updated: `2026-07-13T15:12:00+08:00`
+- Updated: `2026-07-13T16:05:00+08:00`
 - Git boundary: branch `main`; run `portfolio closeout AI-RESEARCH` for live delivery state.
 - Execution metadata: Codex 0/0 active/total; ZCode 0/0 active/total
 
@@ -24,4 +24,4 @@
 
 ## Latest verification evidence
 
-- Mina release 5ff9adf was deployed on port 3080 after backup /srv/atlasmacro/backups/pre-5ff9adf0d90c-20260713T070513Z.dump, SHA-256 68079fb969060fb197ca60467482fefb62e17d760b78b34253e318d6dea9c32b. Production sync_data_requirements now reports live=35, needs_source=13, license_review=3 and purchase_required=36.
+- 2026-07-13 BLS component follow-up: commit 335fc99 freezes seasonally adjusted and not-seasonally-adjusted pairs for Shelter (SAH1), commodities less food and energy commodities (SACL1E), and services less energy services (SASLE). The page publishes MoM, YoY, 3M and 6M annualized rates from exact calendar months and explicitly states that SASLE still includes Shelter and is not supercore inflation.
