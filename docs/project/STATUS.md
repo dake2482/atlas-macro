@@ -5,8 +5,8 @@
 - Purpose: Build a clean-room macro-research and AI supply-chain intelligence platform with traceable public sources, explicit data-quality labels, and original presentation.
 - Health: `YELLOW`
 - Milestone: `AI-RESEARCH-008` — 分层补齐 Census 零售发布与完整历史 (`IN_PROGRESS`)
-- Next action: Find a Mina-accessible current MARTS workbook path or provision CENSUS_API_KEY; the deployed release-workbook fallback is real but still stale because www2 historical files stop at April 2026.
-- Updated: `2026-07-13T14:29:00+08:00`
+- Next action: Provision CENSUS_API_KEY to backfill the complete 1992-present MARTS history; current retail publication is live from Census marts_current.xlsx on Mina.
+- Updated: `2026-07-13T14:39:57+08:00`
 - Git boundary: branch `main`; run `portfolio closeout AI-RESEARCH` for live delivery state.
 - Execution metadata: Codex 0/0 active/total; ZCode 0/0 active/total
 
@@ -14,7 +14,7 @@
 
 | Requirement | State | Priority | Executor | Task | Branch / worktree | Next action |
 |---|---|---|---|---|---|---|
-| AI-RESEARCH-008 | IN_PROGRESS | P1 | codex | atlas-census-retail-alignment-20260713 | main / local | Find a Mina-accessible current MARTS workbook path or provision CENSUS_API_KEY; the deployed release-workbook fallback is real but still stale because www2 historical files stop at April 2026. |
+| AI-RESEARCH-008 | IN_PROGRESS | P1 | codex | atlas-census-retail-alignment-20260713 | main / local | Provision CENSUS_API_KEY to backfill the complete 1992-present MARTS history; current retail publication is live from Census marts_current.xlsx on Mina. |
 | AI-RESEARCH-009 | REVIEW | P1 | codex | atlas-treasury-curve-alignment-20260713 | main / local | Run the project closeout gate after the pre-existing untracked docs/guides ownership is resolved; do not mix those user files into this requirement. |
 | AI-RESEARCH-010 | REVIEW | P0 | codex | atlas-daily-evidence-publication-safety-20260713 | main / local | Register or explicitly exclude /Users/dake/Documents/weihua from AI-Portfolio discovery, then rerun portfolio closeout AI-RESEARCH; do not mutate that unrelated repository without user direction. |
 
@@ -24,4 +24,4 @@
 
 ## Latest verification evidence
 
-- The validated pre-release backup is /srv/atlasmacro/backups/20260713T002138Z.dump, size 7,868,138 bytes, SHA-256 a3d36c13e7717ca784fb97730885afac0cae13f5a353ba1d33d53a5ee0e4a2df; its pg_restore catalogue check passed.
+- 2026-07-13 correction: live Mina probing now returns HTTP 200 and a valid Excel file for https://www.census.gov/retail/marts/www/marts_current.xlsx. Commit bbf7fff makes the release provider prefer the current Census workbook and fall back to the historical www2 archive only when the current workbook is unavailable.

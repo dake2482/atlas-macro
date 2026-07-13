@@ -11,8 +11,8 @@ branch: main
 worktree: local
 dependencies:
 - AI-RESEARCH-006
-updated_at: '2026-07-13T14:21:11+08:00'
-next_action: Find a Mina-accessible current MARTS workbook path or provision CENSUS_API_KEY; the deployed release-workbook fallback is real but still stale because www2 historical files stop at April 2026.
+updated_at: '2026-07-13T14:39:57+08:00'
+next_action: Provision CENSUS_API_KEY to backfill the complete 1992-present MARTS history; current retail publication is live from Census marts_current.xlsx on Mina.
 evidence:
 - Production currently publishes April 2026 Census retail and food-services sales as 757,085 USD millions,
   +0.5% month over month and +4.9% year over year from batch 3b6ea974-4f6f-4379-b008-80d3e6056727;
@@ -59,6 +59,19 @@ evidence:
 - 'Current MARTS direct workbook probing differs by network: local macOS curl receives HTTP 200 for
   https://www.census.gov/retail/marts/www/marts_current.xlsx, while Mina receives HTTP 403. Therefore
   production cannot yet automate the May 2026 current workbook without a new accessible path, mirror, or API key.'
+- '2026-07-13 correction: live Mina probing now returns HTTP 200 and a valid Excel file for
+  https://www.census.gov/retail/marts/www/marts_current.xlsx. Commit bbf7fff makes the release provider
+  prefer the current Census workbook and fall back to the historical www2 archive only when the current
+  workbook is unavailable.'
+- Release bbf7fff was deployed to Mina on port 3080. A pre-refresh backup was written to
+  /srv/atlasmacro/backups/pre-bbf7ffff18e7-20260713T063626Z.dump, size 129M, SHA-256
+  e8d9f5ce8fa8625712af2c60bcf854336b3f553a2645659f1ea6284d39ac744c. Production
+  sync_data_requirements reported live=33 and needs_source=15; refresh_macro_data completed with six runs,
+  18,861 rows, failed=0, partial=1, and published consumer.
+- Production consumer snapshot 130 is fresh and uses retail_source_key=census-release with batch
+  95b3fbfd-d657-4b2a-803f-ee6f1cbc1068. Public /economy/consumer/ returns 200 and displays
+  763,705 USD mn, 0.90% MoM and 6.90% YoY from U.S. Census Bureau Monthly Retail Trade Releases,
+  while the stored April revision is 757,036 and 0.40%. The page no longer displays 757,085 or a stale label.
 started_at: '2026-07-13T08:02:09+08:00'
 ---
 
@@ -75,7 +88,7 @@ started_at: '2026-07-13T08:02:09+08:00'
 - [x] 当前源缺失、格式变化、交叉校验失败、过期、未授权或混批时保留上一完整 consumer 快照并显示具体失败；恢复后同值刷新血缘而不制造错误新版本。
 - [x] consumer 页面在 Mina 发布当前可用 Census 官方发布工作簿批次；不回归 BEA PIO、G.19、NY Fed 家庭债务或 economy 组合页。
 - [x] 数据目录把当前 Census release-workbook 零售指标标记为 LIVE，并把完整 API 历史保留为 NEEDS_SOURCE；Ruff、完整 pytest、Django check、Mina 生产刷新和路由烟测通过。
-- [ ] 找到 Mina 可访问的当前 MARTS 工作簿路径、配置可信镜像或 provision CENSUS_API_KEY，使生产能发布 May 2026 的 763,705、+0.9% 和 +6.9%，April 历史修订为 757,036 与 +0.4%。
+- [x] 找到 Mina 可访问的当前 MARTS 工作簿路径、配置可信镜像或 provision CENSUS_API_KEY，使生产能发布 May 2026 的 763,705、+0.9% 和 +6.9%，April 历史修订为 757,036 与 +0.4%。
 
 ## Verification plan
 
