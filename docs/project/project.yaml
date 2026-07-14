@@ -7,18 +7,18 @@ success_metrics:
   - Demo or fallback records are never presented as verified official data.
   - Django checks, lint, and deterministic tests remain green.
 current_milestone:
-  id: AI-RESEARCH-014
-  title: Fed H.8 商业银行资产与准备金覆盖近似原子公开合同
-  status: REVIEW
+  id: AI-RESEARCH-015
+  title: 准备金页 SOFR-13周国库券与 SOFR-IORB 官方日频利差组件
+  status: IN_PROGRESS
   evidence:
-    - A final live clean-database refresh accepted the strict current Federal Reserve schemas and persisted 7,380 H.4.1 rows plus 2,792 H.8 rows with immutable ZIP fingerprints and complete release/fetch provenance.
-    - Reserves v1 atomically published five metrics and two charts from two exact batches on common Wednesday 2026-07-01. Its eight-week change uses exactly 56 calendar days and its recent-three-year z-score used 156 exact changes.
-    - Full pytest 584 tests and targeted hardening 94 tests passed; Ruff, Django checks, migration drift, production deployment check and diff check also passed.
-    - Local 1440px and 390px browser acceptance passed with working GET filters and mobile drawer, no horizontal overflow, complete licence/fallback labels and no console warnings or errors.
-    - Independent final reviews found no remaining P0/P1 findings after provider schema, release-lag, concurrent persistence and H.4.1/H.8 fail-loud corrections.
+    - The comparison-page contract requires current SOFR and 3M T-bill values plus 60-day SOFR-minus-T-bill and SOFR-minus-IORB histories.
+    - Official source review selected the U.S. Treasury 13-week bill Coupon Equivalent field ROUND_B1_YIELD_13WK_2; Bank Discount is retained only as lineage metadata.
+    - SOFR remains direct from the New York Fed Markets API and IORB direct from Federal Reserve PRATES; exact common effective dates will be used without forward fill.
+    - The daily rate-spread snapshot will remain independent of the weekly H.4.1/H.8 reserves v1 snapshot and will be composed only at the public view layer.
+    - The v1 component and presentation merge are implemented; nine focused tests plus the full repository test suite, Ruff, Django check, migration drift check, and diff validation pass.
 health: YELLOW
-next_action: After future explicit deployment authorization, back up production, deploy, refresh H.4.1 then H.8, and repeat post-deploy lineage/route/browser verification. Continue page alignment with the reserves SOFR-3M T-bill and SOFR-IORB NEEDS_SOURCE slice. AI-RESEARCH-013 still awaits production refresh/deployment authorization, AI-RESEARCH-012 still requires its scheduled evidence-review pipeline, AI-RESEARCH-011 still requires a monitored SEC_USER_AGENT, and AI-RESEARCH-008 still requires CENSUS_API_KEY.
-updated_at: '2026-07-14T10:32:38+08:00'
+next_action: Run clean temporary-database official-source and 1440/390 browser acceptance for AI-RESEARCH-015. Production deployment remains separately authorized. AI-RESEARCH-014, AI-RESEARCH-013 and earlier REVIEW work still await their recorded delivery actions.
+updated_at: '2026-07-14T11:47:18+08:00'
 validation_commands:
   - .venv/bin/ruff check .
   - .venv/bin/pytest -q
