@@ -7,18 +7,18 @@ success_metrics:
   - Demo or fallback records are never presented as verified official data.
   - Django checks, lint, and deterministic tests remain green.
 current_milestone:
-  id: AI-RESEARCH-015
-  title: 准备金页 SOFR-13周国库券与 SOFR-IORB 官方日频利差组件
-  status: IN_PROGRESS
+  id: AI-RESEARCH-017
+  title: 流动性次表层资金压力精确多源公开合同
+  status: REVIEW
   evidence:
-    - The comparison-page contract requires current SOFR and 3M T-bill values plus 60-day SOFR-minus-T-bill and SOFR-minus-IORB histories.
-    - Official source review selected the U.S. Treasury 13-week bill Coupon Equivalent field ROUND_B1_YIELD_13WK_2; Bank Discount is retained only as lineage metadata.
-    - SOFR remains direct from the New York Fed Markets API and IORB direct from Federal Reserve PRATES; exact common effective dates will be used without forward fill.
-    - The daily rate-spread snapshot will remain independent of the weekly H.4.1/H.8 reserves v1 snapshot and will be composed only at the public view layer.
-    - The v1 component and presentation merge are implemented; nine focused tests plus the full repository test suite, Ruff, Django check, migration drift check, and diff validation pass.
+    - AI-RESEARCH-017 now uses a dedicated exact-batch coordinator and strict public selector with 11 metrics, four charts, two rendered tables and fail-loud main/PRATES refresh wiring; the generic publisher bypass was removed.
+    - SOFR, SRF and USD swaps retain exact NY Fed JSON bytes in private content-addressed artifacts, while PRATES retains its ZIP hash. Small-value technical exercises are partitioned and independently reconciled for SRF and swaps.
+    - Independent adversarial review closed four P1 publication bypasses and one normalized-evidence P2. Repository-wide Ruff, Django check, migration drift, diff check and all 674 deterministic tests pass.
+    - A clean temporary database live-refresh published the subsurface page from four successful official runs with exactly one immutable artifact each; HTTP route smoke returned 200 and rendered 20 common-date rows plus 40 operation rows.
+    - The comparison site's opaque composite pressure score remains NEEDS_SOURCE and dealer-level microstructure remains PURCHASE_REQUIRED rather than being inferred.
 health: YELLOW
-next_action: Run clean temporary-database official-source and 1440/390 browser acceptance for AI-RESEARCH-015. Production deployment remains separately authorized. AI-RESEARCH-014, AI-RESEARCH-013 and earlier REVIEW work still await their recorded delivery actions.
-updated_at: '2026-07-14T11:47:18+08:00'
+next_action: Re-run the pending 1440/390 browser acceptance when the Browser Plugin runtime is fixed. Production deployment remains separately authorized.
+updated_at: '2026-07-14T14:18:51+08:00'
 validation_commands:
   - .venv/bin/ruff check .
   - .venv/bin/pytest -q
