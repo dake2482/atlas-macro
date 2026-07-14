@@ -7,16 +7,18 @@ success_metrics:
   - Demo or fallback records are never presented as verified official data.
   - Django checks, lint, and deterministic tests remain green.
 current_milestone:
-  id: AI-RESEARCH-013
-  title: Treasury 拍卖与发行结算日历原子公开合同
+  id: AI-RESEARCH-014
+  title: Fed H.8 商业银行资产与准备金覆盖近似原子公开合同
   status: REVIEW
   evidence:
-    - Independent read-only final review found no P0 or P1 findings.
-    - Full pytest 509 tests and targeted pytest 140 tests passed; Ruff, Django system check, migration-drift check, production deployment check, and diff check also passed.
-    - Local 1440px and 390px browser acceptance passed for auctions and RRP/TGA with no horizontal overflow, readable long provenance, working mobile navigation, and no console warnings or errors.
+    - A final live clean-database refresh accepted the strict current Federal Reserve schemas and persisted 7,380 H.4.1 rows plus 2,792 H.8 rows with immutable ZIP fingerprints and complete release/fetch provenance.
+    - Reserves v1 atomically published five metrics and two charts from two exact batches on common Wednesday 2026-07-01. Its eight-week change uses exactly 56 calendar days and its recent-three-year z-score used 156 exact changes.
+    - Full pytest 584 tests and targeted hardening 94 tests passed; Ruff, Django checks, migration drift, production deployment check and diff check also passed.
+    - Local 1440px and 390px browser acceptance passed with working GET filters and mobile drawer, no horizontal overflow, complete licence/fallback labels and no console warnings or errors.
+    - Independent final reviews found no remaining P0/P1 findings after provider schema, release-lag, concurrent persistence and H.4.1/H.8 fail-loud corrections.
 health: YELLOW
-next_action: After future explicit deployment authorization, back up production, run one complete same-cycle official Treasury/NY Fed refresh, deploy, then repeat post-deploy route and browser verification. AI-RESEARCH-012 still requires its scheduled evidence-review pipeline, AI-RESEARCH-011 still requires a monitored SEC_USER_AGENT, and AI-RESEARCH-008 still requires CENSUS_API_KEY.
-updated_at: '2026-07-13T19:43:00+08:00'
+next_action: After future explicit deployment authorization, back up production, deploy, refresh H.4.1 then H.8, and repeat post-deploy lineage/route/browser verification. Continue page alignment with the reserves SOFR-3M T-bill and SOFR-IORB NEEDS_SOURCE slice. AI-RESEARCH-013 still awaits production refresh/deployment authorization, AI-RESEARCH-012 still requires its scheduled evidence-review pipeline, AI-RESEARCH-011 still requires a monitored SEC_USER_AGENT, and AI-RESEARCH-008 still requires CENSUS_API_KEY.
+updated_at: '2026-07-14T10:32:38+08:00'
 validation_commands:
   - .venv/bin/ruff check .
   - .venv/bin/pytest -q
