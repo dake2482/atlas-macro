@@ -7,23 +7,24 @@ success_metrics:
   - Demo or fallback records are never presented as verified official data.
   - Django checks, lint, and deterministic tests remain green.
 current_milestone:
-  id: AI-RESEARCH-021
-  title: 联储 H.10 外汇参考序列严格公开合同
-  status: REVIEW
+  id: AI-RESEARCH-022
+  title: Treasury HQM 与 Fed SLOOS 信用页面族严格公开合同
+  status: IN_PROGRESS
   evidence:
-    - AI-RESEARCH-020 is in REVIEW after 771 full-suite tests, live six-source composition, HTTP 200 route smoke and final P0=0/P1=0 Sol review; its 1440/390 Browser Plugin gate remains explicitly unexecuted.
-    - Current `/assets/fx/` live truth returns HTTP 200 from snapshot 111, but that snapshot is unversioned, stale as of 2026-07-02 and contains four metrics with no versioned charts or sections.
-    - The current registry still embeds prototype DXY, USD/CNH and offshore-funding language although no ICE DXY, CNH, forwards/NDF or cross-currency-basis source is licensed.
-    - The latest local Federal Reserve H.10 run is successful with 37,303 normalized observations and one immutable private ZIP artifact, so source acquisition already exists and the remaining risk is weak generic publication.
-    - AI-RESEARCH-021 now publishes an independent H.10 v1 contract with four official reference metrics, two exact historical charts and three rendered observation/method/licensing-gap sections.
-    - Assets FX reuses the audited neutral H.10 run/artifact/Observation validator from AI-RESEARCH-019 without depending on or copying the global-dollar parent snapshot; both pages retain separate publication hashes, batches and MetricSnapshot rows.
-    - ICE DXY, executable institutional spot, CNH, forwards/NDF, cross-currency basis and dealer/order-book data remain explicit PURCHASE_REQUIRED or LICENSE_REVIEW gaps until public-derived-display and storage rights are obtained.
-    - A clean temporary SQLite database fetched the live Federal Reserve H.10 archive in 23.68 seconds, stored 37,323 exact observations and one 2,072,667-byte private artifact, published one strict v1 snapshot with four MetricSnapshots, and returned HTTP 200 for `/assets/fx/` and `/assets/`.
-    - Final validation passed 790 tests, Ruff, Django system checks, migration drift and `git diff --check`; the focused Sol review reported P0=0, P1=0 and P2=0.
-    - The 1440/390 Browser Plugin visual and console gate remains explicitly unexecuted because the supported plugin runtime regression is still unresolved.
+    - AI-RESEARCH-021 completed its deferred Browser Plugin gate against an isolated live H.10 snapshot at 1440x900 and 390x844 with no horizontal overflow, working filters/drawer/theme, four metric cards, three tables and an empty error console.
+    - A presentation-only assets-fx change now rounds one-observation percentage changes without altering persisted numeric values or strict payload hashes; 15 focused tests, Ruff and diff checks passed.
+    - Current `credit`, `credit-spreads` and `credit-stress` snapshots are unversioned generic publications without dedicated selectors, exact required sets, raw artifact evidence or append-only lineage; `credit-cds` has no snapshot.
+    - A live Federal Reserve SLOOS fetch returned 848 observations across all six required quarterly series and 139 common dates through 2026-06-30.
+    - A live U.S. Treasury HQM fetch returned 2,040 observations across four required tenors, 510 observations per tenor from 1984-01-31 through 2026-06-30.
+    - Current credit providers normalize real official files but do not retain exact ZIP/XLS response bytes, so existing runs cannot support strict acquisition replay.
+    - AI-RESEARCH-022 freezes three strict numeric-page contracts plus a no-number CDS purchase-boundary page. HQM remains a par-yield proxy, SLOOS remains a bank survey, NFCI remains LICENSE_REVIEW, and OAS/CDX/CDS/TRACE/market proxies remain PURCHASE_REQUIRED.
+    - Independent pre-implementation review resolved the canonical SLOOS keys, safe raw-series exactness, retained-parent validation, CDS prose-only rendering and dedicated capability-token boundaries before implementation began.
+    - Credit Official v1 is implemented with exact raw replay, strict child/parent publication, nine exact rendered-table schemas, a tenor-safe HQM curve, future/chronology rejection, stable transaction locks and metadata-only bp/pp presentation projection.
+    - Final independent correction review reported P0=0 and P1=0. Focused suites and the complete pytest suite passed together with Ruff, Django checks, migration drift, diff and changed-file secret gates.
+    - Local product commit 88508bc is mirrored as patch-identical public commit d67908a127a2b3e9421b1457153ef30f385a833e on the public dake2482/atlas-macro-platform main branch; internal project-governance documents remain outside that public snapshot.
 health: YELLOW
-next_action: Run the deferred 1440/390 Browser Plugin visual and console gate after its supported runtime regression is fixed; production deployment remains separately authorized.
-updated_at: '2026-07-15T11:56:04+08:00'
+next_action: Run isolated live HQM/SLOOS refresh, four-route and retired-route smoke, then 1440/390 browser acceptance. Production deployment remains separately authorized.
+updated_at: '2026-07-15T16:50:22+08:00'
 validation_commands:
   - .venv/bin/ruff check .
   - .venv/bin/pytest -q

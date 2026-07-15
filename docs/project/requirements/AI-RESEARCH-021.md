@@ -11,8 +11,8 @@ branch: main
 worktree: local
 dependencies:
 - AI-RESEARCH-019
-updated_at: '2026-07-15T11:56:04+08:00'
-next_action: Run the deferred 1440/390 Browser Plugin visual and console gate after the supported runtime regression is fixed; production deployment remains separately authorized.
+updated_at: '2026-07-15T16:50:22+08:00'
+next_action: AI-RESEARCH-021 product changes are included in local commit `88508bc` and public snapshot commit `d67908a`; continue AI-RESEARCH-022 live and browser acceptance. Production deployment remains separately authorized.
 evidence:
 - Current live truth returns HTTP 200 at `/assets/fx/`, but snapshot 111 is unversioned, stale, dated 2026-07-02 and contains only four metrics with no versioned charts or sections.
 - The current registry still embeds prototype DXY, EUR/USD, USD/JPY and USD/CNH values and describes offshore funding pressure even though no ICE DXY, CNH, forward, NDF or cross-currency-basis source is licensed.
@@ -21,7 +21,9 @@ evidence:
 - The proposed v1 contract publishes four official reference levels, two transparent historical views and three rendered source/method/gap sections. Commercial executable FX and derivatives stay explicitly PURCHASE_REQUIRED.
 - The dedicated implementation passed 15 assets-fx contract tests and 198 adjacent H.10, global-dollar, refresh, transmission and route tests; the focused final Sol review reported P0=0, P1=0 and P2=0.
 - A clean temporary SQLite database fetched the live H.10 archive in 23.68 seconds, stored 37,323 exact observations and one 2,072,667-byte private artifact, published one strict v1 snapshot with four MetricSnapshots, and returned HTTP 200 for both `/assets/fx/` and `/assets/`.
-- Full canonical validation passed 790 tests, Ruff, Django system checks, migration drift and `git diff --check`. The supported Browser Plugin runtime regression still prevents the 1440/390 visual and console gate, which remains explicitly unexecuted.
+- Full canonical validation passed 790 tests, Ruff, Django system checks, migration drift and `git diff --check`.
+- Browser Plugin 26.707.72221 completed the deferred visual and interaction gate against the isolated live H.10 snapshot: 1440x900 and 390x844 had no horizontal overflow, rendered four metric cards and three tables, Major FX GET navigation and chart selection worked, the mobile drawer and theme toggle worked, and browser console errors were empty.
+- A final presentation-only fix now rounds the one-observation percentage changes to signed two-decimal strings without altering the persisted exact numeric `change` or the assets-fx payload hash contract; 15 focused tests, Ruff and `git diff --check` passed, and the browser confirmed the raw long float is no longer visible.
 started_at: '2026-07-15T10:30:14+08:00'
 ---
 
@@ -141,7 +143,7 @@ payload 至少包含：
 - [x] registry 删除 DXY/CNH/离岸压力原型数值与语义；数据台账将 H.10 标 LIVE，将商业 DXY、spot、forward/NDF、basis 与微观行情标 PURCHASE_REQUIRED。
 - [x] `/assets/` 总览 FX 投影、`period/tab` 参数、空态、旧快照拒绝和 `/assets/fx/` 路由有合同测试。
 - [x] Ruff、完整 pytest、Django check、migration drift、`git diff --check`、隔离临时库真实 H.10 刷新与路由 smoke 通过。
-- [ ] 1440/390 Browser Plugin 视觉、交互与 console 验收通过；官方运行时回归未修复前必须明确记录为未执行。
+- [x] 1440/390 Browser Plugin 视觉、交互与 console 验收通过；四张指标卡、三张表、筛选导航、移动抽屉、主题切换、无横向溢出和空错误控制台均有真实 H.10 页面证据。
 
 # Verification plan
 
