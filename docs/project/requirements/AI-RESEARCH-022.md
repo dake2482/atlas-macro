@@ -3,7 +3,7 @@ schema_version: 1
 id: AI-RESEARCH-022
 project_id: AI-RESEARCH
 title: Treasury HQM 与 Fed SLOOS 信用页面族严格公开合同
-status: IN_PROGRESS
+status: REVIEW
 priority: P1
 executor: codex
 task_id: atlas-credit-official-v1-alignment-20260715
@@ -11,8 +11,8 @@ branch: main
 worktree: local
 dependencies:
 - AI-RESEARCH-021
-updated_at: '2026-07-15T16:50:22+08:00'
-next_action: Run an isolated live HQM/SLOOS refresh, four-route plus retired-route smoke, and 1440/390 browser acceptance; then promote the requirement to REVIEW. Product code is committed locally and mirrored to the public snapshot repository; production deployment remains separately authorized.
+updated_at: '2026-07-15T19:43:41+08:00'
+next_action: Review the completed credit evidence together with draft PR #1, which carries the subsequent volatility and Treasury v2 product patch. Production deployment remains separately authorized.
 evidence:
 - Current `/credit/`, `/credit/spreads/`, `/credit/cds/` and `/credit/stress/` routes return HTTP 200; retired `/credit/issuance/` and `/credit/events/` correctly return 410.
 - The current database has three published revisions each for `credit`, `credit-spreads` and `credit-stress`, but their latest snapshots are unversioned generic publications with no dedicated selector, append-only lineage or exact-set contract. `credit-cds` has no published snapshot.
@@ -27,6 +27,11 @@ evidence:
 - The final correction review found and resolved four P1 issues: all nine exact table schemas, the HQM tenor chart axis, future/invalid acquisition chronology, and transaction locks for RawArtifact, Observation, child snapshot and child metric rows. The final independent result was P0=0 and P1=0.
 - Focused credit, route, refresh and assets-FX suites passed; the complete repository pytest suite, Ruff, Django system check, migration drift, `git diff --check` and changed-file secret scan all passed. The only pytest warning is the intentional duplicate-SLOOS-member rejection fixture.
 - Product commit `88508bc` is retained on local `main`. The patch-identical public snapshot commit `d67908a127a2b3e9421b1457153ef30f385a833e` is published on `dake2482/atlas-macro-platform` `main`; internal `docs/project` files are not part of that public snapshot.
+- An isolated 2026-07-15 live refresh created exactly two successful official runs and 2,888 normalized observations: 2,040 Treasury HQM rows and 848 Federal Reserve SLOOS rows. Both official files replayed byte-for-byte from private content-addressed artifacts (`a083d61df24bef951c96a779106c7cbb03dd5b1681c99e8ed6020199d07c2aad`, 75,776 bytes; `d8621f78335b1aa8ccdde7786e2cacad81d0b20261a82c632675be17befa6300`, 241,829 bytes).
+- The same refresh atomically published exactly three strict dashboards (`credit-spreads`, `credit-stress`, `credit`) and 14 `MetricSnapshot` rows under one `credit_refresh_id`, with zero failed/partial runs, zero fallback events and no `credit-cds` snapshot.
+- Live route smoke returned 200 for all four current credit routes and 410 for both retired issuance/event routes. Desktop 1440x900 and mobile 390x844 browser acceptance covered every GET period/tab combination, invalid-value normalization, exact chart row/series counts, metric units, table schemas, canonical URLs, fixed/hidden navigation and internal table scrolling with no page-level overflow.
+- Final browser evidence showed exactly one nonzero ECharts canvas on each numeric route and zero metrics/charts/canvases on `credit-cds`. The CDS page now renders exact 3-row and 8-row structured contracts plus its purchase ledger, rejects a deliberately published rogue numeric snapshot, and leaves the console error/warning log empty.
+- After the CDS presentation hardening, the complete pytest suite, Ruff, Django system check, migration drift and `git diff --check` all passed. The only pytest warning remains the intentional duplicate-SLOOS-member rejection fixture.
 started_at: '2026-07-15T12:36:57+08:00'
 ---
 
@@ -257,7 +262,7 @@ HQM 不是国债利差、不是 ICE BofA OAS、没有 IG/HY/BBB/BB/B/CCC 评级�
 
 # Acceptance criteria
 
-- [ ] HQM 与 SLOOS providers 返回并持久化 exact private raw bytes、hash/size/member evidence；真实官方文件可重放。
+- [x] HQM 与 SLOOS providers 返回并持久化 exact private raw bytes、hash/size/member evidence；真实官方文件可重放。
 - [x] `credit-spreads v1` 精确四 metrics、两 charts、三 rendered sections，固定一个 HQM run/batch，不冒充 spread/OAS。
 - [x] `credit-stress v1` 精确六 metrics、两 charts、三 rendered sections，固定一个 SLOOS run/batch，不生成综合压力分。
 - [x] `credit v1` 只原子组合同一 refresh cycle 的两个严格 child revisions，精确四 metrics、两 charts、三 rendered sections。
@@ -267,7 +272,7 @@ HQM 不是国债利差、不是 ICE BofA OAS、没有 IG/HY/BBB/BB/B/CCC 评级�
 - [x] registry 删除 OAS/NFCI/五因子/CDS 代理原型语义；`credit-cds` 无数字页面清楚展示采购原因、代理边界和字段合同。
 - [x] 数据台账准确标记 HQM PROXY、SLOOS LIVE、NFCI LICENSE_REVIEW、OAS/CDX/CDS/TRACE/行情 PURCHASE_REQUIRED。
 - [x] 四个信用路由保持 200，两个 retired 路由保持 410；筛选参数、空态、旧快照拒绝和 cells_list 渲染有合同测试。
-- [ ] Ruff、完整 pytest、Django check、migration drift、`git diff --check`、隔离临时库真实 HQM/SLOOS 刷新、路由 smoke 和 1440/390 Browser gate 全部通过。
+- [x] Ruff、完整 pytest、Django check、migration drift、`git diff --check`、隔离临时库真实 HQM/SLOOS 刷新、路由 smoke 和 1440/390 Browser gate 全部通过。
 
 # Verification plan
 

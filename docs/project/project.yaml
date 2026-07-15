@@ -7,8 +7,8 @@ success_metrics:
   - Demo or fallback records are never presented as verified official data.
   - Django checks, lint, and deterministic tests remain green.
 current_milestone:
-  id: AI-RESEARCH-022
-  title: Treasury HQM 与 Fed SLOOS 信用页面族严格公开合同
+  id: AI-RESEARCH-024
+  title: Treasury 原始 XML 重放、年度批次 append-only 与利率页面严格合同
   status: IN_PROGRESS
   evidence:
     - AI-RESEARCH-021 completed its deferred Browser Plugin gate against an isolated live H.10 snapshot at 1440x900 and 390x844 with no horizontal overflow, working filters/drawer/theme, four metric cards, three tables and an empty error console.
@@ -22,9 +22,28 @@ current_milestone:
     - Credit Official v1 is implemented with exact raw replay, strict child/parent publication, nine exact rendered-table schemas, a tenor-safe HQM curve, future/chronology rejection, stable transaction locks and metadata-only bp/pp presentation projection.
     - Final independent correction review reported P0=0 and P1=0. Focused suites and the complete pytest suite passed together with Ruff, Django checks, migration drift, diff and changed-file secret gates.
     - Local product commit 88508bc is mirrored as patch-identical public commit d67908a127a2b3e9421b1457153ef30f385a833e on the public dake2482/atlas-macro-platform main branch; internal project-governance documents remain outside that public snapshot.
+    - An isolated live credit refresh published 2,888 official observations, three strict dashboard snapshots and 14 metric rows from two byte-replayable raw artifacts with no failed, partial or fallback state.
+    - Four current credit routes returned 200 and two retired routes returned 410. Browser acceptance at 1440x900 and 390x844 covered all GET controls, exact chart/table contracts, responsive drawer behavior, canonical URLs, no page overflow and an empty error/warning console.
+    - Final CDS hardening suppresses only its prose-only chart shell, preserves the legacy assets fallback, renders both exact structured purchase contracts and rejects deliberately published rogue numeric CDS snapshots. The full repository test suite and all canonical gates pass.
+    - AI-RESEARCH-023 starts from six volatility routes with no strict snapshot and removes static VIX, MOVE, VIX9D, VXTLT and 30-index-map prototype semantics.
+    - H.10 supports byte-replayable append-only inputs for a strict FX realized-volatility page; current Treasury annual curve storage does not yet support retained strict volatility publication because raw XML is not private-replayable and same-year observations are updated in place.
+    - VIX-family, CFE, ICE MOVE, FX implied-volatility surfaces and cross-asset IV-RV remain explicit purchase boundaries; five unsupported routes will render structured prose-only contracts with no metric or chart shell.
+    - FX Volatility v1 now publishes four H.10-derived 20D metrics, two exact 260-point 20D/60D charts and three contractual tables from a byte-replayable append-only H.10 run; all unsupported volatility routes are zero-number structured contracts.
+    - Isolated live acceptance ingested 37,323 official H.10 observations from a 2,072,667-byte content-addressed archive and published a strict snapshot as-of 2026-07-10 with no fallback or stale key.
+    - Exact-320, formula, tamper, title/summary, marker chronology, natural-expiry, transition, terminal failure, artifact parser, generic-writer and rogue-snapshot regression tests pass.
+    - Independent review ended with P0=0 and P1=0; its two remaining P2 findings and the UI review's static-LIVE, orphan-navigation, transition-copy and internal-link findings were all corrected.
+    - Browser acceptance at 1440x900 and 390x844 passed filters, chart, tables, responsive drawer, footer wrapping, page overflow and console checks. Route contracts verify VIX/panorama navigation highlighting and the clickable FX child path.
+    - Complete pytest, Ruff, Django check, migration drift, diff and changed-file secret gates pass. AI-RESEARCH-023 is included in local product commit a54f60f and patch-identical public commit 37b8aae in draft PR #1.
+    - AI-RESEARCH-024 opens the strict Treasury v2 upgrade after route and data-chain audits found that current XML bytes are not retained, old annual observation batches are overwritten, and rate pages still use the generic public selector.
+    - Live 2026 nominal and real Treasury feeds were verified as Atom XML with explicit titles and update times, 133 entries each, and no credential requirement; dynamic response sizes are evidence only and are not hard-coded.
+    - Treasury v2 will retain one private content-addressed XML artifact per annual run, replay exact normalized rows, preserve observation batches, and use dedicated append-only publication and selectors across rates, bonds, assets and inflation consumers.
+    - The current two-hour generic official job would create excessive duplicate annual revisions after append-only migration, so Treasury curves will move to a once-daily dedicated task while six-year history remains an explicit backfill/recovery command.
+    - Treasury v2 exact-byte ingestion, private RawArtifact replay, append-only annual observations and dedicated yield/real/rates contracts are implemented across bonds, assets and inflation consumers.
+    - Transition, retained failure, mixed-child priority and one-hour RUNNING timeouts preserve immutable audit markers while hiding superseded errors from presentation copies; final independent correction review reported P0=0 and P1=0.
+    - The fixed-worktree canonical run passed all 863 tests, Ruff, Django check, migration drift and diff checks. The product patch is local commit a54f60f and patch-identical public commit 37b8aae in draft PR #1; internal governance files remain excluded from the public snapshot.
 health: YELLOW
-next_action: Run isolated live HQM/SLOOS refresh, four-route and retired-route smoke, then 1440/390 browser acceptance. Production deployment remains separately authorized.
-updated_at: '2026-07-15T16:50:22+08:00'
+next_action: Run the isolated live 2021-2026 Treasury backfill, verify 12 private artifacts and second current-year append-only publication, then complete route smoke and 1440/390 browser acceptance. Production deployment remains separately authorized.
+updated_at: '2026-07-15T19:43:41+08:00'
 validation_commands:
   - .venv/bin/ruff check .
   - .venv/bin/pytest -q
