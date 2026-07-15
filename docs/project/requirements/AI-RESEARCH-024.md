@@ -3,7 +3,7 @@ schema_version: 1
 id: AI-RESEARCH-024
 project_id: AI-RESEARCH
 title: Treasury 原始 XML 重放、年度批次 append-only 与利率页面严格合同
-status: IN_PROGRESS
+status: REVIEW
 priority: P1
 executor: codex
 task_id: atlas-treasury-curve-v2-20260715
@@ -12,8 +12,8 @@ worktree: local
 dependencies:
 - AI-RESEARCH-009
 - AI-RESEARCH-023
-updated_at: '2026-07-15T19:43:41+08:00'
-next_action: Run the isolated live 2021-2026 Treasury backfill, verify 12 private artifacts and a second current-year append-only revision, complete route smoke plus 1440/390 browser acceptance, then promote AI-RESEARCH-024 to REVIEW. Draft PR #1 is open; production deployment remains separately authorized.
+updated_at: '2026-07-15T20:14:42+08:00'
+next_action: Review the live feed-identity correction and acceptance evidence, then commit or push the three-file corrective patch only after fresh explicit authorization. Continue the page-alignment objective under AI-RESEARCH-025; production deployment remains separately authorized.
 evidence:
 - The live 2026 nominal and real Treasury feeds are Atom XML with 133 entries, explicit feed titles and update timestamps; the official source is public and already licensed for Atlas display, derived display and historical storage.
 - Current TreasuryRatesProvider decodes XML to text and only records a URL/hash/size pointer, so ProviderResult has no exact raw bytes and old runs cannot be replayed.
@@ -27,6 +27,14 @@ evidence:
 - Transition, retained-failure, mixed-child, successful-supersession and one-hour RUNNING timeout behavior now have deterministic tests. Presentation clones hide superseded failure markers without mutating the stored audit marker.
 - Full-suite seed isolation normalizes the `internal` and Treasury licence decisions before strict contract tests; the final repository run passed all 863 tests. Ruff, Django check, migration drift and diff checks also passed; the sole warning is the deliberate duplicate-SLOOS-member fixture.
 - Independent correction review ended at P0=0 and P1=0. Local product commit `a54f60f99eb7925a634f3820217d195af5c24768` is mirrored as stable-patch-identical public commit `37b8aaecc0f016f1bdfed14e3956aae1cb80aa8d` in draft PR #1 on `dake2482/atlas-macro-platform`.
+- The first isolated live backfill exposed upstream feed-identity drift: Treasury now declares the canonical Atom id under `/resource-center/data-chart-center/interest-rates/pages/xml-item?data=...`, not the historical `/xml-item` shortcut. The provider now validates the live canonical identity and explicitly rejects the legacy shortcut; focused provider tests pass.
+- A fresh SQLite database with a separate private artifact root and no demo seed published the strict Fed Funds prerequisite from live NY Fed SOFR/EFFR and Federal Reserve IORB, then ingested all 12 nominal/real annual Treasury feeds for 2021-2026.
+- The first Treasury round produced 12 successful runs, 12 private exact-byte artifacts and 26,820 append-only observations. A second 2026-only refresh raised the totals to 14 runs/artifacts without changing any old batch, added 2,394 observations, and produced a second immutable 20-row Treasury MetricSnapshot publication.
+- Latest strict snapshot ids are yield-curve 5, real-rates 6 and rates 7 in publication batch `9973c999-e821-43a2-8b61-a657d6afa768`; old snapshots still pass static replay and all three selectors return `current_candidate` against the newest annual witnesses.
+- A real BLS plus BEA PIO inflation base snapshot was published in the same isolated database without demo data. Its expectations view consumes the strict Treasury child and adds 5Y/10Y Treasury-minus-TIPS BEI proxies with component-level stale and provenance labels.
+- Six route families and their GET contracts passed live Django smoke tests: rates, yield-curve, real-rates, assets, bonds and inflation expectations. Invalid period/tab values normalize safely and no response exposes demo-market or clean-room demonstration data.
+- Browser acceptance at 1440x900 and 390x844 covered all six surfaces in light and dark themes, lazy ECharts rendering, curve/spread navigation, theme persistence, mobile drawer/backdrop/Escape, internal table overflow and page-level overflow. The browser console had no error or warning entries; the asset overview intentionally keeps its unlicensed market-trend chart in an explicit empty state.
+- Final feed-identity review found and corrected one P2: canonical Treasury Atom ids are now pinned independently from the provider transport origin, with nominal/real mirror-subclass positive and negative tests. The follow-up review reports P0=0, P1=0 and P2=0.
 started_at: '2026-07-15T18:16:46+08:00'
 ---
 
@@ -133,7 +141,7 @@ volatility coverage ledger 只可把 Treasury 输入状态更新为 `INPUT_READY
 - [x] generic 2h 任务不再抓 Treasury curves，daily 专用 task 和显式 backfill 命令有测试。
 - [x] volatility 只更新输入覆盖状态，MOVE 等未授权页面继续零数字。
 - [x] Ruff、完整 pytest、Django check、migration drift、diff 与 secret gate 通过。
-- [ ] 隔离临时库重新抓取 2021–2026 共 12 个官方 feed，验证 12 个 private artifacts、exact-batch observations、v2 页面与第二次 same-value/current-year append-only revision，并完成 1440/390 浏览器验收。
+- [x] 隔离临时库重新抓取 2021–2026 共 12 个官方 feed，验证 12 个 private artifacts、exact-batch observations、v2 页面与第二次 same-value/current-year append-only revision，并完成 1440/390 浏览器验收。
 
 # Verification plan
 
