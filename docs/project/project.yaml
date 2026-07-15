@@ -7,18 +7,23 @@ success_metrics:
   - Demo or fallback records are never presented as verified official data.
   - Django checks, lint, and deterministic tests remain green.
 current_milestone:
-  id: AI-RESEARCH-017
-  title: 流动性次表层资金压力精确多源公开合同
+  id: AI-RESEARCH-021
+  title: 联储 H.10 外汇参考序列严格公开合同
   status: REVIEW
   evidence:
-    - AI-RESEARCH-017 now uses a dedicated exact-batch coordinator and strict public selector with 11 metrics, four charts, two rendered tables and fail-loud main/PRATES refresh wiring; the generic publisher bypass was removed.
-    - SOFR, SRF and USD swaps retain exact NY Fed JSON bytes in private content-addressed artifacts, while PRATES retains its ZIP hash. Small-value technical exercises are partitioned and independently reconciled for SRF and swaps.
-    - Independent adversarial review closed four P1 publication bypasses and one normalized-evidence P2. Repository-wide Ruff, Django check, migration drift, diff check and all 674 deterministic tests pass.
-    - A clean temporary database live-refresh published the subsurface page from four successful official runs with exactly one immutable artifact each; HTTP route smoke returned 200 and rendered 20 common-date rows plus 40 operation rows.
-    - The comparison site's opaque composite pressure score remains NEEDS_SOURCE and dealer-level microstructure remains PURCHASE_REQUIRED rather than being inferred.
+    - AI-RESEARCH-020 is in REVIEW after 771 full-suite tests, live six-source composition, HTTP 200 route smoke and final P0=0/P1=0 Sol review; its 1440/390 Browser Plugin gate remains explicitly unexecuted.
+    - Current `/assets/fx/` live truth returns HTTP 200 from snapshot 111, but that snapshot is unversioned, stale as of 2026-07-02 and contains four metrics with no versioned charts or sections.
+    - The current registry still embeds prototype DXY, USD/CNH and offshore-funding language although no ICE DXY, CNH, forwards/NDF or cross-currency-basis source is licensed.
+    - The latest local Federal Reserve H.10 run is successful with 37,303 normalized observations and one immutable private ZIP artifact, so source acquisition already exists and the remaining risk is weak generic publication.
+    - AI-RESEARCH-021 now publishes an independent H.10 v1 contract with four official reference metrics, two exact historical charts and three rendered observation/method/licensing-gap sections.
+    - Assets FX reuses the audited neutral H.10 run/artifact/Observation validator from AI-RESEARCH-019 without depending on or copying the global-dollar parent snapshot; both pages retain separate publication hashes, batches and MetricSnapshot rows.
+    - ICE DXY, executable institutional spot, CNH, forwards/NDF, cross-currency basis and dealer/order-book data remain explicit PURCHASE_REQUIRED or LICENSE_REVIEW gaps until public-derived-display and storage rights are obtained.
+    - A clean temporary SQLite database fetched the live Federal Reserve H.10 archive in 23.68 seconds, stored 37,323 exact observations and one 2,072,667-byte private artifact, published one strict v1 snapshot with four MetricSnapshots, and returned HTTP 200 for `/assets/fx/` and `/assets/`.
+    - Final validation passed 790 tests, Ruff, Django system checks, migration drift and `git diff --check`; the focused Sol review reported P0=0, P1=0 and P2=0.
+    - The 1440/390 Browser Plugin visual and console gate remains explicitly unexecuted because the supported plugin runtime regression is still unresolved.
 health: YELLOW
-next_action: Re-run the pending 1440/390 browser acceptance when the Browser Plugin runtime is fixed. Production deployment remains separately authorized.
-updated_at: '2026-07-14T14:18:51+08:00'
+next_action: Run the deferred 1440/390 Browser Plugin visual and console gate after its supported runtime regression is fixed; production deployment remains separately authorized.
+updated_at: '2026-07-15T11:56:04+08:00'
 validation_commands:
   - .venv/bin/ruff check .
   - .venv/bin/pytest -q
