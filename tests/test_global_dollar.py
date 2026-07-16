@@ -6,7 +6,7 @@ import json
 import warnings
 import zipfile
 from copy import deepcopy
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import httpx
 import pytest
@@ -55,6 +55,7 @@ H10_DATES = (
     "2026-07-10",
 )
 SWAP_FIXTURE_FETCHED_AT = datetime(2026, 7, 14, 18, 0, tzinfo=UTC)
+GLOBAL_DOLLAR_FIXTURE_NOW = datetime(2026, 7, 15, 12, 0, tzinfo=UTC)
 
 
 def _h10_archive(
@@ -126,10 +127,13 @@ def _h10_result(*, provider_kwargs=None, raw_bytes=None, **archive_kwargs) -> Pr
         base_url="https://www.federalreserve.example.test",
         transport=httpx.MockTransport(handler),
     )
-    return FederalReserveH10Provider(
+    result = FederalReserveH10Provider(
         client=client,
         **dict(provider_kwargs or {}),
     ).h10()
+    if result.ok:
+        result.fetched_at = SWAP_FIXTURE_FETCHED_AT
+    return result
 
 
 def _encrypted_h10_archive() -> bytes:
@@ -277,6 +281,16 @@ def _swap_result(*, operations=None) -> ProviderResult:
 @pytest.fixture
 def published_global_dollar(db, tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "RAW_ARTIFACT_ROOT", tmp_path)
+    clock = [GLOBAL_DOLLAR_FIXTURE_NOW]
+
+    def fixture_now() -> datetime:
+        clock[0] += timedelta(microseconds=1)
+        return clock[0]
+
+    monkeypatch.setattr(
+        "research.official_data.timezone.now",
+        fixture_now,
+    )
     h10_result = _h10_result()
     swap_result = _swap_result()
     assert h10_result.ok and swap_result.ok
