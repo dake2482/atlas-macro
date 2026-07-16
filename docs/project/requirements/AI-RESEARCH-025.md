@@ -16,8 +16,8 @@ dependencies:
 - AI-RESEARCH-006
 - AI-RESEARCH-008
 - AI-RESEARCH-024
-updated_at: '2026-07-15T23:47:58+08:00'
-next_action: Run the isolated live dual-refresh acceptance, then apply the dedicated append-only pattern to consumer and the four-child economy parent.
+updated_at: '2026-07-16T10:47:00+08:00'
+next_action: Add bounded same-URL transport retries to the Census MARTS release provider without weakening its fail-closed proof chain; then run the isolated live dual-refresh acceptance, five-route smoke and 1440/390 browser gate before moving to strict Fed Funds and Liquidity contracts.
 evidence:
 - The five routes already render substantial official BEA, BLS, DOL, Census, Federal Reserve and New York Fed data, but they still fall through the generic public snapshot selector.
 - A newer permitted rogue snapshot can therefore outrank the intended GDP, employment, inflation, consumer or economy publication without replaying its raw inputs, normalized observations, MetricSnapshot rows, required component sets or payload hash.
@@ -99,7 +99,7 @@ Exact metrics：`bea-a191rl`、`lns14000000`、`core-cpi-yoy`、`bea-real-pce-mo
 - Observation 和 release-vintage storage 使用 append-only batch identity；同值新 run 不修改旧 batch，同一 run 安全重试幂等。
 - 对未来日期、错误 release identity、字段/单位漂移、重复或非有限值、缺少必需系列、尾部回退与 source watermark 回退 fail closed。
 
-## 当前实现证据（2026-07-15）
+## 当前实现证据（2026-07-16）
 
 - 通用 raw-evidence schema v1 使用 canonical manifest 与确定性 ZIP，保存 credential-free canonical HTTPS URL、request/response witness、response role、SHA-256 与 size；重复响应 bytes 去重，未声明 entry、未引用 blob、凭据键、hash/size 或 witness 篡改均拒绝。
 - BLS 保留 exact POST JSON response；registration key 不进入 witness。纯 byte parser、private content-addressed artifact、append-only Observation、value-date watermark 与 normalized/transport tamper tests 已实现。
@@ -126,6 +126,21 @@ Exact metrics：`bea-a191rl`、`lns14000000`、`core-cpi-yoy`、`bea-real-pce-mo
 - Inflation 与 Employment coordinator 现在对任意非 system publication/builder exception 统一回滚整版，再以 exact latest-success attempts 写入 `publication-postcondition` marker；若旧版不能静态重放则不制造 marker，并原样抛出最初异常。GDP 的普通发布异常继续由 acquisition operational wrapper 转换为 durable FAILED attempt、retained marker 并重抛，保持既有分层契约。
 - 所有带 `select_related(source)` 的 IngestionRun/DashboardSnapshot `FOR UPDATE` 均限定 `of=("self",)`；确需 Source 锁的 publisher 仍先按 Source PK，再锁 self-only run，消除 PostgreSQL 隐式 Source 锁与反向锁序。Employment 对 FAILED/PARTIAL 与 RUNNING 混合状态新增同一两小时 timeout：超时 RUNNING fail closed，全部未超时时保持 `transition_pending`。
 - Final P2 targeted regression 10/10 与 GDP/Employment/Inflation 三份 focused files 107/107 通过，覆盖三合同 same-target expiry 零写入、Inflation/Employment builder RuntimeError 回滚/retained/recovery、GDP operational exception、joined-lock `of` 形状及 Employment mixed RUNNING timeout。隔离 live 双刷新仍是发布前待办。
+- Consumer v2 现已由 Census MARTS release、BEA PIO、Federal Reserve G.19 与 New York Fed HHDC 四个必需 exact run 原子发布，冻结 14 metrics、6 charts、0 sections 和 `official-consumer-four-source-v2` 公式版本；通用 core/wrapper publisher 均硬拒绝 `consumer`。
+- Consumer selector 从私有 evidence bundle 重放 provider records，再验证 append-only Observation、MetricSnapshot、OPEN licence、fingerprint、payload hash 与 exact run identity。状态覆盖 `current_candidate`、`natural_expiry`、`transition_pending` 与 `retained_failure`；两小时 RUNNING 边界、terminal+新鲜 RUNNING 混合态、marker 状态突变与原子回滚/恢复均有确定性回归。
+- Census API 只在 1992-01 起连续历史与 release 尾部三序列逐项一致时升级为 `complete_history`；同一四源 revision 上 full history 对失败、partial 或语义无效的后续 optional attempt 保持单调，不降级已审计公开版。
+- Census release 的当前工作簿失败后保留最多四个按 UTC 月份推导的连续 probe witness；只有 404/410 可继续，403、网络失败、redirect、非 XLSX 200、月份/时间链不匹配均 fail closed。四次 terminal probe 后才可使用 directory index，standalone archive 仅允许诊断重放而被正式持久化拒绝。
+- Migration 0020 将旧 Census API 三序列与 Observation/run lineage 转换为 `CENSUS-API-*` 独立身份，保留 parser 大写 `input_series/input_series_id` 与 lineage 小写口径。真实 0019→0020 E2E 证明旧 raw bundle、PK/FK、artifact hash 与 Observation batch 不变，旧 metadata 缺 `retrieved_at` 时仍必须由 raw witness 严格等于 run `fetched_at`才能进入 `complete_history`。
+- Consumer route 在 current 与 retained 态都保持 exact 14/6/0 容器与组件级新鲜度；registry 只提供空卡，消费者信心仍为 `PURCHASE_REQUIRED`，不从总量序列推断收入群体压力。Economy parent 只接受 Consumer `current_candidate` 并固定该 child 的完整 revision identity。
+- Economy v2 现只从 GDP、Employment、Inflation 与 Consumer 四个 strict selector 组合 4 metrics、4 charts、0 sections；parent 固定完整 child identity、所选 MetricSnapshot、根新鲜度、精确 source/batch union、fingerprint 与 payload hash，不从散乱 Observation 或 generic snapshot 重组。
+- Economy 历史重放只读取 reference 固定的 child snapshot；动态状态独立覆盖 current、natural expiry、transition 与 retained failure。strict int/UUID、canonical JSON、marker `reason_sha256`、internal derived/storage licence、实际物化的 MetricSnapshot 行锁及提交边界重选均有确定性测试。
+- Economy 已从 generic core、wrapper、bulk publisher 三层硬拒绝，并删除旧 v1 builder、unused coordinator 与 `prepared_economy_data` 旁路；路由 GET 只消费 dedicated selector 且保持零写入。
+- Daily Evidence v2 固定 Economy 2 / Liquidity 1 / Rates 2，使用 canonical 三组件、三证据、exact parent/reference/evidence-item schema 与固定 Economy/Treasury 公式身份；历史 Daily v1 与已发布 Thesis 继续按 v1 验证。
+- 首页、日报详情、研究任务 dataset/metadata/prompt 已切换到验证后的 daily-evidence v2，同时 UI 仍能按实际验证结果显示历史 v1 标签。真实 Economy v2 parent 经过 production selector 冻结到 Daily v2 的集成接缝已通过。
+- 两轮独立终审已关闭 Economy 的伪行锁、数值类型走私、marker 篡改、derived licence 与死代码问题，以及 Daily 的非 canonical 列表、任意公式、宽松 ID 和 dataset 命名问题；最终 Economy 与 Daily 均为 P0/P1/P2 零残余。
+- 稳定代码上的 focused 306/306 回归与完整 1,063/1,063 suite 均通过；Ruff、Django check、migration drift、diff check 与 changed-file secret scan 同步全绿。完整 suite 首轮暴露的 3 个失败只是 session demo seed 被绝对计数，断言收窄到 `internal + Economy v2` 后，带 seed 的复现组合与第二次全套均通过。
+- HHDC live 精度与历史覆盖修正把 Page 3 Excel 浮点值归一到 15 位有效数字、把 Page 12 `0.00` 比率按 ROUND_HALF_UP 保存，并强制两张表从 `2003:Q1` 到最新季度拥有相同且连续的 93 季集合。Consumer 相关 98 项测试、1302 行 live provider 与临时 SQLite byte-replay/persistence 均通过。
+- HHDC 修正后的完整 suite 通过 1,115/1,115 项，Ruff、Django check、migration drift 与 diff check 同步通过。最近一次隔离宏观刷新已证明 GDP、PIO、G.19 与 HHDC 可成功持久化，其中 HHDC 为 1,302 行；Census recent archive 的 rank-1 请求发生一次 20 秒 read timeout，随后 provider-only 立即重试 3/3 成功，说明下一步是同一候选 URL 的有界瞬时 transport retry，而不是放宽 403、redirect、malformed 200 或 404/410 顺序证明。隔离 live/browser gate 仍待本 milestone 最终验收。
 
 # 发布与选择
 
@@ -144,16 +159,16 @@ Exact metrics：`bea-a191rl`、`lns14000000`、`core-cpi-yoy`、`bea-real-pce-mo
 
 # Acceptance criteria
 
-- [ ] 五页 exact metric/chart/section、source component、formula 和 freshness 合同已冻结并有确定性测试。
+- [x] 五页 exact metric/chart/section、source component、formula 和 freshness 合同已冻结并有确定性测试。
 - [x] 所有必需官方 acquisition 保存 exact private bytes，能够从 artifact 独立重放 normalized records。
 - [x] macro observations 与 GDP release vintages append-only；同值新 run 不覆盖旧 batch，安全重试幂等。
-- [ ] 四个 child 与 economy parent 使用 dedicated append-only publisher 和 strict selector；generic、legacy、demo、fallback 与 rogue snapshots 被拒绝。
-- [ ] raw file、artifact、run、Observation、payload、MetricSnapshot、licence、fingerprint 和 hash 的篡改均 fail closed。
-- [ ] current、自然过期、刷新中、失败保留和新成功未发布状态有确定性测试。
-- [ ] economy parent 只引用四个 strict child；daily-evidence 与首页/日报不绕过 parent。
-- [ ] 所有找不到或未获公开权的数据在对应页面和总台账显示 `NEEDS_SOURCE`、`LICENSE_REVIEW` 或 `PURCHASE_REQUIRED`，无合成数字。
+- [x] 四个 child 与 economy parent 使用 dedicated append-only publisher 和 strict selector；generic、legacy、demo、fallback 与 rogue snapshots 被拒绝。
+- [x] raw file、artifact、run、Observation、payload、MetricSnapshot、licence、fingerprint 和 hash 的篡改均 fail closed。
+- [x] current、自然过期、刷新中、失败保留和新成功未发布状态有确定性测试。
+- [x] economy parent 只引用四个 strict child；daily-evidence 与首页/日报不绕过 parent。
+- [x] 所有找不到或未获公开权的数据在对应页面和总台账显示 `NEEDS_SOURCE`、`LICENSE_REVIEW` 或 `PURCHASE_REQUIRED`，无合成数字。
 - [ ] 隔离临时库完成全套 live 官方刷新、第二次 append-only revision、五路由 smoke 与 1440/390 浏览器验收。
-- [ ] Ruff、完整 pytest、Django check、migration drift、diff 和 secret gate 通过。
+- [x] Ruff、完整 pytest、Django check、migration drift、diff 和 secret gate 通过。
 
 # Verification plan
 
