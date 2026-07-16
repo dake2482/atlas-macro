@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import time
 import zipfile
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
@@ -18,6 +19,7 @@ from io import BytesIO
 from typing import Any
 from urllib.parse import urljoin, urlparse
 
+import httpx
 from openpyxl import load_workbook
 
 from .providers import HTTPProvider, ProviderResult
@@ -1254,6 +1256,14 @@ class CensusMARTSReleaseProvider(_ReleaseWorkbookProvider):
     recent_archive_probe_count = 4
     max_probe_failure_bytes = 64 * 1024
 
+    # Bounded same-URL transport retries for transient failures only.  A
+    # successful 200 and the proof-chain terminal states (403/404/410) are
+    # exact evidence states and are never retried, so the retry loop cannot
+    # weaken the fail-closed proof chain or synthesize a different status.
+    transport_retry_attempts = 3
+    transport_retry_statuses = frozenset({429, 500, 502, 503, 504})
+    transport_retry_backoff_seconds = (1.0, 3.0)
+
     def monthly_retail_sales(self) -> ProviderResult:
         dataset = "marts:retail-food-services"
         try:
@@ -1887,6 +1897,51 @@ class CensusMARTSReleaseProvider(_ReleaseWorkbookProvider):
         *,
         expected_host: str,
     ) -> tuple[int, bytes, str, str, datetime]:
+        """Fetch one Census candidate URL with bounded transient transport retries.
+
+        Transient ``httpx.TransportError`` failures (timeouts and connection
+        resets) and the transient status set in ``transport_retry_statuses``
+        are retried against the exact same URL, capped at
+        ``transport_retry_attempts`` total tries.  A successful 200 response
+        and the proof-chain terminal states 403/404/410 are exact evidence
+        states and are returned immediately, so the retry loop never changes
+        the persisted status or weakens the fail-closed proof chain.  The
+        recorded ``retrieved_at`` timestamp reflects the final attempt that
+        produced the returned evidence.
+        """
+        attempts = max(1, int(self.transport_retry_attempts))
+        backoff = tuple(self.transport_retry_backoff_seconds)
+        last_exc: Exception | None = None
+        for attempt in range(1, attempts + 1):
+            try:
+                status_code, content, content_type, last_modified = (
+                    self._stream_census_evidence(workbook_url, expected_host)
+                )
+            except httpx.TransportError as exc:
+                last_exc = exc
+                if attempt < attempts:
+                    self._transport_retry_sleep(backoff, attempt)
+                    continue
+                raise
+            if status_code in self.transport_retry_statuses and attempt < attempts:
+                self._transport_retry_sleep(backoff, attempt)
+                continue
+            return (
+                status_code,
+                content,
+                content_type,
+                last_modified,
+                self._utc_now(),
+            )
+        raise last_exc if last_exc is not None else RuntimeError(
+            "no Census attempt ran"
+        )
+
+    def _stream_census_evidence(
+        self,
+        workbook_url: str,
+        expected_host: str,
+    ) -> tuple[int, bytes, str, str]:
         chunks: list[bytes] = []
         size = 0
         with self.client.stream("GET", workbook_url) as response:
@@ -1914,13 +1969,20 @@ class CensusMARTSReleaseProvider(_ReleaseWorkbookProvider):
                 or "application/octet-stream"
             )
             last_modified = response.headers.get("last-modified", "")
-        return (
-            status_code,
-            b"".join(chunks),
-            content_type,
-            last_modified,
-            self._utc_now(),
-        )
+        return status_code, b"".join(chunks), content_type, last_modified
+
+    def _transport_retry_sleep(
+        self,
+        backoff: tuple[float, ...],
+        attempt: int,
+    ) -> None:
+        index = min(attempt - 1, len(backoff) - 1) if backoff else 0
+        seconds = backoff[index] if backoff else 0.0
+        if seconds <= 0:
+            return
+        self._sleep(seconds)
+
+    _sleep = staticmethod(time.sleep)
 
     @staticmethod
     def _validate_archive_month(

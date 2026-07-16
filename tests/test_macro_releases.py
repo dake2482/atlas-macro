@@ -1844,6 +1844,291 @@ def test_census_release_recent_probe_beats_stale_archive_index(monkeypatch):
 
 
 @pytest.mark.parametrize(
+    "status_code",
+    [429, 500, 502, 503, 504],
+)
+def test_census_release_retries_transient_status_then_succeeds(monkeypatch, status_code):
+    workbook = _census_current_workbook()
+    monkeypatch.setattr(CensusMARTSReleaseProvider, "_sleep", staticmethod(lambda _: None))
+    attempts: dict[str, int] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        attempts[url] = attempts.get(url, 0) + 1
+        if url == CENSUS_MARTS_CURRENT_WORKBOOK and attempts[url] == 1:
+            return httpx.Response(status_code, text="transient upstream")
+        if url == CENSUS_MARTS_CURRENT_WORKBOOK:
+            return httpx.Response(
+                200,
+                content=workbook,
+                headers={
+                    "content-type": XLSX_CONTENT_TYPE,
+                    "last-modified": "June 17, 2026",
+                },
+            )
+        raise AssertionError(f"unexpected URL: {url}")
+
+    result = CensusMARTSReleaseProvider(
+        client=httpx.Client(
+            transport=httpx.MockTransport(handler),
+            follow_redirects=True,
+        )
+    ).monthly_retail_sales()
+
+    assert result.ok, result.error
+    assert attempts[CENSUS_MARTS_CURRENT_WORKBOOK] == 2
+    assert result.metadata["workbook_scope"] == "current"
+    evidence = parse_evidence_bundle(
+        result.raw_bytes,
+        expected_provider="census-release",
+        expected_dataset="marts:retail-food-services",
+    )
+    assert set(evidence.responses) == {"current-workbook"}
+    assert evidence.responses["current-workbook"] == workbook
+    response_witness = {
+        item["role"]: item for item in evidence.manifest["responses"]
+    }["current-workbook"]["response_witness"]
+    assert response_witness["status_code"] == 200
+    replay_records, replay_metadata = CensusMARTSReleaseProvider.replay_evidence_bundle(
+        result.raw_bytes
+    )
+    assert replay_records == result.records
+    assert replay_metadata["workbook_scope"] == "current"
+
+
+def test_census_release_retries_read_timeout_then_succeeds(monkeypatch):
+    workbook = _census_current_workbook()
+    monkeypatch.setattr(CensusMARTSReleaseProvider, "_sleep", staticmethod(lambda _: None))
+    attempts: dict[str, int] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        attempts[url] = attempts.get(url, 0) + 1
+        if url == CENSUS_MARTS_CURRENT_WORKBOOK and attempts[url] == 1:
+            raise httpx.ReadTimeout("timed out reading workbook", request=request)
+        if url == CENSUS_MARTS_CURRENT_WORKBOOK:
+            return httpx.Response(
+                200,
+                content=workbook,
+                headers={
+                    "content-type": XLSX_CONTENT_TYPE,
+                    "last-modified": "June 17, 2026",
+                },
+            )
+        raise AssertionError(f"unexpected URL: {url}")
+
+    result = CensusMARTSReleaseProvider(
+        client=httpx.Client(
+            transport=httpx.MockTransport(handler),
+            follow_redirects=True,
+        )
+    ).monthly_retail_sales()
+
+    assert result.ok, result.error
+    assert attempts[CENSUS_MARTS_CURRENT_WORKBOOK] == 2
+    assert result.metadata["workbook_scope"] == "current"
+    evidence = parse_evidence_bundle(
+        result.raw_bytes,
+        expected_provider="census-release",
+        expected_dataset="marts:retail-food-services",
+    )
+    assert set(evidence.responses) == {"current-workbook"}
+    assert evidence.responses["current-workbook"] == workbook
+
+
+def test_census_release_retries_connect_error_then_current_falls_back_to_probe(
+    monkeypatch,
+):
+    workbook = _census_current_workbook()
+    anchor = datetime(2026, 7, 16, tzinfo=UTC)
+    monkeypatch.setattr(
+        CensusMARTSReleaseProvider,
+        "_utc_now",
+        staticmethod(lambda: anchor),
+    )
+    monkeypatch.setattr(CensusMARTSReleaseProvider, "_sleep", staticmethod(lambda _: None))
+    candidates = CensusMARTSReleaseProvider._recent_archive_candidates(anchor)
+    may_url = next(url for month, url in candidates if month == "2026-05")
+    attempts: dict[str, int] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        attempts[url] = attempts.get(url, 0) + 1
+        if url == CENSUS_MARTS_CURRENT_WORKBOOK:
+            # A connect reset is transient: retry, then return the terminal 403
+            # evidence state the proof chain expects for a current failure.
+            if attempts[url] < CensusMARTSReleaseProvider.transport_retry_attempts:
+                raise httpx.ConnectError("reset by peer", request=request)
+            return httpx.Response(403, text="current workbook unavailable")
+        if url == may_url:
+            return httpx.Response(
+                200,
+                content=workbook,
+                headers={
+                    "content-type": XLSX_CONTENT_TYPE,
+                    "last-modified": "July 15, 2026",
+                },
+            )
+        if url.startswith(CENSUS_MARTS_INDEX) and url.endswith(".xlsx"):
+            return httpx.Response(404, text="not yet published")
+        raise AssertionError(f"unexpected URL: {url}")
+
+    result = CensusMARTSReleaseProvider(
+        client=httpx.Client(
+            transport=httpx.MockTransport(handler),
+            follow_redirects=True,
+        )
+    ).monthly_retail_sales()
+
+    assert result.ok, result.error
+    assert result.metadata["workbook_scope"] == "recent_archive_probe"
+    assert (
+        attempts[CENSUS_MARTS_CURRENT_WORKBOOK]
+        == CensusMARTSReleaseProvider.transport_retry_attempts
+    )
+    evidence = parse_evidence_bundle(
+        result.raw_bytes,
+        expected_provider="census-release",
+        expected_dataset="marts:retail-food-services",
+    )
+    assert "current-workbook-failure" in evidence.responses
+    failure_witness = {
+        item["role"]: item for item in evidence.manifest["responses"]
+    }["current-workbook-failure"]["response_witness"]
+    # Only the final 403 evidence state is persisted; no transient state leaks.
+    assert failure_witness["status_code"] == 403
+    replay_records, replay_metadata = CensusMARTSReleaseProvider.replay_evidence_bundle(
+        result.raw_bytes
+    )
+    assert replay_records == result.records
+    assert replay_metadata["workbook_scope"] == "recent_archive_probe"
+
+
+def test_census_release_transient_status_exhausts_and_fails_closed(monkeypatch):
+    monkeypatch.setattr(CensusMARTSReleaseProvider, "_sleep", staticmethod(lambda _: None))
+    attempts: dict[str, int] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        attempts[url] = attempts.get(url, 0) + 1
+        if url == CENSUS_MARTS_CURRENT_WORKBOOK:
+            return httpx.Response(503, text="upstream gateway down")
+        raise AssertionError(f"unexpected URL: {url}")
+
+    result = CensusMARTSReleaseProvider(
+        client=httpx.Client(
+            transport=httpx.MockTransport(handler),
+            follow_redirects=True,
+        )
+    ).monthly_retail_sales()
+
+    assert not result.ok
+    assert "HTTP 503" in result.error
+    assert (
+        attempts[CENSUS_MARTS_CURRENT_WORKBOOK]
+        == CensusMARTSReleaseProvider.transport_retry_attempts
+    )
+
+
+def test_census_release_persistent_transport_error_exhausts_and_fails_closed(monkeypatch):
+    monkeypatch.setattr(CensusMARTSReleaseProvider, "_sleep", staticmethod(lambda _: None))
+    attempts: dict[str, int] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        attempts[url] = attempts.get(url, 0) + 1
+        if url == CENSUS_MARTS_CURRENT_WORKBOOK:
+            raise httpx.ConnectTimeout("gateway unreachable", request=request)
+        raise AssertionError(f"unexpected URL: {url}")
+
+    result = CensusMARTSReleaseProvider(
+        client=httpx.Client(
+            transport=httpx.MockTransport(handler),
+            follow_redirects=True,
+        )
+    ).monthly_retail_sales()
+
+    assert not result.ok
+    assert "ConnectTimeout" in result.error
+    assert (
+        attempts[CENSUS_MARTS_CURRENT_WORKBOOK]
+        == CensusMARTSReleaseProvider.transport_retry_attempts
+    )
+
+
+@pytest.mark.parametrize("status_code", [403, 404, 410])
+def test_census_release_does_not_retry_terminal_proof_states(monkeypatch, status_code):
+    monkeypatch.setattr(CensusMARTSReleaseProvider, "_sleep", staticmethod(lambda _: None))
+    sleep_calls: list[float] = []
+    monkeypatch.setattr(
+        CensusMARTSReleaseProvider, "_sleep", staticmethod(lambda s: sleep_calls.append(s))
+    )
+    attempts: dict[str, int] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        attempts[url] = attempts.get(url, 0) + 1
+        if url == CENSUS_MARTS_CURRENT_WORKBOOK:
+            return httpx.Response(status_code, text="terminal evidence state")
+        if url == CENSUS_MARTS_INDEX:
+            return httpx.Response(
+                200,
+                text='<html><a href="rs2604.xlsx">latest</a></html>',
+                headers={"content-type": "text/html"},
+            )
+        if url.endswith("rs2604.xlsx"):
+            return httpx.Response(
+                200,
+                content=_census_workbook(),
+                headers={"content-type": XLSX_CONTENT_TYPE, "last-modified": "May 15, 2026"},
+            )
+        if url.startswith(CENSUS_MARTS_INDEX) and url.endswith(".xlsx"):
+            return httpx.Response(404, text="probe candidate unavailable")
+        raise AssertionError(f"unexpected URL: {url}")
+
+    result = CensusMARTSReleaseProvider(
+        client=httpx.Client(
+            transport=httpx.MockTransport(handler),
+            follow_redirects=True,
+        )
+    ).monthly_retail_sales()
+
+    assert result.ok, result.error
+    # The terminal proof state is fetched exactly once; no retry, no backoff.
+    assert attempts[CENSUS_MARTS_CURRENT_WORKBOOK] == 1
+    assert sleep_calls == []
+
+
+def test_census_release_retry_backoff_is_bounded_and_monotonic(monkeypatch):
+    sleeps: list[float] = []
+    monkeypatch.setattr(
+        CensusMARTSReleaseProvider, "_sleep", staticmethod(lambda s: sleeps.append(s))
+    )
+    attempts: dict[str, int] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        attempts[url] = attempts.get(url, 0) + 1
+        if url == CENSUS_MARTS_CURRENT_WORKBOOK:
+            return httpx.Response(502, text="transient")
+        raise AssertionError(f"unexpected URL: {url}")
+
+    CensusMARTSReleaseProvider(
+        client=httpx.Client(
+            transport=httpx.MockTransport(handler),
+            follow_redirects=True,
+        )
+    ).monthly_retail_sales()
+
+    expected = list(CensusMARTSReleaseProvider.transport_retry_backoff_seconds)
+    assert len(sleeps) == len(expected)
+    assert sleeps == expected
+    # Backoff never exceeds the configured ceiling and is monotonic.
+    assert all(0 < s <= max(expected) for s in sleeps)
+    assert sleeps == sorted(sleeps)
+
+
+@pytest.mark.parametrize(
     ("mode", "message"),
     [
         ("forbidden", "non-terminal HTTP 403"),

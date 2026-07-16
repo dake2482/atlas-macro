@@ -16,8 +16,8 @@ dependencies:
 - AI-RESEARCH-006
 - AI-RESEARCH-008
 - AI-RESEARCH-024
-updated_at: '2026-07-16T10:47:00+08:00'
-next_action: Add bounded same-URL transport retries to the Census MARTS release provider without weakening its fail-closed proof chain; then run the isolated live dual-refresh acceptance, five-route smoke and 1440/390 browser gate before moving to strict Fed Funds and Liquidity contracts.
+updated_at: '2026-07-16T13:30:00+08:00'
+next_action: Separate the consumer publication-postcondition freshness boundary from the macro refresh abort path so a stale-but-replayable Census release workbook can be retained/marked stale without aborting GDP and Inflation publication; then complete the isolated live dual-refresh acceptance and 1440/390 browser gate before moving to strict Fed Funds and Liquidity contracts.
 evidence:
 - The five routes already render substantial official BEA, BLS, DOL, Census, Federal Reserve and New York Fed data, but they still fall through the generic public snapshot selector.
 - A newer permitted rogue snapshot can therefore outrank the intended GDP, employment, inflation, consumer or economy publication without replaying its raw inputs, normalized observations, MetricSnapshot rows, required component sets or payload hash.
@@ -141,6 +141,9 @@ Exact metrics：`bea-a191rl`、`lns14000000`、`core-cpi-yoy`、`bea-real-pce-mo
 - 稳定代码上的 focused 306/306 回归与完整 1,063/1,063 suite 均通过；Ruff、Django check、migration drift、diff check 与 changed-file secret scan 同步全绿。完整 suite 首轮暴露的 3 个失败只是 session demo seed 被绝对计数，断言收窄到 `internal + Economy v2` 后，带 seed 的复现组合与第二次全套均通过。
 - HHDC live 精度与历史覆盖修正把 Page 3 Excel 浮点值归一到 15 位有效数字、把 Page 12 `0.00` 比率按 ROUND_HALF_UP 保存，并强制两张表从 `2003:Q1` 到最新季度拥有相同且连续的 93 季集合。Consumer 相关 98 项测试、1302 行 live provider 与临时 SQLite byte-replay/persistence 均通过。
 - HHDC 修正后的完整 suite 通过 1,115/1,115 项，Ruff、Django check、migration drift 与 diff check 同步通过。最近一次隔离宏观刷新已证明 GDP、PIO、G.19 与 HHDC 可成功持久化，其中 HHDC 为 1,302 行；Census recent archive 的 rank-1 请求发生一次 20 秒 read timeout，随后 provider-only 立即重试 3/3 成功，说明下一步是同一候选 URL 的有界瞬时 transport retry，而不是放宽 403、redirect、malformed 200 或 404/410 顺序证明。隔离 live/browser gate 仍待本 milestone 最终验收。
+- Census MARTS release transport retry 已实现：瞬时 `httpx.TransportError`（超时、连接重置）与瞬时状态集合 {429, 500, 502, 503, 504} 在同一 URL 上有界重试，上限三次总尝试、单调退避（1s/3s）。成功 200 与证明链终态 403/404/410 为精确 evidence 状态，立即返回、不重试，因此重试循环不会改变持久化状态或削弱 fail-closed 证明链；只有最终尝试的 bytes 与 `retrieved_at` 被持久化。13 个确定性重试测试覆盖瞬时状态恢复、read/connect 超时恢复、重试后 probe 回退、耗尽即 fail-closed、终态零重试与有界单调退避。
+- 隔离 live 宏观刷新确认 Census release provider 现可从瞬时 transport 故障恢复（retail_release 到达 success），且 GDP 发布为 fresh。同一隔离运行复现了一个 pre-existing 的 consumer publication-postcondition 失败，该失败为上游数据缺口而非回归：2026-07-16 唯一已发布的 Census MARTS 工作簿为 `rs2605.xlsx`（2026 年 5 月数据），其月度 fresh-until 窗口（5 月底 + 46 天）在 2026-07-15 到期，因此首次 consumer 发布正确 fail-closed，不发布过期数据。此 live 数据新鲜度边界及其导致的 macro 刷新在 consumer 协调前中止，与 Census retry 工作分离，未被掩盖。
+- 完整 suite 在本批改动后通过 1,128/1,128 项（基线 1,115 + 13 个新增 Census retry 测试），Ruff、Django check、migration drift 与 diff check 同步通过。本地服务 11 个必需路由（healthz、首页、四个 economy 子页与父页、data-sources、search、manifest、offline）全部返回 200，页面在无已发布快照时正确渲染 needs_source/stale/transition 缺口状态而不产生 500。隔离 live/browser gate 的最终完整闭环仍受上述 consumer 新鲜度边界约束。
 
 # 发布与选择
 
