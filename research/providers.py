@@ -3265,3 +3265,117 @@ OkxProvider = OKXProvider
 NyFedMarketsProvider = NYFedMarketsProvider
 TreasuryProvider = TreasuryRatesProvider
 FiscalDataTreasuryProvider = FiscalDataProvider
+
+
+class FutuProvider(HTTPProvider):
+    """Futu OpenD broker market-data adapter for US/HK equities and ETFs.
+
+    Data is fetched through the local Futu OpenD gateway (an httpx-free SDK
+    transport) rather than a public HTTPS endpoint.  Each observation is marked
+    as ``estimated`` broker-private data: it is displayable under a licensed
+    source row but is not an official public feed and must never be redistributed
+    or presented as exchange-direct.
+    """
+
+    key = "futu"
+    base_url = ""
+
+    FUTU_LICENSE_SCOPE = (
+        "券商私有行情，经 Futu OpenD 个人订阅获取；仅供参考，不可再分发"
+    )
+    ATTRIBUTION = "Futu OpenD"
+
+    def __init__(
+        self,
+        *,
+        host: str | None = None,
+        port: int | None = None,
+        client: httpx.Client | None = None,
+    ) -> None:
+        super().__init__(client=client)
+        # The OpenD connection is lazily opened on first fetch and closed in
+        # ``close``; we only persist the connection target here so construction
+        # stays side-effect free (matching the provider contract).
+        self.opend_host = host or "127.0.0.1"
+        self.opend_port = int(port or 11111)
+        self._quote_context: Any = None
+        self._owns_quote_context = False
+
+    def _open_context(self) -> Any:
+        if self._quote_context is None:
+            from futu import OpenQuoteContext  # local import keeps the SDK optional
+            self._quote_context = OpenQuoteContext(
+                host=self.opend_host, port=self.opend_port
+            )
+            self._owns_quote_context = True
+        return self._quote_context
+
+    def market_snapshots(self, symbols: list[str]) -> ProviderResult:
+        """Fetch the latest market snapshot for a list of Futu codes.
+
+        ``symbols`` are Futu-qualified codes such as ``US.SPY`` or ``HK.00700``.
+        Returns one normalized record per symbol with broker-private provenance
+        metadata.  Transport failures surface as a single failure result so the
+        refresh task can record a durable FAILED/PARTIAL ingestion run.
+        """
+        dataset = "market-snapshots:" + ",".join(symbols)
+        try:
+            ctx = self._open_context()
+            ret, data = ctx.get_market_snapshot(symbols)
+        except Exception as exc:  # SDK / connection errors -> durable failure
+            return ProviderResult.failure(
+                self.key, dataset, f"{type(exc).__name__}: {exc}"
+            )
+        if ret != 0:
+            return ProviderResult.failure(
+                self.key, dataset, f"Futu OpenD returned error: {data}"
+            )
+        records: list[dict[str, Any]] = []
+        for _, row in data.iterrows():
+            code = str(row.get("code") or "").strip()
+            last_price = row.get("last_price")
+            if not code or last_price is None or str(last_price).lower() in {"nan", "none"}:
+                continue
+            records.append(
+                {
+                    "symbol": code,
+                    "name": str(row.get("name") or code),
+                    "last_price": str(last_price),
+                    "prev_close": _decimal_or_none(row.get("prev_close_price")),
+                    "open": _decimal_or_none(row.get("open_price")),
+                    "high": _decimal_or_none(row.get("high_price")),
+                    "low": _decimal_or_none(row.get("low_price")),
+                    "volume": _decimal_or_none(row.get("volume")),
+                    "turnover": _decimal_or_none(row.get("turnover")),
+                    "pe_ratio": _decimal_or_none(row.get("pe_ratio")),
+                    "pb_ratio": _decimal_or_none(row.get("pb_ratio")),
+                    "market_cap": _decimal_or_none(row.get("total_market_val")),
+                    "update_time": str(row.get("update_time") or ""),
+                }
+            )
+        if not records:
+            return ProviderResult.failure(
+                self.key, dataset, "Futu OpenD returned no usable snapshots"
+            )
+        return ProviderResult(
+            provider=self.key,
+            dataset=dataset,
+            records=records,
+            metadata={
+                "attribution": self.ATTRIBUTION,
+                "license_scope": self.FUTU_LICENSE_SCOPE,
+                "opend_host": self.opend_host,
+                "opend_port": self.opend_port,
+                "symbol_count": len(records),
+            },
+        )
+
+    def close(self) -> None:
+        if self._owns_quote_context and self._quote_context is not None:
+            try:
+                self._quote_context.close()
+            except Exception:
+                pass
+            self._quote_context = None
+            self._owns_quote_context = False
+        super().close()

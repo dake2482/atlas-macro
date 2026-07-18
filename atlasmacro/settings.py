@@ -90,6 +90,16 @@ USE_TZ = True
 STATIC_URL = "/static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
 RAW_ARTIFACT_ROOT = Path(os.getenv("RAW_ARTIFACT_ROOT", str(BASE_DIR / "data" / "artifacts")))
+FUTU_OPEND_HOST = os.getenv("FUTU_OPEND_HOST", "127.0.0.1")
+FUTU_OPEND_PORT = int(os.getenv("FUTU_OPEND_PORT", "11111"))
+FUTU_OPEND_SYMBOLS = tuple(
+    code.strip()
+    for code in os.getenv(
+        "FUTU_OPEND_SYMBOLS",
+        "US.SPY,US.QQQ,US.TLT,US.HYG,US.AAPL,US.MSFT,US.NVDA,US.AMZN,US.GOOGL",
+    ).split(",")
+    if code.strip()
+)
 STORAGES = {
     "default": {"BACKEND": "django.core.files.storage.FileSystemStorage"},
     "staticfiles": {"BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage"},

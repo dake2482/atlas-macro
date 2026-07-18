@@ -489,6 +489,21 @@ SOURCE_CATALOG: dict[str, dict[str, Any]] = {
         "terms_url": "https://statics.deribit.com/files/TermsofServiceDeribit.pdf",
         "attribution": "Deribit",
     },
+    "futu": {
+        "name": "Futu OpenD 行情",
+        "homepage": "https://www.futunn.com/en/download",
+        "kind": "broker",
+        "license_status": Source.LicenseStatus.LICENSED,
+        "license_scope": (
+            "券商私有行情，经 Futu OpenD 个人订阅获取；仅供参考，不可再分发"
+        ),
+        "redistribution_allowed": False,
+        "public_display_allowed": True,
+        "derived_display_allowed": True,
+        "historical_storage_allowed": True,
+        "ai_use_allowed": False,
+        "attribution": "Futu OpenD",
+    },
     "internal": {
         "name": "Atlas Macro Derived Data",
         "homepage": "",
@@ -1466,6 +1481,7 @@ def store_market_observation(
     source: Source,
     run: IngestionRun,
     metadata: Mapping[str, Any] | None = None,
+    quality_status: str = Observation.Quality.FRESH,
 ) -> Observation:
     instrument, _ = Instrument.objects.get_or_create(
         symbol=symbol,
@@ -1483,7 +1499,7 @@ def store_market_observation(
             "as_of": value_date,
             "fetched_at": timezone.now(),
             "batch_id": run.batch_id,
-            "quality_status": Observation.Quality.FRESH,
+            "quality_status": quality_status,
             "metadata": dict(metadata or {}),
         },
     )
@@ -1512,6 +1528,74 @@ def store_okx_ticker(result: ProviderResult, source: Source, run: IngestionRun) 
             source=source,
             run=run,
             metadata={"bid": record.get("bidPx"), "ask": record.get("askPx")},
+        )
+        count += 1
+    return count
+
+
+# Futu codes that are exchange-traded funds rather than single stocks.  Used by
+# ``store_futu_snapshots`` to label the ``asset_class`` on the Instrument row.
+FUTU_ETF_SYMBOLS = frozenset(
+    {
+        "US.SPY",
+        "US.QQQ",
+        "US.TLT",
+        "US.HYG",
+        "US.IWM",
+        "US.EEM",
+        "US.GLD",
+        "US.SLV",
+        "US.XLF",
+        "US.XLE",
+    }
+)
+
+
+def store_futu_snapshots(result: ProviderResult, source: Source, run: IngestionRun) -> int:
+    """Persist Futu market snapshots as instrument-keyed observations.
+
+    Each record carries broker-private provenance in its metadata and is marked
+    ``estimated`` so the UI never presents it as an official exchange-direct feed.
+    """
+    count = 0
+    license_scope = (result.metadata or {}).get("license_scope") or ""
+    attribution = (result.metadata or {}).get("attribution") or "Futu OpenD"
+    for record in result.records:
+        symbol = record.get("symbol")
+        price = _safe_decimal(record.get("last_price"))
+        if not symbol or price is None:
+            continue
+        update_time = str(record.get("update_time") or "")
+        try:
+            value_date = datetime.fromisoformat(update_time)
+        except ValueError:
+            value_date = result.fetched_at
+        if timezone.is_naive(value_date):
+            value_date = timezone.make_aware(value_date, UTC)
+        asset_class = "etf" if symbol in FUTU_ETF_SYMBOLS else "equity"
+        store_market_observation(
+            symbol=symbol,
+            name=record.get("name") or symbol,
+            asset_class=asset_class,
+            value=price,
+            value_date=value_date,
+            source=source,
+            run=run,
+            quality_status=Observation.Quality.ESTIMATED,
+            metadata={
+                "source": attribution,
+                "license_scope": license_scope,
+                "broker_private": True,
+                "prev_close": str(record.get("prev_close") or ""),
+                "open": str(record.get("open") or ""),
+                "high": str(record.get("high") or ""),
+                "low": str(record.get("low") or ""),
+                "volume": str(record.get("volume") or ""),
+                "pe_ratio": str(record.get("pe_ratio") or ""),
+                "pb_ratio": str(record.get("pb_ratio") or ""),
+                "market_cap": str(record.get("market_cap") or ""),
+                "update_time": update_time,
+            },
         )
         count += 1
     return count

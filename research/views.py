@@ -629,8 +629,14 @@ def _text_search(queryset, query: str, fields: list[str], similarity_field: str)
 
 
 def _latest_observation(symbol: str):
+    # Match both the bare symbol (e.g. "SPY") and broker-qualified codes that
+    # carry a market prefix (e.g. "US.SPY" from Futu) so home/overview cards
+    # resolve observations stored under either convention.
+    candidates = [symbol]
+    if not symbol.startswith(("US.", "HK.", "SZ.", "SH.")):
+        candidates.append(f"US.{symbol}")
     return (
-        Observation.objects.filter(instrument__symbol=symbol)
+        Observation.objects.filter(instrument__symbol__in=candidates)
         .exclude(source__key="demo-market")
         .filter(public_display_license_q())
         .select_related("instrument", "source", "fallback_source")

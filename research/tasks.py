@@ -34,11 +34,12 @@ from .official_news import (
     TreasuryPressReleaseProvider,
     store_official_news,
 )
-from .providers import CFTCProvider, GitHubProvider, ProviderResult
+from .providers import CFTCProvider, FutuProvider, GitHubProvider, ProviderResult
 from .sec_company_facts import refresh_sec_company_data
 from .services import (
     record_provider_result,
     store_cftc_positions,
+    store_futu_snapshots,
     store_github_repository,
     summarize_runs,
 )
@@ -330,15 +331,48 @@ def refresh_berkshire_letter_sources() -> dict[str, Any]:
 
 @shared_task(name="research.tasks.refresh_market_sources")
 def refresh_market_sources() -> dict[str, Any]:
-    return summarize_runs(
-        [
-            _skip(
-                "market-data",
-                "daily-bars",
-                "No production market-data license/provider is configured",
-            )
-        ]
+    """Refresh US equity/ETF snapshots from the local Futu OpenD gateway.
+
+    OpenD only runs on operator machines; when the gateway is unreachable the
+    task records a durable PARTIAL skip rather than failing the refresh batch.
+    """
+    symbols = _setting_list(
+        "FUTU_OPEND_SYMBOLS",
+        (
+            "US.SPY",
+            "US.QQQ",
+            "US.TLT",
+            "US.HYG",
+            "US.AAPL",
+            "US.MSFT",
+            "US.NVDA",
+            "US.AMZN",
+            "US.GOOGL",
+        ),
     )
+    host = getattr(settings, "FUTU_OPEND_HOST", "127.0.0.1")
+    port = getattr(settings, "FUTU_OPEND_PORT", 11111)
+    provider = FutuProvider(host=host, port=port)
+    runs: list[IngestionRun] = []
+    try:
+        result = provider.market_snapshots(symbols)
+        if result.skipped:
+            runs.append(record_provider_result(result))
+        else:
+            runs.append(
+                record_provider_result(result, persist=store_futu_snapshots)
+            )
+    except Exception as exc:  # SDK import / OpenD unreachable -> graceful skip
+        runs.append(
+            _skip(
+                "futu",
+                "market-snapshots:" + ",".join(symbols),
+                f"Futu OpenD unavailable: {type(exc).__name__}: {exc}",
+            )
+        )
+    finally:
+        provider.close()
+    return summarize_runs(runs)
 
 
 @shared_task(name="research.tasks.refresh_cftc_sources")
