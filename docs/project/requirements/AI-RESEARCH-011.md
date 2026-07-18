@@ -16,7 +16,8 @@ next_action: Review the local SEC four-company slice, then provision a real moni
 evidence:
 - The reviewed SEC scope is exactly Microsoft, Alphabet, Amazon and Meta. A successful complete batch publishes exactly four company profiles and keeps the other 215 public-contract slugs as transparent pending pages.
 - Company-level annual fundamentals and reported cash CapEx are stored with exact response-byte artifacts, filing/value dates, actual fetch times, source and licence lineage, quality state, batch identity and fallback state. Amazon productive-assets remains explicitly broader/non-comparable; no AI-only CapEx label is used.
-- Latest-five-year selection is fail-closed: the selected window must be consecutive, end at the latest observed fiscal year and contain no incomplete prior year. Publication is atomic and preserves the last complete batch as stale on refresh failure.
+- >-
+  Latest-five-year selection is fail-closed: the selected window must be consecutive, end at the latest observed fiscal year and contain no incomplete prior year. Publication is atomic and preserves the last complete batch as stale on refresh failure.
 - Generic company pages retain public-license FinancialFact and authorized non-demo MarketBar behavior. Reviewed SEC pages require public+derived rights for financial/projection surfaces and do not show stale cached market prices or valuations.
 - Deterministic tests cover effective licence gates, derived-only revocation, invalid newer snapshots, missing/mixed demand components, per-component lineage, universal/reviewed Company constraints, Admin immutability, route lifecycle, discovery filtering, retry behavior and artifact safety.
 - No live SEC request was made and no production deployment was performed. SEC_USER_AGENT still requires a real monitored contact email before a production SEC refresh is permitted; no email is invented in this checkout.

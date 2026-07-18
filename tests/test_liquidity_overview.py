@@ -761,7 +761,7 @@ def test_all_three_refresh_entrypoints_invoke_liquidity_coordinator(monkeypatch)
     )
     monkeypatch.setattr(
         "research.official_data._coordinate_economy_dashboard",
-        lambda: ([], set()),
+        lambda *_args, **_kwargs: ([], set()),
     )
 
     refresh_official_data(current_year=2026)

@@ -3,7 +3,7 @@ schema_version: 1
 id: AI-RESEARCH-008
 project_id: AI-RESEARCH
 title: 分层补齐 Census 零售发布与完整历史
-status: IN_PROGRESS
+status: PAUSED
 priority: P1
 executor: codex
 task_id: atlas-census-retail-alignment-20260713
@@ -11,7 +11,7 @@ branch: main
 worktree: local
 dependencies:
 - AI-RESEARCH-006
-updated_at: '2026-07-13T14:39:57+08:00'
+updated_at: '2026-07-18T10:46:21+08:00'
 next_action: Provision CENSUS_API_KEY to backfill the complete 1992-present MARTS history; current retail publication is live from Census marts_current.xlsx on Mina.
 evidence:
 - Production currently publishes April 2026 Census retail and food-services sales as 757,085 USD millions,

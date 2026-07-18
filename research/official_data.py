@@ -17,7 +17,7 @@ import re
 import uuid
 import zipfile
 from collections import defaultdict
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from copy import deepcopy
 from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
@@ -36,6 +36,7 @@ from django.utils import timezone
 from .calculations import yield_spread
 from .consumer_contract import (
     CONSUMER_CONTRACT_VERSION,
+    ConsumerPublicationPostconditionError,
     coordinate_consumer_dashboard,
 )
 from .consumer_credit import (
@@ -66,6 +67,7 @@ from .credit_official import FederalReserveSLOOSProvider, TreasuryHQMProvider
 from .economy_contract import (
     ECONOMY_FORMULA_VERSION,  # noqa: F401 - public strict-contract re-export
     ECONOMY_REQUIRED_CHART_KEYS,  # noqa: F401 - public strict-contract re-export
+    EconomyPublicationPostconditionError,
     _economy_snapshot_static_replay,  # noqa: F401 - operations/test re-export
     coordinate_economy_dashboard,
     economy_snapshot_is_publicly_displayable,  # noqa: F401 - public re-export
@@ -75,6 +77,7 @@ from .economy_contract import (
 from .employment_contract import (
     EMPLOYMENT_BLS_REQUEST_SERIES,
     EMPLOYMENT_REQUIRED_METRIC_KEYS,
+    EmploymentPublicationPostconditionError,
     coordinate_employment_dashboard,
 )
 from .fed_h8 import (
@@ -97,6 +100,7 @@ from .fed_h41 import (
 from .fed_prates import FederalReservePRATESProvider
 from .inflation_contract import (
     INFLATION_REQUIRED_METRIC_KEYS,
+    InflationPublicationPostconditionError,
     coordinate_inflation_dashboard,
 )
 from .labor_official import (
@@ -1318,6 +1322,49 @@ def _mark_latest_dashboards_stale(
             latest.data = data
             latest.quality_status = Observation.Quality.STALE
             latest.save(update_fields=["data", "quality_status", "updated_at"])
+
+
+# A strict-child postcondition error means the child's latest input succeeded
+# but is expired (or there is no prior replayable revision to retain).  It is a
+# per-page freshness outcome, not a refresh-wide corruption: the child already
+# refuses to publish its own data, so the orchestrator must keep that refusal
+# isolated and let sibling pages publish normally instead of aborting.
+_STRICT_CHILD_POSTCONDITION_ERRORS: tuple[type[Exception], ...] = (
+    EmploymentPublicationPostconditionError,
+    InflationPublicationPostconditionError,
+    ConsumerPublicationPostconditionError,
+    EconomyPublicationPostconditionError,
+)
+
+
+def _coordinate_strict_child_isolated(
+    coordinator: Callable[..., tuple[list[DashboardSnapshot], set[str]]],
+    page_key: str,
+    runs: Iterable[IngestionRun],
+) -> tuple[list[DashboardSnapshot], set[str]]:
+    """Run one strict-child coordinator without aborting sibling publications.
+
+    The four strict contracts (employment, inflation, consumer, economy) raise a
+    dedicated ``PublicationPostconditionError`` only when a completed input pair
+    cannot become the current public revision and there is no prior replayable
+    revision to retain.  That is a real, fail-closed freshness outcome for the
+    single child page.  It must not cascade into the refresh aborting every
+    later coordinator, which would hide fresh sibling data behind one child's
+    natural expiry.  Any other exception is a genuine coordinator bug and is
+    re-raised unchanged.
+    """
+    try:
+        return coordinator(runs)
+    except _STRICT_CHILD_POSTCONDITION_ERRORS as exc:
+        logger.warning(
+            "strict child %s publication postcondition failed; isolating "
+            "as stale and continuing sibling coordinators: %s",
+            page_key,
+            exc,
+        )
+        run_list = list(runs)
+        _mark_latest_dashboards_stale({page_key}, run_list)
+        return [], {page_key}
 
 
 def _fresh_until(observation: Observation) -> datetime:
@@ -29476,11 +29523,17 @@ def refresh_official_data(*, current_year: int | None = None) -> dict[str, Any]:
         if _has_publishable_run(core_runs)
         else []
     )
-    employment_dashboards, stale_employment_keys = coordinate_employment_dashboard(runs)
+    employment_dashboards, stale_employment_keys = _coordinate_strict_child_isolated(
+        coordinate_employment_dashboard, "employment", runs
+    )
     dashboards.extend(employment_dashboards)
-    inflation_dashboards, stale_inflation_keys = coordinate_inflation_dashboard(runs)
+    inflation_dashboards, stale_inflation_keys = _coordinate_strict_child_isolated(
+        coordinate_inflation_dashboard, "inflation", runs
+    )
     dashboards.extend(inflation_dashboards)
-    consumer_dashboards, stale_consumer_keys = coordinate_consumer_dashboard(runs)
+    consumer_dashboards, stale_consumer_keys = _coordinate_strict_child_isolated(
+        coordinate_consumer_dashboard, "consumer", runs
+    )
     dashboards.extend(consumer_dashboards)
     stale_dashboard_keys = (
         stale_employment_keys | stale_inflation_keys | stale_consumer_keys
@@ -29532,7 +29585,9 @@ def refresh_official_data(*, current_year: int | None = None) -> dict[str, Any]:
     rrp_tga_dashboards, stale_rrp_tga_keys = _coordinate_rrp_tga_dashboard(runs)
     dashboards.extend(rrp_tga_dashboards)
     stale_dashboard_keys |= stale_rrp_tga_keys
-    economy_dashboards, stale_economy_keys = _coordinate_economy_dashboard()
+    economy_dashboards, stale_economy_keys = _coordinate_strict_child_isolated(
+        _coordinate_economy_dashboard, "economy", runs
+    )
     dashboards.extend(economy_dashboards)
     stale_dashboard_keys |= stale_economy_keys
     return {
@@ -30024,13 +30079,19 @@ def refresh_macro_official_data(*, current_year: int | None = None) -> dict[str,
     )
     dashboards.extend(gdp_dashboards)
     stale_keys |= stale_gdp_keys
-    inflation_dashboards, stale_inflation_keys = coordinate_inflation_dashboard(runs)
+    inflation_dashboards, stale_inflation_keys = _coordinate_strict_child_isolated(
+        coordinate_inflation_dashboard, "inflation", runs
+    )
     dashboards.extend(inflation_dashboards)
     stale_keys |= stale_inflation_keys
-    consumer_dashboards, stale_consumer_keys = coordinate_consumer_dashboard(runs)
+    consumer_dashboards, stale_consumer_keys = _coordinate_strict_child_isolated(
+        coordinate_consumer_dashboard, "consumer", runs
+    )
     dashboards.extend(consumer_dashboards)
     stale_keys |= stale_consumer_keys
-    economy_dashboards, stale_economy_keys = _coordinate_economy_dashboard()
+    economy_dashboards, stale_economy_keys = _coordinate_strict_child_isolated(
+        _coordinate_economy_dashboard, "economy", runs
+    )
     dashboards.extend(economy_dashboards)
     stale_keys |= stale_economy_keys
     return {

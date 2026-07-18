@@ -22,11 +22,14 @@ evidence:
 - The live reserves v1 snapshot joined the latest common Wednesday 2026-07-01 from two exact batches, published five metrics and two 260-row charts, used an exact 56-calendar-day change pair, and calculated the z-score from 156 exact changes in the recent three-year window.
 - Provider gates now reject duplicate archive members, duplicate requested series or dates, invalid or non-Wednesday periods, unknown statuses, semantic dimension drift, excessive release lag, future timestamps, release-time regression and superseded concurrent persistence before public rows can be overwritten.
 - Source failure, partial data, stale inputs, invalid licences, missing H.4.1/H.8 counterparts and failed publication postconditions retain the prior complete snapshot. Both H.4.1 and H.8 CLI/Celery paths fail loudly when the required reserves contract is stale.
-- Final local gates passed: 584 full tests, 94 targeted hardening tests, Ruff, Django system check, migration-drift check, production deployment check and git diff whitespace check.
+- >-
+  Final local gates passed: 584 full tests, 94 targeted hardening tests, Ruff, Django system check, migration-drift check, production deployment check and git diff whitespace check.
 - A post-hardening live H.8 replay with the same official Prepared time passed the durable run/observation release-watermark gate, updated the exact H.8 component batch in place, kept one public snapshot, and produced no stale or refresh failure state.
 - Three independent final re-reviews found no remaining P0/P1 issues after the provider-schema, release-lag, concurrent-persistence TOCTOU and H.4.1/H.8 fail-loud corrections.
-- Local browser acceptance passed at 1440px and 390px: five lineage-rich metric cards and the selected ECharts view rendered, period/tab GET filters worked, the mobile drawer opened and closed, no horizontal overflow occurred, and the browser console had no warnings or errors.
-- The data catalog now contains 101 explicit requirements: 41 LIVE, 19 NEEDS_SOURCE, 37 PURCHASE_REQUIRED, 3 LICENSE_REVIEW and 1 PROXY. The reserves coverage proxy is LIVE, while like-for-like adequacy and the comparison page's SOFR spread components remain NEEDS_SOURCE.
+- >-
+  Local browser acceptance passed at 1440px and 390px: five lineage-rich metric cards and the selected ECharts view rendered, period/tab GET filters worked, the mobile drawer opened and closed, no horizontal overflow occurred, and the browser console had no warnings or errors.
+- >-
+  The data catalog now contains 101 explicit requirements: 41 LIVE, 19 NEEDS_SOURCE, 37 PURCHASE_REQUIRED, 3 LICENSE_REVIEW and 1 PROXY. The reserves coverage proxy is LIVE, while like-for-like adequacy and the comparison page's SOFR spread components remain NEEDS_SOURCE.
 started_at: '2026-07-14T09:05:32+08:00'
 ---
 

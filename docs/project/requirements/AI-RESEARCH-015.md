@@ -14,11 +14,13 @@ dependencies:
 updated_at: '2026-07-14T12:07:35+08:00'
 next_action: Re-run the 1440/390 browser and console acceptance after the Browser Plugin process-shim compatibility regression is fixed. Production deployment and production data refresh remain separately authorized actions.
 evidence:
-- The comparison route is currently unavailable, so the implementation uses the previously captured public-page contract: current SOFR and 3M T-bill values plus 60-day SOFR-minus-T-bill and SOFR-minus-IORB histories.
+- >-
+  The comparison route is currently unavailable, so the implementation uses the previously captured public-page contract: current SOFR and 3M T-bill values plus 60-day SOFR-minus-T-bill and SOFR-minus-IORB histories.
 - The U.S. Treasury Daily Treasury Bill Rates feed identifies the official 13-week bill and publishes both Bank Discount and Coupon Equivalent quotations. Coupon Equivalent is selected because Treasury explicitly defines it as the investment/bond-equivalent yield suitable for yield comparison.
 - The exact Treasury XML field is ROUND_B1_YIELD_13WK_2; ROUND_B1_CLOSE_13WK_2 is retained only as source metadata and is never substituted into the displayed spread.
 - SOFR remains sourced directly from the New York Fed Markets API and IORB directly from the Federal Reserve PRATES DDP archive; no FRED or comparison-site value is used.
-- Architecture decision: retain reserves v1 as the independent weekly H.4.1/H.8 component, publish reserves-rate-spreads v1 as an independent daily three-source component, and merge only validated component snapshots in the public view with component-level timestamps and stale state.
+- >-
+  Architecture decision: retain reserves v1 as the independent weekly H.4.1/H.8 component, publish reserves-rate-spreads v1 as an independent daily three-source component, and merge only validated component snapshots in the public view with component-level timestamps and stale state.
 - The captured comparison page also labels an opaque bank-intermediation status, but does not disclose its threshold or method. Atlas will publish the raw spread and keep the status method as NEEDS_SOURCE rather than inventing a normal/tight classification.
 - Implementation now publishes an independent reserves-rate-spreads v1 component, retains the weekly reserves v1 contract, rechecks current SourceLicense rights in the public selector, and propagates retained stale state to presentation copies without mutating stored snapshots.
 - Fourteen deterministic rate-spread tests pass. They cover Treasury field drift, exact-date publication, latest-failure retention, date regression, duplicate triggers, same-value recovery, mixed-batch pollution, licence revocation, fewer than 30 common observations, publication-postcondition rollback, legacy weekly compatibility, missing-component state and stale presentation.
@@ -27,7 +29,8 @@ evidence:
 - The two Treasury XML raw artifacts retained SHA-256 e05421b6cf9629946f034a292c35f2453a7bb563b1f71f2c9af450e1919abd9c and 81d4c8ed3bc9a766afe9f8fd4b7150de5167fdf7f6939b17e53cc32409759c4. The displayed field was ROUND_B1_YIELD_13WK_2; ROUND_B1_CLOSE_13WK_2 remained lineage-only metadata.
 - An HTTP route smoke against the isolated database returned 200 and rendered all five daily values, three chart payloads, source notices and the weekly recent-20 table without a missing-source state.
 - The official Browser Plugin 26.707.71524 cannot currently be imported in the trusted Node runtime because the bundle overwrites a non-configurable process facade at browser-client.mjs:33. The 1440/390 visual and console gate remains explicitly unexecuted; HTTP/Django checks are not counted as a browser substitute.
-- Repository gates passed before the final test additions: full Ruff, complete pytest, Django check, migration drift check and git diff whitespace validation. The expanded 14-test slice and targeted Ruff/diff checks also pass; final repository-wide gates are rerun with the next milestone changes.
+- >-
+  Repository gates passed before the final test additions: full Ruff, complete pytest, Django check, migration drift check and git diff whitespace validation. The expanded 14-test slice and targeted Ruff/diff checks also pass; final repository-wide gates are rerun with the next milestone changes.
 started_at: '2026-07-14T11:10:45+08:00'
 ---
 

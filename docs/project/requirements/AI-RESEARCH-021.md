@@ -22,7 +22,8 @@ evidence:
 - The dedicated implementation passed 15 assets-fx contract tests and 198 adjacent H.10, global-dollar, refresh, transmission and route tests; the focused final Sol review reported P0=0, P1=0 and P2=0.
 - A clean temporary SQLite database fetched the live H.10 archive in 23.68 seconds, stored 37,323 exact observations and one 2,072,667-byte private artifact, published one strict v1 snapshot with four MetricSnapshots, and returned HTTP 200 for both `/assets/fx/` and `/assets/`.
 - Full canonical validation passed 790 tests, Ruff, Django system checks, migration drift and `git diff --check`.
-- Browser Plugin 26.707.72221 completed the deferred visual and interaction gate against the isolated live H.10 snapshot: 1440x900 and 390x844 had no horizontal overflow, rendered four metric cards and three tables, Major FX GET navigation and chart selection worked, the mobile drawer and theme toggle worked, and browser console errors were empty.
+- >-
+  Browser Plugin 26.707.72221 completed the deferred visual and interaction gate against the isolated live H.10 snapshot: 1440x900 and 390x844 had no horizontal overflow, rendered four metric cards and three tables, Major FX GET navigation and chart selection worked, the mobile drawer and theme toggle worked, and browser console errors were empty.
 - A final presentation-only fix now rounds the one-observation percentage changes to signed two-decimal strings without altering the persisted exact numeric `change` or the assets-fx payload hash contract; 15 focused tests, Ruff and `git diff --check` passed, and the browser confirmed the raw long float is no longer visible.
 started_at: '2026-07-15T10:30:14+08:00'
 ---

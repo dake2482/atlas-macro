@@ -4,19 +4,34 @@
 
 - Purpose: Build a clean-room macro-research and AI supply-chain intelligence platform with traceable public sources, explicit data-quality labels, and original presentation.
 - Health: `YELLOW`
-- Milestone: `AI-RESEARCH-008` — 分层补齐 Census 零售发布与完整历史 (`IN_PROGRESS`)
-- Next action: Provision CENSUS_API_KEY to backfill the complete 1992-present MARTS history; current retail publication is live from Census marts_current.xlsx on Mina.
-- Updated: `2026-07-13T16:05:00+08:00`
-- Git boundary: branch `main`; run `portfolio closeout AI-RESEARCH` for live delivery state.
-- Execution metadata: Codex 0/0 active/total; ZCode 0/0 active/total
+- Milestone: `AI-RESEARCH-025` — BEA/BLS/DOL/Census 宏观五页 append-only 严格公开合同 (`IN_PROGRESS`)
+- Next action: Separate the consumer publication-postcondition freshness boundary from the macro refresh abort path so a stale-but-replayable Census release workbook can be retained/marked stale without aborting GDP and Inflation publication; then complete the isolated live dual-refresh acceptance and 1440/390 browser gate before moving to strict Fed Funds and Liquidity contracts.
+- Updated: `2026-07-16T13:30:00+08:00`
+- Git boundary: branch `zcode/timsun-research`; run `portfolio closeout AI-RESEARCH` for live delivery state.
+- Execution metadata: Codex 0/0 updated-in-7d/total; ZCode 1/1 running/total
 
 ## Current work
 
 | Requirement | State | Priority | Executor | Task | Branch / worktree | Next action |
 |---|---|---|---|---|---|---|
-| AI-RESEARCH-008 | IN_PROGRESS | P1 | codex | atlas-census-retail-alignment-20260713 | main / local | Provision CENSUS_API_KEY to backfill the complete 1992-present MARTS history; current retail publication is live from Census marts_current.xlsx on Mina. |
+| AI-RESEARCH-025 | IN_PROGRESS | P1 | zcode | sess_4e0cbadd-5e9e-4736-927b-a244fc184743 | zcode/timsun-research / local | Separate the consumer publication-postcondition freshness boundary from the macro refresh abort path so a stale-but-replayable Census release workbook can be retained/marked stale without aborting GDP and Inflation publication; then complete the isolated live dual-refresh acceptance and 1440/390 browser gate before moving to strict Fed Funds and Liquidity contracts. |
 | AI-RESEARCH-009 | REVIEW | P1 | codex | atlas-treasury-curve-alignment-20260713 | main / local | Run the project closeout gate after the pre-existing untracked docs/guides ownership is resolved; do not mix those user files into this requirement. |
 | AI-RESEARCH-010 | REVIEW | P0 | codex | atlas-daily-evidence-publication-safety-20260713 | main / local | Register or explicitly exclude /Users/dake/Documents/weihua from AI-Portfolio discovery, then rerun portfolio closeout AI-RESEARCH; do not mutate that unrelated repository without user direction. |
+| AI-RESEARCH-011 | REVIEW | P1 | codex | atlas-sec-four-company-publication-correction2-20260713 | main / local | Review the local SEC four-company slice, then provision a real monitored SEC_USER_AGENT contact email before any production refresh; keep the remaining 215 contract company routes pending. |
+| AI-RESEARCH-012 | REVIEW | P1 | codex | atlas-fed-document-provenance-20260713 | main / local | Design and provision the scheduled evidence-binding and human-review pipeline; after future explicit deployment authorization, back up and migrate production through 0017, run a real official RSS refresh, deploy, and repeat post-deploy route and browser QA. |
+| AI-RESEARCH-013 | REVIEW | P1 | codex | atlas-treasury-auction-calendar-20260713 | main / local | After future explicit deployment authorization, back up production, run one complete same-cycle official Treasury/NY Fed refresh, deploy, then repeat post-deploy route and browser verification. |
+| AI-RESEARCH-014 | REVIEW | P1 | codex | atlas-reserves-h8-alignment-20260714 | main / local | After separate deployment authorization, back up production, deploy and run H.4.1 followed by H.8 so the dual-source contract can publish atomically; then repeat lineage, route and browser checks. The comparison page's SOFR-3M T-bill and SOFR-IORB components remain a separate NEEDS_SOURCE alignment slice. |
+| AI-RESEARCH-015 | REVIEW | P1 | codex | atlas-reserves-rate-spreads-alignment-20260714 | main / local | Re-run the 1440/390 browser and console acceptance after the Browser Plugin process-shim compatibility regression is fixed. Production deployment and production data refresh remain separately authorized actions. |
+| AI-RESEARCH-016 | REVIEW | P1 | codex | atlas-fed-balance-sheet-alignment-20260714 | main / local | Re-run the recorded 1440/390 browser acceptance after the Browser Plugin runtime regression is fixed; production deployment remains separately authorized. |
+| AI-RESEARCH-017 | REVIEW | P1 | codex | atlas-liquidity-subsurface-alignment-20260714 | main / local | Re-run the recorded 1440/390 browser acceptance when the Browser Plugin runtime is fixed; production deployment remains separately authorized. |
+| AI-RESEARCH-018 | REVIEW | P1 | codex | atlas-open-market-operations-alignment-20260714 | main / local | Re-run the 1440/390 browser visual acceptance after the Browser Plugin runtime regression is fixed; keep commit, push and deployment separately authorized. |
+| AI-RESEARCH-019 | REVIEW | P1 | codex | atlas-global-dollar-official-alignment-20260714 | main / local | Run the deferred 1440/390 browser visual and console gate after the official Browser Plugin runtime regression is fixed; commit, push and deployment remain separately authorized. |
+| AI-RESEARCH-020 | REVIEW | P0 | codex | atlas-transmission-chain-official-alignment-20260714 | main / local | Run the deferred 1440/390 Browser Plugin visual and console gate when its locked-runtime import regression is fixed; optionally refine mixed transition wording so terminal failures remain more specific than RUNNING layers. Commit, push and deployment remain separately authorized. |
+| AI-RESEARCH-021 | REVIEW | P1 | codex | atlas-assets-fx-h10-alignment-20260715 | main / local | AI-RESEARCH-021 product changes are included in local commit `88508bc` and public snapshot commit `d67908a`; continue AI-RESEARCH-022 live and browser acceptance. Production deployment remains separately authorized. |
+| AI-RESEARCH-022 | REVIEW | P1 | codex | atlas-credit-official-v1-alignment-20260715 | main / local | Review the completed credit evidence together with draft PR |
+| AI-RESEARCH-023 | REVIEW | P1 | codex | atlas-volatility-h10-rv-alignment-20260715 | main / local | Review draft PR |
+| AI-RESEARCH-024 | REVIEW | P1 | codex | atlas-treasury-curve-v2-20260715 | main / local | Review the live feed-identity correction and acceptance evidence, then commit or push the three-file corrective patch only after fresh explicit authorization. Continue the page-alignment objective under AI-RESEARCH-025; production deployment remains separately authorized. |
+| AI-RESEARCH-008 | PAUSED | P1 | codex | atlas-census-retail-alignment-20260713 | main / local | Provision CENSUS_API_KEY to backfill the complete 1992-present MARTS history; current retail publication is live from Census marts_current.xlsx on Mina. |
 
 ## Blockers
 
@@ -24,4 +39,4 @@
 
 ## Latest verification evidence
 
-- 2026-07-13 BLS component follow-up: commit 335fc99 freezes seasonally adjusted and not-seasonally-adjusted pairs for Shelter (SAH1), commodities less food and energy commodities (SACL1E), and services less energy services (SASLE). The page publishes MoM, YoY, 3M and 6M annualized rates from exact calendar months and explicitly states that SASLE still includes Shelter and is not supercore inflation.
+- 2026-07-13 correction: live Mina probing now returns HTTP 200 and a valid Excel file for https://www.census.gov/retail/marts/www/marts_current.xlsx. Commit bbf7fff makes the release provider prefer the current Census workbook and fall back to the historical www2 archive only when the current workbook is unavailable.

@@ -26,8 +26,10 @@ evidence:
 - A read-only live API check on 2026-07-13 returned 111 complete auction-window rows and 9 complete issue-window rows on one page each using the exact new fields and filters. It was not persisted and no production refresh or deployment was performed.
 - Current exact TreasuryAuction rows use the existing unique CUSIP and auction_date schema, so a later refresh replaces the normalized current row. Published snapshots embed their component lineage, but durable historical row-level auction vintages would require a future additive model migration.
 - An independent read-only final review found no P0 or P1 findings. Status remains REVIEW/YELLOW because production refresh and deployment still require separate explicit authorization.
-- Final local gates passed: full pytest 509 tests, targeted pytest 140 tests, Ruff, Django system check, migration-drift check, production deployment check and `git diff --check`.
-- Local browser acceptance at 1440px and 390px passed for `/rates/auctions/` and `/liquidity/rrp-tga/`: neither route has horizontal overflow, long batch UUID and licence text remain readable after the metric-card fix, the mobile navigation drawer works, and the console has no warnings or errors.
+- >-
+  Final local gates passed: full pytest 509 tests, targeted pytest 140 tests, Ruff, Django system check, migration-drift check, production deployment check and `git diff --check`.
+- >-
+  Local browser acceptance at 1440px and 390px passed for `/rates/auctions/` and `/liquidity/rrp-tga/`: neither route has horizontal overflow, long batch UUID and licence text remain readable after the metric-card fix, the mobile navigation drawer works, and the console has no warnings or errors.
 started_at: '2026-07-13T18:35:00+08:00'
 ---
 

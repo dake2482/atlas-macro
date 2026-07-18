@@ -5,9 +5,9 @@ project_id: AI-RESEARCH
 title: BEA/BLS/DOL/Census 宏观五页 append-only 严格公开合同
 status: IN_PROGRESS
 priority: P1
-executor: codex
-task_id: atlas-macro-official-v2-20260715
-branch: codex/volatility-treasury-v2
+executor: zcode
+task_id: sess_4e0cbadd-5e9e-4736-927b-a244fc184743
+branch: zcode/timsun-research
 worktree: local
 dependencies:
 - AI-RESEARCH-002
@@ -16,7 +16,7 @@ dependencies:
 - AI-RESEARCH-006
 - AI-RESEARCH-008
 - AI-RESEARCH-024
-updated_at: '2026-07-16T13:30:00+08:00'
+updated_at: '2026-07-18T10:46:21+08:00'
 next_action: Separate the consumer publication-postcondition freshness boundary from the macro refresh abort path so a stale-but-replayable Census release workbook can be retained/marked stale without aborting GDP and Inflation publication; then complete the isolated live dual-refresh acceptance and 1440/390 browser gate before moving to strict Fed Funds and Liquidity contracts.
 evidence:
 - The five routes already render substantial official BEA, BLS, DOL, Census, Federal Reserve and New York Fed data, but they still fall through the generic public snapshot selector.
