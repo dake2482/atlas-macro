@@ -17,7 +17,7 @@
       {% if fetched_at %}<span>抓取：{{ fetched_at|date:"Y-m-d H:i"|default:fetched_at|slice:":16" }}</span>{% endif %}
       <span>批次：{% if batch_ids %}{{ batch_ids|join:", " }}{% else %}—{% endif %}</span>
       <span>许可：{% if license_scopes %}{{ license_scopes|join:" / " }}{% else %}—{% endif %}</span>
-      <span>fallback：{% if fallback_sources %}{{ fallback_sources|join:", " }}{% else %}无{% endif %}</span>
+      <span>备用源：{% if fallback_sources %}{{ fallback_sources|join:", " }}{% else %}无{% endif %}</span>
     </footer>
   {% endif %}
 </section>

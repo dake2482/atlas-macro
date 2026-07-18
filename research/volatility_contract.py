@@ -124,29 +124,29 @@ FX_VOL_GAP_COLUMNS = (
 )
 FX_VOL_GAPS = (
     (
-        "FX ATM implied volatility",
-        "PURCHASE_REQUIRED",
-        "LSEG, Bloomberg or CME FX/CVOL with website-display rights",
+        "外汇 ATM 隐含波动率",
+        "需采购",
+        "LSEG、Bloomberg 或 CME FX/CVOL，含网站展示权",
     ),
     (
-        "25-delta risk reversal and butterfly",
-        "PURCHASE_REQUIRED",
-        "Licensed OTC composite or exchange-derived volatility surface",
+        "25Delta 风险逆转与蝶式",
+        "需采购",
+        "授权 OTC composite 或交易所衍生波动率面",
     ),
     (
-        "Executable institutional spot",
-        "PURCHASE_REQUIRED",
-        "CME EBS, Cboe FX, LSEG or Bloomberg Enterprise",
+        "可执行机构即期",
+        "需采购",
+        "CME EBS、Cboe FX、LSEG 或 Bloomberg 企业版",
     ),
     (
-        "FX forwards and NDF",
-        "PURCHASE_REQUIRED",
-        "Venue or enterprise feed with storage and derived-display rights",
+        "外汇远期与 NDF",
+        "需采购",
+        "场所或企业级数据流，含存储与派生展示权",
     ),
     (
-        "Cross-currency basis and FX-swap implied funding",
-        "LICENSE_REVIEW",
-        "LSEG, Bloomberg or another licensed derived-display product",
+        "跨货币基差与外汇掉期隐含资金",
+        "许可待审核",
+        "LSEG、Bloomberg 或其他授权派生展示产品",
     ),
 )
 FX_VOL_PAYLOAD_KEYS = frozenset(

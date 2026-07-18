@@ -23,7 +23,7 @@
         {% if metric.fetched_at %}<time class="block" datetime="{{ metric.fetched_at }}">抓取 {{ metric.fetched_at|slice:"5:16" }}</time>{% endif %}
         {% if metric.batch_id %}<span class="block">批次 {{ metric.batch_id }}</span>{% elif metric.publication_batch_id %}<span class="block">批次 {{ metric.publication_batch_id }}</span>{% else %}<span class="block">批次 —</span>{% endif %}
         <span class="block">许可 {{ metric.license_scope|default:"—" }}</span>
-        <span class="block">fallback {{ metric.fallback_source|default:"无" }}</span>
+        <span class="block">备用源 {{ metric.fallback_source|default:"无" }}</span>
       </span>
     </div>
   {% endif %}

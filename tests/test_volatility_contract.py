@@ -578,7 +578,7 @@ def test_five_unsupported_routes_are_structured_prose_only(client):
     assert '<a href="/volatility/fx-vol/"' in overview_body
     assert ">/volatility/fx-vol/</a>" in overview_body
     assert ">LIVE<" not in overview_body
-    assert "CONTRACT_READY" in overview_body
+    assert "合同就绪" in overview_body
 
 
 @pytest.mark.django_db
@@ -605,10 +605,10 @@ def test_fx_vol_route_controls_and_rendered_contract(published_fx_vol, client):
     assert len(response.context["sections"]) == 3
     body = response.content.decode()
     assert "H.10 外汇实现波动率" in body
-    assert "PURCHASE_REQUIRED" in body
+    assert "需采购" in body
     assert "sample_std" in body
     assert "cells_list" not in body
-    assert "ATM implied volatility" in body
+    assert "外汇 ATM 隐含波动率" in body
     assert "MOVE 96" not in body
 
     normalized = client.get("/volatility/fx-vol/?period=all&tab=iv")

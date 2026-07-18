@@ -830,7 +830,7 @@ PAGE_CONFIGS = {
             contract_table(
                 "volatility-coverage-ledger",
                 "当前数据覆盖",
-                "CONTRACT_READY 表示严格合同已实现；是否有当前可发布快照由 FX 子页的 selector 独立判断。",
+                "合同就绪表示严格合同已实现；是否有当前可发布快照由 FX 子页的 selector 独立判断。",
                 (
                     ("component", "组件"),
                     ("status", "状态"),
@@ -838,11 +838,11 @@ PAGE_CONFIGS = {
                     ("next-action", "下一步"),
                 ),
                 (
-                    ("H.10 FX realized volatility", "CONTRACT_READY", "/volatility/fx-vol/", "子页只在严格 selector 通过时发布 20D/60D 数字"),
-                    ("Treasury yield-change realized volatility", "INPUT_READY", "—", "另立 requirement 定义 Atlas realized yield-vol 公式与发布合同"),
-                    ("Cboe VIX family / CFE VX", "PURCHASE_REQUIRED", "—", "采购历史存储与网站展示权"),
-                    ("ICE MOVE", "PURCHASE_REQUIRED", "—", "采购 ICE Data Indices 展示权"),
-                    ("FX / cross-asset implied volatility", "PURCHASE_REQUIRED", "—", "采购期权面与标的同批次数据"),
+                    ("H.10 外汇实现波动率", "合同就绪", "/volatility/fx-vol/", "子页只在严格 selector 通过时发布 20D/60D 数字"),
+                    ("财政部收益率变动实现波动率", "输入就绪", "—", "另立 requirement 定义 Atlas realized yield-vol 公式与发布合同"),
+                    ("Cboe VIX 家族 / CFE VX", "需采购", "—", "采购历史存储与网站展示权"),
+                    ("ICE MOVE", "需采购", "—", "采购 ICE DataIndices 展示权"),
+                    ("外汇 / 跨资产隐含波动率", "需采购", "—", "采购期权面与标的同批次数据"),
                 ),
             )
         ],
@@ -867,10 +867,10 @@ PAGE_CONFIGS = {
                     ("failure-policy", "失败策略"),
                 ),
                 (
-                    ("FX realized volatility", "H.10 ZIP exact replay", "CONTRACT_READY", "子页 selector 独立判断是否有可发布快照"),
-                    ("Rates realized volatility", "Treasury XML replay + append-only annual batches", "INPUT_READY", "另立公式与 selector 前不发布数字或 MOVE 代理"),
-                    ("Equity implied volatility", "Cboe index and CFE display licence", "PURCHASE_REQUIRED", "零指标、零图表"),
-                    ("Cross-asset parent", "At least two independently valid children", "NOT_READY", "不生成分数或状态"),
+                    ("外汇实现波动率", "H.10 ZIP 精确重放", "合同就绪", "子页 selector 独立判断是否有可发布快照"),
+                    ("利率实现波动率", "财政部 XML 重放 + append-only 年度批次", "输入就绪", "另立公式与 selector 前不发布数字或 MOVE 代理"),
+                    ("股票隐含波动率", "Cboe 指数与 CFE 展示许可", "需采购", "零指标、零图表"),
+                    ("跨资产父页", "至少两个独立有效的子页", "未就绪", "不生成分数或状态"),
                 ),
             )
         ],

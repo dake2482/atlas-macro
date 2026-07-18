@@ -2,7 +2,7 @@
 {% block title %}数据源与采购台账 · {{ site_name }}{% endblock %}
 {% block content %}
 <div class="content-wrap">
-  {% include "research/includes/page_header.html" with eyebrow="Source governance" page_title="数据源与采购台账" page_description="逐页跟踪真实数据接入、代理指标、许可审核和商业采购缺口。" %}
+  {% include "research/includes/page_header.html" with eyebrow="来源治理" page_title="数据源与采购台账" page_description="逐页跟踪真实数据接入、代理指标、许可审核和商业采购缺口。" %}
   <section class="mb-4 grid grid-cols-2 gap-3 md:grid-cols-5">
     {% for key, count in status_counts.items %}<article class="metric-card"><p class="metric-label">{{ key }}</p><p class="metric-value">{{ count }}</p></article>{% endfor %}
   </section>
