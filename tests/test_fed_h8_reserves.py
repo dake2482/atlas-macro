@@ -859,7 +859,7 @@ def test_reserves_route_renders_retained_stale_v1_lineage_and_failure(client):
     assert "federal-reserve" in content
     assert "许可：" in content
     assert "许可：—" not in content
-    assert "fallback：无" in content
+    assert "备用源：无" in content
 
 
 @pytest.mark.django_db

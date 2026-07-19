@@ -533,7 +533,7 @@ def test_demand_kpis_and_series_render_actual_component_lineage(client):
         for component in series["lineage"]
     )
     assert f"批次 {snapshot.batch_id}" in body
-    assert "fallback 无" in body
+    assert "备用源 无" in body
     assert "组件级发布血缘" in body
 
 

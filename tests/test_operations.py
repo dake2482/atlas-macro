@@ -465,7 +465,7 @@ def test_operations_v1_exact_same_cycle_contract_is_public_and_rendered(
     assert "官方 feed 未披露" in rendered
     assert '组件数据血缘' in rendered
     assert "数值截至" in rendered
-    assert "fallback 无" in rendered
+    assert "备用源 无" in rendered
     assert "<tr></tr>" not in rendered
 
 

@@ -721,10 +721,10 @@ def test_auction_v1_publishes_exact_batch_half_open_sections_and_lineage(client)
     assert response.status_code == 200
     assert "未来 14 天发行/结算日历" in body
     assert "许可" in body
-    assert "fallback 无" in body
+    assert "备用源 无" in body
     assert f"批次：{run.batch_id}" in body
     assert "许可：" in body
-    assert "fallback：无" in body
+    assert "备用源：无" in body
     assert "未来 14 天净抽水" not in body
     assert "未来 TGA 流入" not in body
 
@@ -1016,7 +1016,7 @@ def test_rrp_tga_v1_requires_one_cycle_and_preserves_exact_component_lineage(cli
     assert "批次：" in body and str(onrrp.batch_id) in body
     assert f"批次：{auctions.batch_id}" in body
     assert "许可：" in body
-    assert "fallback：无" in body
+    assert "备用源：无" in body
 
 
 @pytest.mark.django_db
