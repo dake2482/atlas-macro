@@ -500,12 +500,34 @@ def _strict_employment_runs(
         **dol_result.metadata,
         "refresh_cycle_id": cycle,
     }
+    # DOL claims are released 2026-07-09 with an XML run date of 2026-07-12, so
+    # the acquisition watermark requires fetched_at >= 2026-07-12. Pin the DOL
+    # fetch time to a fixed value (instead of the live wall clock the provider
+    # records by default) so that time-frozen selector scenarios do not trip the
+    # ``fetched_at > now + 5m`` chronology guard in ``_load_artifact``.
+    dol_result.fetched_at = datetime(2026, 7, 12, 14, tzinfo=UTC)
     dol_run = record_provider_result(
         dol_result,
         persist=_store_dol_claims_observations_v2,
     )
     assert dol_run.status == "success"
     return bls_run, dol_run
+
+
+# The strict-employment fixture pins its data timeline to 2026-07-09..07-17, so
+# ``fresh_until`` resolves to 2026-07-17 12:30 UTC regardless of the wall clock.
+# Tests that exercise the ``current_candidate`` / recovery paths must observe a
+# ``now`` strictly earlier than that deadline; freeze it here instead of relying
+# on the live wall clock, which crosses the deadline once the real date passes
+# 2026-07-17 and turns these checks into date-sensitive flakes.
+_STABLE_NOW = datetime(2026, 7, 13, 12, tzinfo=UTC)
+
+
+def _freeze_publication_now(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "research.employment_contract.timezone.now",
+        lambda: _STABLE_NOW,
+    )
 
 
 def test_generic_publishers_reject_employment_contract():
@@ -530,6 +552,7 @@ def test_employment_publication_derives_exact_metrics_and_preserves_lineage(
     tmp_path,
 ):
     bls_run, dol_run = _strict_employment_runs(monkeypatch, settings, tmp_path)
+    _freeze_publication_now(monkeypatch)
 
     snapshot = publish_employment_revision(bls_run=bls_run, dol_run=dol_run)
     assert snapshot is not None
@@ -787,6 +810,7 @@ def test_employment_selector_ignores_newer_unrelated_bls_dataset_attempts(
     tmp_path,
 ):
     bls_run, dol_run = _strict_employment_runs(monkeypatch, settings, tmp_path)
+    _freeze_publication_now(monkeypatch)
     published = publish_employment_revision(bls_run=bls_run, dol_run=dol_run)
     assert published is not None
 
@@ -964,6 +988,7 @@ def test_employment_expired_success_rolls_back_and_retains_then_recovers(
     settings,
     tmp_path,
 ):
+    _freeze_publication_now(monkeypatch)
     first_bls, first_dol = _strict_employment_runs(
         monkeypatch,
         settings,
@@ -996,7 +1021,7 @@ def test_employment_expired_success_rolls_back_and_retains_then_recovers(
     assert marker["attempts"]["bls"]["ingestion_run_id"] == second_bls.pk
     assert marker["attempts"]["dol"]["ingestion_run_id"] == second_dol.pk
 
-    current_now = datetime.now(UTC)
+    current_now = _STABLE_NOW
     monkeypatch.setattr("research.employment_contract.timezone.now", lambda: current_now)
     recovered_bls, recovered_dol = _strict_employment_runs(
         monkeypatch,
@@ -1058,6 +1083,7 @@ def test_employment_builder_runtime_rolls_back_retains_and_recovers(
 ):
     from research import employment_contract
 
+    _freeze_publication_now(monkeypatch)
     first_bls, first_dol = _strict_employment_runs(
         monkeypatch,
         settings,
