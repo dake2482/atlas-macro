@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import uuid
 from copy import deepcopy
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from io import BytesIO
 from pathlib import Path
@@ -84,16 +84,69 @@ def _workbook_bytes(workbook: Workbook) -> bytes:
     return output.getvalue()
 
 
+def _relative_bea_quarters() -> tuple[str, str, str, str]:
+    """Return (quarter, previous_quarter, release_date, prior_release_date).
+
+    Dates are generated relative to the real current date so the fixture's
+    freshness window never expires as calendar time advances: the latest
+    completed quarter is published two weeks ago, which keeps every published
+    snapshot comfortably inside its fresh-until window at any run date.
+    """
+    today = date.today()
+    current_quarter_month = (today.month - 1) // 3 * 3 + 1
+    quarter_end_month = current_quarter_month - 1 or 12
+    quarter_end_year = today.year if quarter_end_month <= today.month else today.year - 1
+    previous_quarter_month = quarter_end_month - 3 or 12
+    previous_quarter_year = (
+        quarter_end_year if previous_quarter_month <= quarter_end_month else quarter_end_year - 1
+    )
+    quarter = f"{quarter_end_year}Q{(quarter_end_month - 1) // 3 + 1}"
+    previous_quarter = (
+        f"{previous_quarter_year}Q{(previous_quarter_month - 1) // 3 + 1}"
+    )
+    release_day = today - timedelta(days=14)
+    prior_release_day = release_day - timedelta(days=28)
+    return (
+        quarter,
+        previous_quarter,
+        release_day.strftime("%b %d, %Y"),
+        prior_release_day.strftime("%b %d, %Y"),
+    )
+
+
+GDP_QUARTER, GDP_PREVIOUS_QUARTER, GDP_RELEASE_DATE, GDP_PRIOR_RELEASE_DATE = (
+    _relative_bea_quarters()
+)
+
+
+def _quarter_start_iso(quarter: str) -> str:
+    year, q = quarter.split("Q")
+    month = (int(q) - 1) * 3 + 1
+    return f"{year}-{month:02d}-01"
+
+
+def _display_date_iso(display: str) -> str:
+    return datetime.strptime(display, "%b %d, %Y").date().isoformat()
+
+
+GDP_RELEASE_DATE_ISO = _display_date_iso(GDP_RELEASE_DATE)
+GDP_PRIOR_RELEASE_DATE_ISO = _display_date_iso(GDP_PRIOR_RELEASE_DATE)
+GDP_QUARTER_START = _quarter_start_iso(GDP_QUARTER)
+GDP_PREVIOUS_QUARTER_START = _quarter_start_iso(GDP_PREVIOUS_QUARTER)
+GDP_RELEASE_MD = GDP_RELEASE_DATE_ISO[5:]
+GDP_PRIOR_RELEASE_MD = GDP_PRIOR_RELEASE_DATE_ISO[5:]
+
+
 def _bea_vintage_workbook() -> bytes:
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = "Vintage History"
-    sheet.append(["Last Updated June 25, 2026"])
-    sheet.append(["2026Q1"])
+    sheet.append([f"Last Updated {GDP_RELEASE_DATE}"])
+    sheet.append([GDP_QUARTER])
     sheet.append([None, "Vintage", "GDP", "GDI", "Real GDP", "Real GDI", "Release Date"])
-    sheet.append([None, "Third", "31,865.7", "31,574.2", "2.1", "1.2", "Jun 25, 2026"])
-    sheet.append([None, "Second", "31,819.5", "31,539.4", "1.6", "0.9", "May 28, 2026"])
-    sheet.append(["2025Q4"])
+    sheet.append([None, "Third", "31,865.7", "31,574.2", "2.1", "1.2", GDP_RELEASE_DATE])
+    sheet.append([None, "Second", "31,819.5", "31,539.4", "1.6", "0.9", GDP_PRIOR_RELEASE_DATE])
+    sheet.append([GDP_PREVIOUS_QUARTER])
     sheet.append([None, "Vintage", "GDP", "GDI", "Real GDP", "Real GDI", "Release Date"])
     sheet.append(
         [
@@ -103,7 +156,7 @@ def _bea_vintage_workbook() -> bytes:
             "31,199.9",
             "0.5",
             "1.6",
-            "May 28, 2026 GDP not open for revision",
+            f"{GDP_PRIOR_RELEASE_DATE} GDP not open for revision",
         ]
     )
     return _workbook_bytes(workbook)
@@ -111,8 +164,8 @@ def _bea_vintage_workbook() -> bytes:
 
 def _bea_comparison_workbook(
     *,
-    quarter: str = "2026Q1",
-    release_date: str = "June 25, 2026",
+    quarter: str = GDP_QUARTER,
+    release_date: str = GDP_RELEASE_DATE,
     estimate_round: str = "Third",
 ) -> bytes:
     workbook = Workbook()
@@ -124,15 +177,15 @@ def _bea_comparison_workbook(
         "in Real Gross Domestic Product and Related Measures"
     )
     rows = [
-        ("Gross domestic product (GDP)", 2.1, "2025Q4", 0.5),
-        ("Personal consumption expenditures", 0.5, "2025Q4", 1.9),
-        ("Goods", 0.5, "2025Q4", 0.3),
-        ("Services", 0.5, "2025Q4", 2.7),
-        ("Gross private domestic investment", 7.9, "2025Q4", 2.3),
-        ("Fixed investment", 6.5, "2025Q4", 1.5),
-        ("Exports", 5.4, "2025Q4", -3.1),
-        ("Imports", 1.8, "2025Q4", -1.2),
-        ("Government consumption expenditures and gross investment", 1.2, "2025Q4", 0.4),
+        ("Gross domestic product (GDP)", 2.1, GDP_PREVIOUS_QUARTER, 0.5),
+        ("Personal consumption expenditures", 0.5, GDP_PREVIOUS_QUARTER, 1.9),
+        ("Goods", 0.5, GDP_PREVIOUS_QUARTER, 0.3),
+        ("Services", 0.5, GDP_PREVIOUS_QUARTER, 2.7),
+        ("Gross private domestic investment", 7.9, GDP_PREVIOUS_QUARTER, 2.3),
+        ("Fixed investment", 6.5, GDP_PREVIOUS_QUARTER, 1.5),
+        ("Exports", 5.4, GDP_PREVIOUS_QUARTER, -3.1),
+        ("Imports", 1.8, GDP_PREVIOUS_QUARTER, -1.2),
+        ("Government consumption expenditures and gross investment", 1.2, GDP_PREVIOUS_QUARTER, 0.4),
     ]
     for row_number, (label, current, previous_period, previous) in enumerate(rows, start=6):
         sheet.cell(row_number, 1, label)
@@ -146,10 +199,10 @@ def _bea_comparison_workbook(
         "in Real Gross Domestic Product",
     )
     contribution_rows = [
-        ("Personal consumption expenditures", 0.37, "2025Q4", 1.30),
-        ("Gross private domestic investment", 1.35, "2025Q4", 0.40),
-        ("Net exports of goods and services", -0.37, "2025Q4", 0.46),
-        ("Government consumption expenditures and gross investment", 0.74, "2025Q4", -0.99),
+        ("Personal consumption expenditures", 0.37, GDP_PREVIOUS_QUARTER, 1.30),
+        ("Gross private domestic investment", 1.35, GDP_PREVIOUS_QUARTER, 0.40),
+        ("Net exports of goods and services", -0.37, GDP_PREVIOUS_QUARTER, 0.46),
+        ("Government consumption expenditures and gross investment", 0.74, GDP_PREVIOUS_QUARTER, -0.99),
     ]
     for row_number, (label, current, previous_period, previous) in enumerate(
         contribution_rows, start=24
@@ -434,13 +487,13 @@ def _bea_client(vintage: bytes, comparisons: bytes) -> httpx.Client:
             return httpx.Response(
                 200,
                 content=vintage,
-                headers={"content-type": XLSX_CONTENT_TYPE, "last-modified": "June 25, 2026"},
+                headers={"content-type": XLSX_CONTENT_TYPE, "last-modified": GDP_RELEASE_DATE},
             )
         if url == comparison_url:
             return httpx.Response(
                 200,
                 content=comparisons,
-                headers={"content-type": XLSX_CONTENT_TYPE, "last-modified": "June 25, 2026"},
+                headers={"content-type": XLSX_CONTENT_TYPE, "last-modified": GDP_RELEASE_DATE},
             )
         raise AssertionError(f"unexpected URL: {url}")
 
@@ -540,13 +593,13 @@ def _bea_pio_client(summary: bytes, section2: bytes) -> httpx.Client:
             return httpx.Response(
                 200,
                 content=summary,
-                headers={"content-type": XLSX_CONTENT_TYPE, "last-modified": "June 25, 2026"},
+                headers={"content-type": XLSX_CONTENT_TYPE, "last-modified": GDP_RELEASE_DATE},
             )
         if url == BEA_PIO_SECTION2_WORKBOOK:
             return httpx.Response(
                 200,
                 content=section2,
-                headers={"content-type": XLSX_CONTENT_TYPE, "last-modified": "June 25, 2026"},
+                headers={"content-type": XLSX_CONTENT_TYPE, "last-modified": GDP_RELEASE_DATE},
             )
         raise AssertionError(f"unexpected URL: {url}")
 
@@ -560,8 +613,8 @@ def test_bea_release_provider_preserves_vintages_components_and_artifact_hashes(
 
     assert result.ok
     assert result.metadata["quarter_count"] == 2
-    assert result.metadata["comparison_quarter"] == "2026Q1"
-    assert result.metadata["comparison_release_date"] == "2026-06-25"
+    assert result.metadata["comparison_quarter"] == GDP_QUARTER
+    assert result.metadata["comparison_release_date"] == GDP_RELEASE_DATE_ISO
     assert result.metadata["comparison_estimate_round"] == "Third"
     assert result.metadata["vintage_release_count"] == 3
     assert result.metadata["vintage_observation_count"] == 12
@@ -584,34 +637,34 @@ def test_bea_release_provider_preserves_vintages_components_and_artifact_hashes(
     )
     assert replay_records == result.records
     assert replay_supplemental == result.supplemental_records
-    assert replay_metadata["comparison_quarter"] == "2026Q1"
+    assert replay_metadata["comparison_quarter"] == GDP_QUARTER
 
     by_series_and_date = {
         (item["series_id"], item["date"]): item for item in result.records
     }
-    latest_gdp = by_series_and_date[("BEA-A191RL", "2026-01-01")]
+    latest_gdp = by_series_and_date[("BEA-A191RL", GDP_QUARTER_START)]
     assert latest_gdp["value"] == Decimal("2.1")
     assert latest_gdp["metadata"]["vintage_label"] == "Third"
     assert latest_gdp["metadata"]["estimate_round"] == "Third"
-    assert latest_gdp["metadata"]["source_revision_date"] == "2026-06-25"
+    assert latest_gdp["metadata"]["source_revision_date"] == GDP_RELEASE_DATE_ISO
     gdp_vintages = [
         item
         for item in result.supplemental_records["release_vintages"]
-        if item["series_id"] == "BEA-A191RL" and item["date"] == "2026-01-01"
+        if item["series_id"] == "BEA-A191RL" and item["date"] == GDP_QUARTER_START
     ]
     assert [item["estimate_round"] for item in gdp_vintages] == ["Third", "Second"]
     assert [item["value"] for item in gdp_vintages] == [Decimal("2.1"), Decimal("1.6")]
     assert [item["release_date"] for item in gdp_vintages] == [
-        "2026-06-25",
-        "2026-05-28",
+        GDP_RELEASE_DATE_ISO,
+        GDP_PRIOR_RELEASE_DATE_ISO,
     ]
-    assert by_series_and_date[("BEA-DPCERL", "2026-01-01")]["value"] == Decimal("0.5")
-    assert by_series_and_date[("BEA-DPCERL", "2025-10-01")]["value"] == Decimal("1.9")
-    assert by_series_and_date[("BEA-GPDI-GROWTH", "2026-01-01")]["value"] == Decimal("7.9")
-    assert by_series_and_date[("BEA-PCE-CONTRIBUTION", "2026-01-01")][
+    assert by_series_and_date[("BEA-DPCERL", GDP_QUARTER_START)]["value"] == Decimal("0.5")
+    assert by_series_and_date[("BEA-DPCERL", GDP_PREVIOUS_QUARTER_START)]["value"] == Decimal("1.9")
+    assert by_series_and_date[("BEA-GPDI-GROWTH", GDP_QUARTER_START)]["value"] == Decimal("7.9")
+    assert by_series_and_date[("BEA-PCE-CONTRIBUTION", GDP_QUARTER_START)][
         "value"
     ] == Decimal("0.37")
-    assert by_series_and_date[("BEA-NET-EXPORTS-CONTRIBUTION", "2026-01-01")][
+    assert by_series_and_date[("BEA-NET-EXPORTS-CONTRIBUTION", GDP_QUARTER_START)][
         "metadata"
     ]["unit"] == "percentage points contribution to real GDP growth"
 
@@ -1360,7 +1413,7 @@ def test_gdp_v2_rejects_comparison_workbook_from_another_release(
     result = BEAGDPReleaseProvider(
         client=_bea_client(
             _bea_vintage_workbook(),
-            _bea_comparison_workbook(quarter="2025Q4"),
+            _bea_comparison_workbook(quarter=GDP_PREVIOUS_QUARTER),
         )
     ).gdp_pce()
     assert result.ok, result.error
@@ -2355,12 +2408,12 @@ def test_release_workbooks_persist_lineage_and_publish_gdp_page(
     second_estimate = ReleaseVintageObservation.objects.get(
         batch_id=bea_run.batch_id,
         series__key="bea-a191rl",
-        value_date=datetime(2026, 1, 1, tzinfo=UTC),
-        release_date="2026-05-28",
+        value_date=datetime.fromisoformat(GDP_QUARTER_START).replace(tzinfo=UTC),
+        release_date=GDP_PRIOR_RELEASE_DATE_ISO,
     )
     assert second_estimate.value == Decimal("1.6")
     assert second_estimate.estimate_round == "Second"
-    assert second_estimate.as_of.date().isoformat() == "2026-05-28"
+    assert second_estimate.as_of.date().isoformat() == GDP_PRIOR_RELEASE_DATE_ISO
     assert second_estimate.fetched_at == bea.fetched_at
     assert second_estimate.source.key == "bea-release"
     assert second_estimate.license_scope == second_estimate.source.license_scope
@@ -2378,8 +2431,8 @@ def test_release_workbooks_persist_lineage_and_publish_gdp_page(
     ]
     assert [row["实际 GDP"] for row in gdp_charts[1]["data"]] == [1.6, 2.1]
     assert [row["date"] for row in gdp_charts[1]["data"]] == [
-        "Second\n05-28",
-        "Third\n06-25",
+        "Second\n" + GDP_PRIOR_RELEASE_MD,
+        "Third\n" + GDP_RELEASE_MD,
     ]
     assert gdp_charts[1]["panel_class"] == "lg:col-span-2"
     assert gdp_charts[1]["data"][0]["_lineage"]["实际 GDP"][
@@ -2406,8 +2459,8 @@ def test_gdp_generic_publisher_rejects_legacy_cross_source_rows():
             dataset="api-fixture",
             fetched_at=older_fetch,
             records=[
-                {"series_id": "BEA-A191RL", "date": "2026-01-01", "value": "9.9"},
-                {"series_id": "BEA-A191RL", "date": "2025-10-01", "value": "1.0"},
+                {"series_id": "BEA-A191RL", "date": GDP_QUARTER_START, "value": "9.9"},
+                {"series_id": "BEA-A191RL", "date": GDP_PREVIOUS_QUARTER_START, "value": "1.0"},
             ],
         ),
         persist=store_series_observations,
@@ -2418,8 +2471,8 @@ def test_gdp_generic_publisher_rejects_legacy_cross_source_rows():
             dataset="release-fixture",
             fetched_at=newer_fetch,
             records=[
-                {"series_id": "BEA-A191RL", "date": "2026-01-01", "value": "2.1"},
-                {"series_id": "BEA-A191RL", "date": "2025-10-01", "value": "0.5"},
+                {"series_id": "BEA-A191RL", "date": GDP_QUARTER_START, "value": "2.1"},
+                {"series_id": "BEA-A191RL", "date": GDP_PREVIOUS_QUARTER_START, "value": "0.5"},
             ],
         ),
         persist=store_series_observations,
