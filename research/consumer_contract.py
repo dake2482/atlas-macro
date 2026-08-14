@@ -38,7 +38,13 @@ from .models import (
     Source,
     SourceLicense,
 )
+from .page_building import _bind_calculated_record_lineage, _history_chart, _metric
 from .providers import ProviderResult
+from .publication_kernel import (
+    find_retainable_revision,
+    mark_retained_failure,
+    verify_retained_state,
+)
 from .raw_evidence import EVIDENCE_BUNDLE_CONTENT_TYPE, parse_evidence_bundle
 from .services import SERIES_CATALOG, ensure_source, public_source_notices
 
@@ -306,8 +312,6 @@ def _prepare_replay_records(
     if run.source.key in {"census", "census-release"}:
         # Census API-derived records acquire exact run/batch lineage immediately
         # before persistence. Static replay must reproduce the same transformation.
-        from .official_data import _bind_calculated_record_lineage
-
         result = ProviderResult(
             provider=run.source.key,
             dataset=run.dataset,
@@ -936,8 +940,6 @@ def _build_consumer_payload(
     publication_batch_id: uuid.UUID,
     optional_attempt: IngestionRun | None,
 ) -> tuple[dict[str, Any], datetime, str]:
-    from .official_data import _history_chart, _metric
-
     batches = {
         "retail_release": evidence.retail_release.run.batch_id,
         "pio": evidence.pio.run.batch_id,
@@ -1819,18 +1821,20 @@ def _mark_retained_failure(
     reason_code: str = "latest-attempt-incomplete",
     reason: str | None = None,
 ) -> None:
-    checked_at = max((run.completed_at or timezone.now()) for run in latest.values())
-    data = deepcopy(snapshot.data or {})
-    data["refresh_failure"] = {
-        "reason_code": reason_code,
-        "checked_at": checked_at.isoformat(),
-        "reason": reason
+    mark_retained_failure(
+        snapshot,
+        reason_code=reason_code,
+        reason=reason
         or "最新四个必需 Consumer 输入未形成完整可重放批次；保留上一版。",
-        "attempts": {role: _attempt_reference(run) for role, run in latest.items()},
-    }
-    snapshot.data = data
-    snapshot.quality_status = Observation.Quality.STALE
-    snapshot.save(update_fields=["data", "quality_status", "updated_at"])
+        checked_at=max(
+            (run.completed_at or timezone.now()) for run in latest.values()
+        ),
+        marker_payload={
+            "attempts": {
+                role: _attempt_reference(run) for role, run in latest.items()
+            },
+        },
+    )
 
 
 def _retain_publication_postcondition(
@@ -1857,27 +1861,14 @@ def _retain_publication_postcondition(
             locked_latest[role].pk != latest[role].pk for role in latest
         ):
             raise ValueError("consumer attempts changed after publication rollback")
-        candidates = (
-            DashboardSnapshot.objects.select_for_update(of=("self",))
-            .filter(
-                key="consumer",
-                is_published=True,
-                data__contract_version=CONSUMER_CONTRACT_VERSION,
-            )
-            .exclude(source__key="demo-market")
-            .select_related("source")
-            .order_by("-created_at", "-id")
+        previous = find_retainable_revision(
+            page_key="consumer",
+            contract_version=CONSUMER_CONTRACT_VERSION,
+            is_failed_target=lambda candidate: (
+                _published_identity(candidate) == target_identity
+            ),
+            static_replay=_snapshot_static_replay,
         )
-        for candidate in candidates:
-            if _published_identity(candidate) == target_identity:
-                continue
-            try:
-                replay = _snapshot_static_replay(candidate)
-            except Exception:
-                continue
-            if replay is not None:
-                previous = candidate
-                break
         if previous is not None:
             previous_identity = _published_identity(previous) or {}
             if previous_identity.get("mandatory") == target_identity.get("mandatory"):
@@ -1894,13 +1885,11 @@ def _retain_publication_postcondition(
                     f"校验；本次 revision 已回滚并保留上一版：{error}"
                 ),
             )
-            selected = select_public_consumer_snapshot()
-            if (
-                selected is None
-                or getattr(selected, "consumer_publication_state", None)
-                != "retained_failure"
-            ):
-                raise ValueError("consumer publication-postcondition marker did not replay")
+            verify_retained_state(
+                selector=select_public_consumer_snapshot,
+                state_attr="consumer_publication_state",
+                domain_label="consumer",
+            )
     if previous is None:
         return "unretained"
     return "mandatory_failure_retained"

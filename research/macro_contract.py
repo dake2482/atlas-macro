@@ -31,6 +31,11 @@ from .models import (
     Source,
     SourceLicense,
 )
+from .publication_kernel import (
+    find_retainable_revision,
+    mark_retained_failure,
+    verify_retained_state,
+)
 from .raw_evidence import EVIDENCE_BUNDLE_CONTENT_TYPE, parse_evidence_bundle
 from .services import ensure_source, public_source_notices
 
@@ -1276,20 +1281,17 @@ def _mark_retained_failure(
     reason_code: str = "latest-attempt-incomplete",
     reason: str | None = None,
 ) -> None:
-    data = deepcopy(snapshot.data or {})
-    data["refresh_failure"] = {
-        "reason_code": reason_code,
-        "checked_at": (attempt.completed_at or timezone.now()).isoformat(),
-        "reason": reason
+    mark_retained_failure(
+        snapshot,
+        reason_code=reason_code,
+        reason=reason
         or (
             "最新 BEA GDP 刷新未产生可重放的完整批次；页面保留上一版"
             "已审计快照，不发布半成品数据。"
         ),
-        "attempt": _attempt_reference(attempt),
-    }
-    snapshot.data = data
-    snapshot.quality_status = Observation.Quality.STALE
-    snapshot.save(update_fields=["data", "quality_status", "updated_at"])
+        checked_at=attempt.completed_at or timezone.now(),
+        marker_payload={"attempt": _attempt_reference(attempt)},
+    )
 
 
 def _retain_publication_postcondition(
@@ -1301,25 +1303,16 @@ def _retain_publication_postcondition(
         locked_latest = _latest_attempt(lock=True)
         if locked_latest is None or locked_latest.pk != latest.pk:
             raise ValueError("GDP attempt changed after publication rollback")
-        previous = next(
-            (
-                candidate
-                for candidate in DashboardSnapshot.objects.select_for_update(
-                    of=("self",)
-                )
-                .filter(
-                    key="gdp",
-                    is_published=True,
-                    data__contract_version=GDP_CONTRACT_VERSION,
-                )
-                .exclude(source__key="demo-market")
-                .select_related("source")
-                .order_by("-created_at", "-id")
-                if _gdp_snapshot_static_replay(candidate) is not None
-                and (candidate.data or {})["input_run"]["ingestion_run_id"]
-                != latest.pk
+        previous = find_retainable_revision(
+            page_key="gdp",
+            contract_version=GDP_CONTRACT_VERSION,
+            is_failed_target=lambda candidate: (
+                (candidate.data or {})["input_run"]["ingestion_run_id"] == latest.pk
             ),
-            None,
+            static_replay=_gdp_snapshot_static_replay,
+            # GDP keeps the historical stricter scan: a replay error on an
+            # older candidate propagates instead of being skipped.
+            best_effort_replay=False,
         )
         if previous is not None:
             _mark_retained_failure(
@@ -1333,12 +1326,11 @@ def _retain_publication_postcondition(
             )
     if previous is None:
         return False
-    selected = select_public_gdp_snapshot()
-    if (
-        selected is None
-        or getattr(selected, "gdp_publication_state", None) != "retained_failure"
-    ):
-        raise ValueError("GDP publication-postcondition marker did not replay")
+    verify_retained_state(
+        selector=select_public_gdp_snapshot,
+        state_attr="gdp_publication_state",
+        domain_label="GDP",
+    )
     return True
 
 

@@ -38,6 +38,11 @@ from .models import (
     SourceLicense,
 )
 from .providers import BLSProvider, strict_json_metadata_matches
+from .publication_kernel import (
+    find_retainable_revision,
+    mark_retained_failure,
+    verify_retained_state,
+)
 from .raw_evidence import EVIDENCE_BUNDLE_CONTENT_TYPE
 from .services import SERIES_CATALOG, ensure_source, public_source_notices
 
@@ -1318,21 +1323,23 @@ def _mark_retained_failure(
     reason_code: str = "latest-attempt-incomplete",
     reason: str | None = None,
 ) -> None:
-    checked_at = max((run.completed_at or timezone.now()) for run in latest.values())
-    data = deepcopy(snapshot.data or {})
-    data["refresh_failure"] = {
-        "reason_code": reason_code,
-        "checked_at": checked_at.isoformat(),
-        "reason": reason
+    mark_retained_failure(
+        snapshot,
+        reason_code=reason_code,
+        reason=reason
         or (
             "最新 BLS/DOL 就业刷新未形成同一周期的完整可重放批次；"
             "页面保留上一版已审计快照，不发布半成品数据。"
         ),
-        "attempts": {role: _attempt_reference(run) for role, run in latest.items()},
-    }
-    snapshot.data = data
-    snapshot.quality_status = Observation.Quality.STALE
-    snapshot.save(update_fields=["data", "quality_status", "updated_at"])
+        checked_at=max(
+            (run.completed_at or timezone.now()) for run in latest.values()
+        ),
+        marker_payload={
+            "attempts": {
+                role: _attempt_reference(run) for role, run in latest.items()
+            },
+        },
+    )
 
 
 def _retain_publication_postcondition(
@@ -1347,30 +1354,17 @@ def _retain_publication_postcondition(
             locked_latest[role].pk != latest[role].pk for role in latest
         ):
             raise ValueError("employment attempts changed after publication rollback")
-        candidates = (
-            DashboardSnapshot.objects.select_for_update(of=("self",))
-            .filter(
-                key="employment",
-                is_published=True,
-                data__contract_version=EMPLOYMENT_CONTRACT_VERSION,
-            )
-            .exclude(source__key="demo-market")
-            .select_related("source")
-            .order_by("-created_at", "-id")
+        previous = find_retainable_revision(
+            page_key="employment",
+            contract_version=EMPLOYMENT_CONTRACT_VERSION,
+            is_failed_target=lambda candidate: (
+                _published_input_run_pair(candidate) == target_pair
+            ),
+            static_replay=_employment_snapshot_static_replay,
+            # Retention is best-effort after the original publication failure.
+            # If an older revision cannot be replayed, the coordinator must
+            # re-raise that original failure unchanged.
         )
-        for candidate in candidates:
-            if _published_input_run_pair(candidate) == target_pair:
-                continue
-            try:
-                replay = _employment_snapshot_static_replay(candidate)
-            except Exception:
-                # Retention is best-effort after the original publication
-                # failure. If an older revision cannot be replayed, the
-                # coordinator must re-raise that original failure unchanged.
-                continue
-            if replay is not None:
-                previous = candidate
-                break
         if previous is not None:
             _mark_retained_failure(
                 previous,
@@ -1383,13 +1377,11 @@ def _retain_publication_postcondition(
             )
     if previous is None:
         return False
-    selected = select_public_employment_snapshot()
-    if (
-        selected is None
-        or getattr(selected, "employment_publication_state", None)
-        != "retained_failure"
-    ):
-        raise ValueError("employment publication-postcondition marker did not replay")
+    verify_retained_state(
+        selector=select_public_employment_snapshot,
+        state_attr="employment_publication_state",
+        domain_label="employment",
+    )
     return True
 
 

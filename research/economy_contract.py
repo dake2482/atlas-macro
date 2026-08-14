@@ -48,6 +48,7 @@ from .models import (
     Source,
     SourceLicense,
 )
+from .publication_kernel import mark_retained_failure
 from .services import (
     public_source_notices,
     publicly_displayable_source_keys,
@@ -1346,22 +1347,20 @@ def _mark_retained_failure(
     reason: str,
 ) -> None:
     witnesses = _live_component_witnesses(children)
-    checked_at = max(
-        timezone.now(),
-        *(child.updated_at for child in children.values()),
-    )
-    data = deepcopy(snapshot.data or {})
     reason_text = reason[:1200]
-    data["refresh_failure"] = {
-        "reason_code": reason_code,
-        "checked_at": checked_at.isoformat(),
-        "reason": reason_text,
-        "reason_sha256": _sha256(reason_text),
-        "components": witnesses,
-    }
-    snapshot.data = data
-    snapshot.quality_status = Observation.Quality.STALE
-    snapshot.save(update_fields=["data", "quality_status", "updated_at"])
+    mark_retained_failure(
+        snapshot,
+        reason_code=reason_code,
+        reason=reason_text,
+        checked_at=max(
+            timezone.now(),
+            *(child.updated_at for child in children.values()),
+        ),
+        marker_payload={
+            "reason_sha256": _sha256(reason_text),
+            "components": witnesses,
+        },
+    )
 
 
 def _retain_failure_marker(
