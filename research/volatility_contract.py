@@ -30,6 +30,7 @@ from .models import (
     Source,
     SourceLicense,
 )
+from .page_building import _latest_h10_attempt
 from .services import ensure_source, public_source_notices
 
 FX_VOL_CONTRACT_VERSION = 1
@@ -989,8 +990,6 @@ def fx_vol_snapshot_is_publicly_displayable(
     run = _embedded_run(snapshot)
     if run is None:
         return False
-    from .official_data import _latest_h10_attempt
-
     latest = _latest_h10_attempt()
     if latest is None:
         return False
@@ -1174,8 +1173,6 @@ def coordinate_fx_vol_dashboard(
         .order_by("source__key")
         .values_list("pk", flat=True)
     )
-    from .official_data import _latest_h10_attempt
-
     relevant = [
         run
         for run in trigger_runs
