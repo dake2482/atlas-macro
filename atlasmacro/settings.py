@@ -5,11 +5,26 @@ from pathlib import Path
 
 import dj_database_url
 from celery.schedules import crontab
+from django.core.exceptions import ImproperlyConfigured
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-SECRET_KEY = os.getenv("DJANGO_SECRET_KEY", "dev-only-change-me")
 DEBUG = os.getenv("DJANGO_DEBUG", "1") == "1"
+SECRET_KEY = os.getenv("DJANGO_SECRET_KEY", "")
+_INSECURE_SECRET_KEYS = {
+    "",
+    "dev-only-change-me",
+    "replace-with-a-long-random-value",
+}
+if not DEBUG and SECRET_KEY in _INSECURE_SECRET_KEYS:
+    raise ImproperlyConfigured(
+        "DJANGO_SECRET_KEY must be set to a real random value when DJANGO_DEBUG=0; "
+        "refusing to start production with an insecure default secret."
+    )
+if not SECRET_KEY:
+    # Local development fallback only; the guard above makes this unreachable
+    # whenever DEBUG is off.
+    SECRET_KEY = "dev-only-change-me"
 ALLOWED_HOSTS = [
     host.strip()
     for host in os.getenv("DJANGO_ALLOWED_HOSTS", "localhost,127.0.0.1,[::1]").split(",")
