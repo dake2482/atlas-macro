@@ -1551,6 +1551,13 @@ FUTU_ETF_SYMBOLS = frozenset(
 )
 
 
+# Futu OpenD renders snapshot ``update_time`` stamps in the gateway's Hong
+# Kong clock (UTC+8, no DST) regardless of the quote's listing market.
+# Interpreting the naive stamp as UTC would mis-date observations by 8-16
+# hours and corrupt value_date ordering and change calculations.
+FUTU_UPDATE_TIME_ZONE = ZoneInfo("Asia/Hong_Kong")
+
+
 def store_futu_snapshots(result: ProviderResult, source: Source, run: IngestionRun) -> int:
     """Persist Futu market snapshots as instrument-keyed observations.
 
@@ -1566,12 +1573,21 @@ def store_futu_snapshots(result: ProviderResult, source: Source, run: IngestionR
         if not symbol or price is None:
             continue
         update_time = str(record.get("update_time") or "")
-        try:
-            value_date = datetime.fromisoformat(update_time)
-        except ValueError:
+        value_date = None
+        if update_time:
+            try:
+                parsed = datetime.fromisoformat(update_time)
+            except ValueError:
+                parsed = None
+            if parsed is not None:
+                if parsed.tzinfo is None:
+                    parsed = parsed.replace(tzinfo=FUTU_UPDATE_TIME_ZONE)
+                value_date = parsed.astimezone(UTC)
+        update_time_source = (
+            "futu-update-time" if value_date is not None else "fetch-time-fallback"
+        )
+        if value_date is None:
             value_date = result.fetched_at
-        if timezone.is_naive(value_date):
-            value_date = timezone.make_aware(value_date, UTC)
         asset_class = "etf" if symbol in FUTU_ETF_SYMBOLS else "equity"
         store_market_observation(
             symbol=symbol,
@@ -1586,6 +1602,7 @@ def store_futu_snapshots(result: ProviderResult, source: Source, run: IngestionR
                 "source": attribution,
                 "license_scope": license_scope,
                 "broker_private": True,
+                "update_time_source": update_time_source,
                 "prev_close": str(record.get("prev_close") or ""),
                 "open": str(record.get("open") or ""),
                 "high": str(record.get("high") or ""),

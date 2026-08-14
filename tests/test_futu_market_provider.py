@@ -9,6 +9,7 @@ every observation is marked ``estimated``, carries the Futu attribution and a
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
 from decimal import Decimal
 from unittest.mock import patch
 
@@ -194,6 +195,10 @@ def test_store_futu_snapshots_creates_estimated_instrument_observations():
     assert spy_obs.metadata["broker_private"] is True
     assert spy_obs.metadata["source"] == "Futu OpenD"
     assert "券商私有" in spy_obs.metadata["license_scope"]
+    # OpenD renders update_time on the gateway's Hong Kong clock; the stored
+    # value_date must be the UTC instant of that stamp, not a UTC re-label.
+    assert spy_obs.value_date == datetime(2026, 7, 17, 12, 1, 12, tzinfo=UTC)
+    assert spy_obs.metadata["update_time_source"] == "futu-update-time"
 
     aapl = Instrument.objects.get(symbol="US.AAPL")
     assert aapl.asset_class == "equity"  # not in the ETF allowlist
@@ -201,6 +206,7 @@ def test_store_futu_snapshots_creates_estimated_instrument_observations():
     assert aapl_obs.value == Decimal("333.74")
     assert aapl_obs.quality_status == Observation.Quality.ESTIMATED
     assert aapl_obs.metadata["pe_ratio"] == "35.2"
+    assert aapl_obs.value_date == datetime(2026, 7, 17, 12, 1, 11, tzinfo=UTC)
 
 
 @pytest.mark.django_db
