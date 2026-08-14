@@ -917,10 +917,11 @@ def test_employment_natural_expiry_and_running_transition_are_explicit(
     settings,
     tmp_path,
 ):
+    _freeze_publication_now(monkeypatch)
     bls_run, dol_run = _strict_employment_runs(monkeypatch, settings, tmp_path)
     published = publish_employment_revision(bls_run=bls_run, dol_run=dol_run)
     assert published is not None
-    future = datetime(2026, 7, 30, 12, tzinfo=UTC)
+    future = datetime.fromisoformat(published.data["fresh_until"]) + timedelta(seconds=1)
     monkeypatch.setattr(
         "research.employment_contract.timezone.now",
         lambda: future,

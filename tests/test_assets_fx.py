@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import itertools
 import json
 import re
 import uuid
@@ -57,6 +58,26 @@ from research.services import (
 def _dates(count: int = 300, *, end: date = date(2026, 7, 10)) -> tuple[str, ...]:
     start = end - timedelta(days=count - 1)
     return tuple((start + timedelta(days=index)).isoformat() for index in range(count))
+
+
+# The fixture pins the H.10 timeline to observations ending 2026-07-10 with a
+# Prepared stamp of 2026-07-13T17:45Z, so the strict component's fresh-until
+# resolves to mid-July 2026 regardless of the wall clock. Publication and
+# selection must observe a ``now`` inside that window. ``timezone`` is the
+# shared ``django.utils.timezone`` module, so this freeze covers every store
+# and selector clock coherently; provider results must pin ``fetched_at``
+# into the same frozen instant. The frozen clock advances one microsecond per
+# call so that successive row timestamps stay strictly ordered, matching the
+# monotone behaviour marker chronology checks rely on.
+_STABLE_NOW = datetime(2026, 7, 14, 12, tzinfo=UTC)
+
+
+def _freeze_publication_now(monkeypatch) -> None:
+    ticks = itertools.count()
+    monkeypatch.setattr(
+        "research.official_data.timezone.now",
+        lambda: _STABLE_NOW + timedelta(microseconds=next(ticks)),
+    )
 
 
 def _h10_archive(
@@ -146,8 +167,10 @@ def _rendered_chart_rows(response) -> list[dict]:
 @pytest.fixture
 def published_assets_fx(db, tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "RAW_ARTIFACT_ROOT", tmp_path)
+    _freeze_publication_now(monkeypatch)
     result = _h10_result()
     assert result.ok
+    result.fetched_at = _STABLE_NOW
     run = record_provider_result(result, persist=_store_h10_observations)
     assert run.status == IngestionRun.Status.SUCCESS, run.error
     dashboards, stale = _coordinate_assets_fx_dashboard([run])
@@ -242,8 +265,10 @@ def test_generic_publication_bypasses_all_reject_assets_fx(published_assets_fx):
 @pytest.mark.django_db
 def test_new_same_value_h10_run_is_append_only_revision(published_assets_fx):
     first, old_run, _root, raw = published_assets_fx
+    replacement_result = _h10_result(raw_bytes=raw)
+    replacement_result.fetched_at = _STABLE_NOW
     replacement = record_provider_result(
-        _h10_result(raw_bytes=raw),
+        replacement_result,
         persist=_store_h10_observations,
     )
     assert replacement.status == IngestionRun.Status.SUCCESS, replacement.error
@@ -512,8 +537,10 @@ def test_terminal_failure_then_valid_h10_recovery_publishes_without_old_marker(
     old_snapshot.refresh_from_db()
     old_marker = deepcopy(old_snapshot.data["refresh_failure"])
 
+    recovery_result = _h10_result(raw_bytes=raw)
+    recovery_result.fetched_at = _STABLE_NOW
     recovery = record_provider_result(
-        _h10_result(raw_bytes=raw),
+        recovery_result,
         persist=_store_h10_observations,
     )
     dashboards, stale = _coordinate_assets_fx_dashboard([recovery])
