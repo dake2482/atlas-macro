@@ -42,7 +42,7 @@ evidence:
 - The production common date is 2026-07-08; WALCL 6,735,609, ON RRP 3,347 and TGA 749,244 USD millions produce
   exactly 5.983018 USD trillion. The old mixed-date 5.990427 value is absent. The 21-point chart ends on the same
   date and declares only the H.4.1, ON RRP and TGA batches plus their four actual sources including internal derivation.
-- Sitemap now has 266 canonical locations under http://43.131.224.57:3080 and none omit port 3080. Public home,
+- Sitemap now has 266 canonical locations under the production origin and none omit the origin's port. Public home,
   liquidity, all checked liquidity children, Fed Funds, economy, robots and sitemap routes return HTTP 200;
   liquidity TTFB was 0.026 seconds and its response size was 135,496 bytes in the final local-origin smoke.
 - Desktop 1280px and mobile 390px CDP checks each found nine cards, one chart container, no horizontal overflow,
